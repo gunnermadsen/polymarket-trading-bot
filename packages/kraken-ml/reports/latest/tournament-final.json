@@ -1,0 +1,2087 @@
+{
+  "confirmation": {
+    "reason": "no Generation 3 candidate passed every development gate",
+    "status": "not_run"
+  },
+  "generations": [
+    {
+      "candidate_count": 37,
+      "decision": "broad causal model/horizon screen and paired feature ablation",
+      "generation": 1,
+      "retained": [
+        {
+          "artifact_bytes": 3272,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-01/models/g1_ablate_3_ridge_4h_flow.joblib",
+          "artifact_sha256": "6a7fe50c21e9f37d434797ec4ee2e6d54520a1b7371cf52f8e9b4dd77b18aee2",
+          "candidate_id": "g1_ablate_3_ridge_4h_flow",
+          "horizon": "4h",
+          "model": "ridge",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        },
+        {
+          "artifact_bytes": 2798,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-01/models/g1_elastic_net_4h_positioning.joblib",
+          "artifact_sha256": "9e802692bebdda6552304587e1082b3ca304eaf9190173960cbcacf147030108",
+          "candidate_id": "g1_elastic_net_4h_positioning",
+          "horizon": "4h",
+          "model": "elastic_net",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        },
+        {
+          "artifact_bytes": 4147,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-01/models/g1_ablate_1_elastic_net_4h_microstructure.joblib",
+          "artifact_sha256": "482ed8b7339a8254b472cbf84b3413e47f2d5a4c6254b8246766518a8158e1c8",
+          "candidate_id": "g1_ablate_1_elastic_net_4h_microstructure",
+          "horizon": "4h",
+          "model": "elastic_net",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        }
+      ]
+    },
+    {
+      "candidate_count": 8,
+      "decision": "improve eligible Generation 1 lineages with bounded local tuning",
+      "generation": 2,
+      "retained": [
+        {
+          "artifact_bytes": 3272,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-02/models/g2_1_ridge_4h_flow_v0.joblib",
+          "artifact_sha256": "77a961c6e869e514070c693dd5080b40cefceb76ce60e3779281746fa200d4db",
+          "candidate_id": "g2_1_ridge_4h_flow_v0",
+          "horizon": "4h",
+          "model": "ridge",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        },
+        {
+          "artifact_bytes": 3268,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-02/models/g2_1_ridge_4h_flow_v1.joblib",
+          "artifact_sha256": "81182caae0291ac887be7f8491f5eede4c61e59a4b8e89aabe0173aa93a8e535",
+          "candidate_id": "g2_1_ridge_4h_flow_v1",
+          "horizon": "4h",
+          "model": "ridge",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        }
+      ]
+    },
+    {
+      "candidate_count": 6,
+      "decision": "harden eligible Generation 2 lineages across features and deterministic seeds",
+      "generation": 3,
+      "retained": [
+        {
+          "artifact_bytes": 3262,
+          "artifact_path": "/Volumes/docker-data/kraken-ml/tournament/20260822T022245Z-cd18aea3-f64fd675/generation-03/models/g3_1_ridge_4h_flow_s2.joblib",
+          "artifact_sha256": "1a74bfce182391e7a19e1fbbf4bfdfa8b599584a8ba71eb8c8239a03cc189054",
+          "candidate_id": "g3_1_ridge_4h_flow_s2",
+          "horizon": "4h",
+          "model": "ridge",
+          "policy": {
+            "hurdle_bps": 0.0,
+            "no_trade": true
+          },
+          "qualification": {
+            "checks": {
+              "bootstrap_lower": false,
+              "converged": true,
+              "delayed_entry": false,
+              "effective_trades": true,
+              "fold_concentration": false,
+              "holm_significance": false,
+              "net_expectancy_bps": false,
+              "positive_folds": false,
+              "positive_months": false,
+              "profit_factor": false,
+              "spearman": false,
+              "stress_2x": false,
+              "stress_folds": false
+            },
+            "pass": false
+          }
+        }
+      ]
+    }
+  ],
+  "git_revision": "cd18aea38a0de656c12c9e78d05ac39ff1c25cc2",
+  "holdout": {
+    "reason": "confirmation was not run",
+    "rows_used": 0,
+    "status": "sealed_not_opened"
+  },
+  "qualified_for_confirmation": false,
+  "raw_snapshot_sha256": "f64fd6757d8e8fbfc0cc2615bb6a5c06283a2ca1522c9ae2904f557eca4bffe6",
+  "run_id": "20260822T022245Z-cd18aea3-f64fd675",
+  "schema_version": 1,
+  "selected": {
+    "candidate_id": "g3_1_ridge_4h_flow_s2",
+    "converged": true,
+    "cost_stress_1_5x": {
+      "action_coverage": 0.010265493467413248,
+      "bootstrap_95_lower_bps": -18.480313758791315,
+      "bootstrap_95_upper_bps": 0.033151767479050964,
+      "fees_bps": 5390.0,
+      "funding_bps": -272.10267684744616,
+      "gross_bps": 1047.8487080224709,
+      "long_expectancy_bps": -11.1489940220963,
+      "long_trades": 527,
+      "market_execution_bps": 371.5693729206624,
+      "max_drawdown_bps": 7136.356896399058,
+      "median_net_bps": -7.237642276460092,
+      "monthly_net_bps": {
+        "2024-06": 0.0,
+        "2024-07": 0.0,
+        "2024-08": 0.0,
+        "2024-09": 0.0,
+        "2024-10": 0.0,
+        "2024-11": 0.0,
+        "2024-12": -438.43330154885314,
+        "2025-01": -898.7494788178992,
+        "2025-02": -3648.6405613788847,
+        "2025-03": 0.0,
+        "2025-04": 0.0,
+        "2025-05": 0.0,
+        "2025-06": 0.0,
+        "2025-07": 0.0,
+        "2025-08": 0.0,
+        "2025-09": 0.0,
+        "2025-10": 0.0,
+        "2025-11": 0.0
+      },
+      "net_expectancy_bps": -9.250136070029011,
+      "positive_month_fraction": 0.0,
+      "profit_factor": 0.7906218324674501,
+      "short_expectancy_bps": 74.14137565825932,
+      "short_trades": 12,
+      "total_net_bps": -4985.823341745637,
+      "trades": 539,
+      "win_rate": 0.4582560296846011
+    },
+    "cost_stress_2_0x": {
+      "action_coverage": 0.010265493467413248,
+      "bootstrap_95_lower_bps": -18.89866557448749,
+      "bootstrap_95_upper_bps": -0.2613296575117875,
+      "fees_bps": 5390.0,
+      "funding_bps": -272.10267684744616,
+      "gross_bps": 1047.8487080224709,
+      "long_expectancy_bps": -11.379249995229374,
+      "long_trades": 527,
+      "market_execution_bps": 495.4258305608831,
+      "max_drawdown_bps": 7249.644206545619,
+      "median_net_bps": -7.285235940844322,
+      "monthly_net_bps": {
+        "2024-06": 0.0,
+        "2024-07": 0.0,
+        "2024-08": 0.0,
+        "2024-09": 0.0,
+        "2024-10": 0.0,
+        "2024-11": 0.0,
+        "2024-12": -483.24358164514877,
+        "2025-01": -941.4403499212866,
+        "2025-02": -3684.995867819424,
+        "2025-03": 0.0,
+        "2025-04": 0.0,
+        "2025-05": 0.0,
+        "2025-06": 0.0,
+        "2025-07": 0.0,
+        "2025-08": 0.0,
+        "2025-09": 0.0,
+        "2025-10": 0.0,
+        "2025-11": 0.0
+      },
+      "net_expectancy_bps": -9.479925416300295,
+      "positive_month_fraction": 0.0,
+      "profit_factor": 0.7860279560465914,
+      "short_expectancy_bps": 73.93207900833515,
+      "short_trades": 12,
+      "total_net_bps": -5109.679799385859,
+      "trades": 539,
+      "win_rate": 0.45269016697588127
+    },
+    "cpu_seconds": 3.8014809999999883,
+    "delayed_entry": {
+      "action_coverage": 0.010265493467413248,
+      "bootstrap_95_lower_bps": -19.45121184846901,
+      "bootstrap_95_upper_bps": -0.7041054276350127,
+      "fees_bps": 5390.0,
+      "funding_bps": -272.4198949342517,
+      "gross_bps": 478.8057575601335,
+      "long_expectancy_bps": -11.527727453597045,
+      "long_trades": 527,
+      "market_execution_bps": 238.96122029178255,
+      "max_drawdown_bps": 7483.622098201108,
+      "median_net_bps": -11.91954117063301,
+      "monthly_net_bps": {
+        "2024-06": 0.0,
+        "2024-07": 0.0,
+        "2024-08": 0.0,
+        "2024-09": 0.0,
+        "2024-10": 0.0,
+        "2024-11": 0.0,
+        "2024-12": -769.8320096980186,
+        "2025-01": -882.0727495263968,
+        "2025-02": -3770.670598441486,
+        "2025-03": 0.0,
+        "2025-04": 0.0,
+        "2025-05": 0.0,
+        "2025-06": 0.0,
+        "2025-07": 0.0,
+        "2025-08": 0.0,
+        "2025-09": 0.0,
+        "2025-10": 0.0,
+        "2025-11": 0.0
+      },
+      "net_expectancy_bps": -10.060436656151948,
+      "positive_month_fraction": 0.0,
+      "profit_factor": 0.7757393595988168,
+      "short_expectancy_bps": 54.3780841983118,
+      "short_trades": 12,
+      "total_net_bps": -5422.5753576659,
+      "trades": 539,
+      "win_rate": 0.4452690166975881
+    },
+    "economics": {
+      "action_coverage": 0.010265493467413248,
+      "bootstrap_95_lower_bps": -17.503345256276013,
+      "bootstrap_95_upper_bps": 0.23736371035981316,
+      "fees_bps": 5390.0,
+      "funding_bps": -272.10267684744616,
+      "gross_bps": 1047.8487080224709,
+      "long_expectancy_bps": -10.918738048963224,
+      "long_trades": 527,
+      "market_execution_bps": 247.71291528044156,
+      "max_drawdown_bps": 7023.069586252499,
+      "median_net_bps": -7.054070360292182,
+      "monthly_net_bps": {
+        "2024-06": 0.0,
+        "2024-07": 0.0,
+        "2024-08": 0.0,
+        "2024-09": 0.0,
+        "2024-10": 0.0,
+        "2024-11": 0.0,
+        "2024-12": -393.62302145255694,
+        "2025-01": -856.0586077145114,
+        "2025-02": -3612.2852549383497,
+        "2025-03": 0.0,
+        "2025-04": 0.0,
+        "2025-05": 0.0,
+        "2025-06": 0.0,
+        "2025-07": 0.0,
+        "2025-08": 0.0,
+        "2025-09": 0.0,
+        "2025-10": 0.0,
+        "2025-11": 0.0
+      },
+      "net_expectancy_bps": -9.020346723757731,
+      "positive_month_fraction": 0.0,
+      "profit_factor": 0.7952480475577424,
+      "short_expectancy_bps": 74.3506723081835,
+      "short_trades": 12,
+      "total_net_bps": -4861.966884105417,
+      "trades": 539,
+      "win_rate": 0.4619666048237477
+    },
+    "feature_count": 44,
+    "feature_set": "flow",
+    "folds": [
+      {
+        "calibration": {
+          "intercept": -0.5211466996106723,
+          "slope": 1.3379083681807142
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cpu_seconds": 0.5003079999999969,
+        "delayed_entry": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "economics": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250709018718094,
+          "bootstrap_95_lower_bps": -19.10293397293389,
+          "bootstrap_95_upper_bps": 2.1548692891209993,
+          "fees_bps": 5510.0,
+          "funding_bps": 166.39411664807741,
+          "gross_bps": 863.3009790999135,
+          "long_expectancy_bps": -13.539791677733552,
+          "long_trades": 29,
+          "market_execution_bps": 255.36996973854085,
+          "max_drawdown_bps": 5042.861034336099,
+          "median_net_bps": -16.001191576866997,
+          "monthly_net_bps": {
+            "2024-06": -1330.8412627057335,
+            "2024-07": -3300.5262160075467,
+            "2024-08": -104.30739527726871
+          },
+          "net_expectancy_bps": -8.594691241362161,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7982300039928009,
+          "short_expectancy_bps": -8.319963439341528,
+          "short_trades": 522,
+          "total_net_bps": -4735.674873990551,
+          "trades": 551,
+          "win_rate": 0.40834845735027225
+        },
+        "fold": "2024_summer",
+        "fold_index": 0,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 562.921875,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": true
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": -17.277189161236038,
+            "bootstrap_80_upper_bps": 0.3075412105519401,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": -9.095888946589533,
+            "trades": 185
+          },
+          {
+            "bootstrap_80_lower_bps": -16.07265031239508,
+            "bootstrap_80_upper_bps": 0.5842017862376696,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": -8.623953143092074,
+            "trades": 183
+          },
+          {
+            "bootstrap_80_lower_bps": -11.132687273348624,
+            "bootstrap_80_upper_bps": -0.11971206355643173,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": -6.016053901399072,
+            "trades": 178
+          },
+          {
+            "bootstrap_80_lower_bps": -18.870400107323608,
+            "bootstrap_80_upper_bps": -6.271421114725297,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": -12.840608403256669,
+            "trades": 163
+          },
+          {
+            "bootstrap_80_lower_bps": -15.702517934658378,
+            "bootstrap_80_upper_bps": 3.361956928785481,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": -7.414148232791637,
+            "trades": 137
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.4900737379466818,
+          "balanced_accuracy": 0.331770178185083,
+          "decile_calibration": [
+            {
+              "bias_bps": -85.03792242492693,
+              "bin": 1,
+              "count": 882,
+              "observed_mean_bps": 3.2098354893439516,
+              "predicted_mean_bps": -81.82808693558299
+            },
+            {
+              "bias_bps": -30.753611715179,
+              "bin": 2,
+              "count": 882,
+              "observed_mean_bps": -5.134528441806676,
+              "predicted_mean_bps": -35.88814015698568
+            },
+            {
+              "bias_bps": -20.22882342914856,
+              "bin": 3,
+              "count": 882,
+              "observed_mean_bps": -6.735119275338412,
+              "predicted_mean_bps": -26.96394270448697
+            },
+            {
+              "bias_bps": -15.385837665628914,
+              "bin": 4,
+              "count": 882,
+              "observed_mean_bps": -5.681124761344732,
+              "predicted_mean_bps": -21.066962426973646
+            },
+            {
+              "bias_bps": -18.6214112903047,
+              "bin": 5,
+              "count": 882,
+              "observed_mean_bps": 1.389498642168125,
+              "predicted_mean_bps": -17.231912648136575
+            },
+            {
+              "bias_bps": -15.699921855784158,
+              "bin": 6,
+              "count": 881,
+              "observed_mean_bps": 1.5495096425486539,
+              "predicted_mean_bps": -14.150412213235503
+            },
+            {
+              "bias_bps": -15.40625632144297,
+              "bin": 7,
+              "count": 881,
+              "observed_mean_bps": 4.046669965517503,
+              "predicted_mean_bps": -11.359586355925469
+            },
+            {
+              "bias_bps": -7.812027432600484,
+              "bin": 8,
+              "count": 881,
+              "observed_mean_bps": -0.7847993764212382,
+              "predicted_mean_bps": -8.596826809021723
+            },
+            {
+              "bias_bps": 3.737101047485517,
+              "bin": 9,
+              "count": 881,
+              "observed_mean_bps": -9.101228348845288,
+              "predicted_mean_bps": -5.364127301359771
+            },
+            {
+              "bias_bps": 12.35297229601608,
+              "bin": 10,
+              "count": 881,
+              "observed_mean_bps": -0.9790061003359245,
+              "predicted_mean_bps": 11.373966195680156
+            }
+          ],
+          "mae_bps": 78.94786270630978,
+          "observations": 8815,
+          "r2": -0.23840919057864496,
+          "rmse_bps": 127.34927804953344,
+          "spearman": -0.009647417631386133
+        },
+        "rows": {
+          "calibration": 2863,
+          "evaluation": 8815,
+          "fit": 29214,
+          "threshold": 2959
+        },
+        "seed": 20280728,
+        "wall_seconds": 0.5289170001633465
+      },
+      {
+        "calibration": {
+          "intercept": 0.024680609494795627,
+          "slope": 0.0
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cpu_seconds": 0.47046999999999883,
+        "delayed_entry": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "economics": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250716825324006,
+          "bootstrap_95_lower_bps": -9.054936533606217,
+          "bootstrap_95_upper_bps": 8.24837396584086,
+          "fees_bps": 5450.0,
+          "funding_bps": -313.6713317319863,
+          "gross_bps": 5261.770757524868,
+          "long_expectancy_bps": -1.3615048291939689,
+          "long_trades": 545,
+          "market_execution_bps": 240.1195577035941,
+          "max_drawdown_bps": 2692.880684907098,
+          "median_net_bps": -6.990616382290402,
+          "monthly_net_bps": {
+            "2024-09": -1162.5288617833894,
+            "2024-10": -894.6916135037022,
+            "2024-11": 1315.2003433763803
+          },
+          "net_expectancy_bps": -1.3615048291939689,
+          "positive_month_fraction": 0.3333333333333333,
+          "profit_factor": 0.9606710974252572,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": -742.0201319107131,
+          "trades": 545,
+          "win_rate": 0.45137614678899085
+        },
+        "fold": "2024_autumn",
+        "fold_index": 1,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 549.484375,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": true
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": -24.75587236782094,
+            "bootstrap_80_upper_bps": -3.1761125465176123,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": -14.654078675752729,
+            "trades": 185
+          },
+          {
+            "bootstrap_80_lower_bps": -33.12148283301735,
+            "bootstrap_80_upper_bps": 5.818941836935429,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": -13.776796061643394,
+            "trades": 78
+          },
+          {
+            "bootstrap_80_lower_bps": -28.87853442316853,
+            "bootstrap_80_upper_bps": 51.63886349340383,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": 4.7692929604519865,
+            "trades": 17
+          },
+          {
+            "bootstrap_80_lower_bps": -58.45849789863762,
+            "bootstrap_80_upper_bps": 137.07187349402665,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": 97.96579921549379,
+            "trades": 5
+          },
+          {
+            "bootstrap_80_lower_bps": -121.30673097025584,
+            "bootstrap_80_upper_bps": -121.30673097025584,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": -121.30673097025584,
+            "trades": 1
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.5324005046450281,
+          "balanced_accuracy": 0.3333333333333333,
+          "decile_calibration": [
+            {
+              "bias_bps": 3.750989109842214,
+              "bin": 1,
+              "count": 872,
+              "observed_mean_bps": -2.952528253647951,
+              "predicted_mean_bps": 0.7984608561942631
+            },
+            {
+              "bias_bps": 1.1387978570843624,
+              "bin": 2,
+              "count": 872,
+              "observed_mean_bps": 0.014629472344369355,
+              "predicted_mean_bps": 1.1534273294287318
+            },
+            {
+              "bias_bps": 2.263350593748029,
+              "bin": 3,
+              "count": 872,
+              "observed_mean_bps": -0.8588266779978494,
+              "predicted_mean_bps": 1.4045239157501797
+            },
+            {
+              "bias_bps": -12.342701388193152,
+              "bin": 4,
+              "count": 872,
+              "observed_mean_bps": 13.943145760478071,
+              "predicted_mean_bps": 1.6004443722849186
+            },
+            {
+              "bias_bps": -4.280546674333449,
+              "bin": 5,
+              "count": 872,
+              "observed_mean_bps": 6.083661301174265,
+              "predicted_mean_bps": 1.8031146268408165
+            },
+            {
+              "bias_bps": -9.872064550463802,
+              "bin": 6,
+              "count": 872,
+              "observed_mean_bps": 11.92032456269136,
+              "predicted_mean_bps": 2.0482600122275567
+            },
+            {
+              "bias_bps": -12.869286531453339,
+              "bin": 7,
+              "count": 872,
+              "observed_mean_bps": 15.202432834967306,
+              "predicted_mean_bps": 2.3331463035139675
+            },
+            {
+              "bias_bps": -15.474384661355922,
+              "bin": 8,
+              "count": 872,
+              "observed_mean_bps": 18.206907768621978,
+              "predicted_mean_bps": 2.7325231072660565
+            },
+            {
+              "bias_bps": -1.5889578451456732,
+              "bin": 9,
+              "count": 872,
+              "observed_mean_bps": 4.942950094022331,
+              "predicted_mean_bps": 3.353992248876658
+            },
+            {
+              "bias_bps": -25.304296756555146,
+              "bin": 10,
+              "count": 871,
+              "observed_mean_bps": 30.10801661828423,
+              "predicted_mean_bps": 4.803719861729083
+            }
+          ],
+          "mae_bps": 67.6033546274363,
+          "observations": 8719,
+          "r2": -0.004675167712241857,
+          "rmse_bps": 97.6418016778529,
+          "spearman": 0.07671110254242536
+        },
+        "rows": {
+          "calibration": 2959,
+          "evaluation": 8719,
+          "fit": 37950,
+          "threshold": 2959
+        },
+        "seed": 20280729,
+        "wall_seconds": 0.47333679208531976
+      },
+      {
+        "calibration": {
+          "intercept": 0.06169953838508121,
+          "slope": 0.5885556740661757
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.06250724805752059,
+          "bootstrap_95_lower_bps": -18.329993714099704,
+          "bootstrap_95_upper_bps": -0.7278264303661609,
+          "fees_bps": 5390.0,
+          "funding_bps": -272.10267684744616,
+          "gross_bps": 1047.8487080224709,
+          "long_expectancy_bps": -11.1489940220963,
+          "long_trades": 527,
+          "market_execution_bps": 371.5693729206624,
+          "max_drawdown_bps": 7136.356896399058,
+          "median_net_bps": -7.237642276460092,
+          "monthly_net_bps": {
+            "2024-12": -438.43330154885314,
+            "2025-01": -898.7494788178992,
+            "2025-02": -3648.6405613788847
+          },
+          "net_expectancy_bps": -9.250136070029011,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7906218324674501,
+          "short_expectancy_bps": 74.14137565825932,
+          "short_trades": 12,
+          "total_net_bps": -4985.823341745637,
+          "trades": 539,
+          "win_rate": 0.4582560296846011
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.06250724805752059,
+          "bootstrap_95_lower_bps": -18.43562542033805,
+          "bootstrap_95_upper_bps": -0.4615318447400209,
+          "fees_bps": 5390.0,
+          "funding_bps": -272.10267684744616,
+          "gross_bps": 1047.8487080224709,
+          "long_expectancy_bps": -11.379249995229374,
+          "long_trades": 527,
+          "market_execution_bps": 495.4258305608831,
+          "max_drawdown_bps": 7249.644206545619,
+          "median_net_bps": -7.285235940844322,
+          "monthly_net_bps": {
+            "2024-12": -483.24358164514877,
+            "2025-01": -941.4403499212866,
+            "2025-02": -3684.995867819424
+          },
+          "net_expectancy_bps": -9.479925416300295,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7860279560465914,
+          "short_expectancy_bps": 73.93207900833515,
+          "short_trades": 12,
+          "total_net_bps": -5109.679799385859,
+          "trades": 539,
+          "win_rate": 0.45269016697588127
+        },
+        "cpu_seconds": 0.6945479999999975,
+        "delayed_entry": {
+          "action_coverage": 0.06250724805752059,
+          "bootstrap_95_lower_bps": -18.77566492602749,
+          "bootstrap_95_upper_bps": -0.5363860214633077,
+          "fees_bps": 5390.0,
+          "funding_bps": -272.4198949342517,
+          "gross_bps": 478.8057575601335,
+          "long_expectancy_bps": -11.527727453597045,
+          "long_trades": 527,
+          "market_execution_bps": 238.96122029178255,
+          "max_drawdown_bps": 7483.622098201108,
+          "median_net_bps": -11.91954117063301,
+          "monthly_net_bps": {
+            "2024-12": -769.8320096980186,
+            "2025-01": -882.0727495263968,
+            "2025-02": -3770.670598441486
+          },
+          "net_expectancy_bps": -10.060436656151948,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7757393595988168,
+          "short_expectancy_bps": 54.3780841983118,
+          "short_trades": 12,
+          "total_net_bps": -5422.5753576659,
+          "trades": 539,
+          "win_rate": 0.4452690166975881
+        },
+        "economics": {
+          "action_coverage": 0.06250724805752059,
+          "bootstrap_95_lower_bps": -17.800705330695106,
+          "bootstrap_95_upper_bps": -0.4118049752112821,
+          "fees_bps": 5390.0,
+          "funding_bps": -272.10267684744616,
+          "gross_bps": 1047.8487080224709,
+          "long_expectancy_bps": -10.918738048963224,
+          "long_trades": 527,
+          "market_execution_bps": 247.71291528044156,
+          "max_drawdown_bps": 7023.069586252499,
+          "median_net_bps": -7.054070360292182,
+          "monthly_net_bps": {
+            "2024-12": -393.62302145255694,
+            "2025-01": -856.0586077145114,
+            "2025-02": -3612.2852549383497
+          },
+          "net_expectancy_bps": -9.020346723757731,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7952480475577424,
+          "short_expectancy_bps": 74.3506723081835,
+          "short_trades": 12,
+          "total_net_bps": -4861.966884105417,
+          "trades": 539,
+          "win_rate": 0.4619666048237477
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250724805752059,
+          "bootstrap_95_lower_bps": -17.10144058337049,
+          "bootstrap_95_upper_bps": -0.7605642932312143,
+          "fees_bps": 5390.0,
+          "funding_bps": -272.10267684744616,
+          "gross_bps": 1047.8487080224709,
+          "long_expectancy_bps": -10.918738048963224,
+          "long_trades": 527,
+          "market_execution_bps": 247.71291528044156,
+          "max_drawdown_bps": 7023.069586252499,
+          "median_net_bps": -7.054070360292182,
+          "monthly_net_bps": {
+            "2024-12": -393.62302145255694,
+            "2025-01": -856.0586077145114,
+            "2025-02": -3612.2852549383497
+          },
+          "net_expectancy_bps": -9.020346723757731,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.7952480475577424,
+          "short_expectancy_bps": 74.3506723081835,
+          "short_trades": 12,
+          "total_net_bps": -4861.966884105417,
+          "trades": 539,
+          "win_rate": 0.4619666048237477
+        },
+        "fold": "2024_winter",
+        "fold_index": 2,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 556.890625,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": false
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": 0.268176122508342,
+            "bootstrap_80_upper_bps": 24.360715500610734,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": 12.311630972478584,
+            "trades": 179
+          },
+          {
+            "bootstrap_80_lower_bps": -9.34981271301563,
+            "bootstrap_80_upper_bps": 18.14220470847686,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": 4.421549481110002,
+            "trades": 175
+          },
+          {
+            "bootstrap_80_lower_bps": -0.19445285436182375,
+            "bootstrap_80_upper_bps": 23.209364259214425,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": 11.995465244357774,
+            "trades": 156
+          },
+          {
+            "bootstrap_80_lower_bps": -2.4685161009778653,
+            "bootstrap_80_upper_bps": 34.19232576154754,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": 17.329962233110102,
+            "trades": 106
+          },
+          {
+            "bootstrap_80_lower_bps": -11.62477296096147,
+            "bootstrap_80_upper_bps": 56.141084038869494,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": 28.53599741639529,
+            "trades": 58
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.5114229386524412,
+          "balanced_accuracy": 0.3350594410493528,
+          "decile_calibration": [
+            {
+              "bias_bps": 14.009636594821261,
+              "bin": 1,
+              "count": 863,
+              "observed_mean_bps": -13.766343646623463,
+              "predicted_mean_bps": 0.2432929481977979
+            },
+            {
+              "bias_bps": 4.969910555379816,
+              "bin": 2,
+              "count": 863,
+              "observed_mean_bps": -1.6030326126731955,
+              "predicted_mean_bps": 3.366877942706621
+            },
+            {
+              "bias_bps": 4.054703373493348,
+              "bin": 3,
+              "count": 863,
+              "observed_mean_bps": 0.480424340466254,
+              "predicted_mean_bps": 4.535127713959602
+            },
+            {
+              "bias_bps": 2.213824645099336,
+              "bin": 4,
+              "count": 862,
+              "observed_mean_bps": 3.4037715421918473,
+              "predicted_mean_bps": 5.617596187291183
+            },
+            {
+              "bias_bps": 9.082276908730085,
+              "bin": 5,
+              "count": 862,
+              "observed_mean_bps": -2.3559535711102435,
+              "predicted_mean_bps": 6.726323337619841
+            },
+            {
+              "bias_bps": 7.569798882115415,
+              "bin": 6,
+              "count": 862,
+              "observed_mean_bps": 0.4417352899603195,
+              "predicted_mean_bps": 8.011534172075734
+            },
+            {
+              "bias_bps": 13.368509955420903,
+              "bin": 7,
+              "count": 862,
+              "observed_mean_bps": -3.5875924909813577,
+              "predicted_mean_bps": 9.780917464439545
+            },
+            {
+              "bias_bps": 26.370828855201466,
+              "bin": 8,
+              "count": 862,
+              "observed_mean_bps": -14.031053696955157,
+              "predicted_mean_bps": 12.33977515824631
+            },
+            {
+              "bias_bps": 26.315105115285157,
+              "bin": 9,
+              "count": 862,
+              "observed_mean_bps": -9.464389708788376,
+              "predicted_mean_bps": 16.850715406496782
+            },
+            {
+              "bias_bps": 13.168132138104092,
+              "bin": 10,
+              "count": 862,
+              "observed_mean_bps": 21.966501626869494,
+              "predicted_mean_bps": 35.134633764973586
+            }
+          ],
+          "mae_bps": 76.05408524661696,
+          "observations": 8623,
+          "r2": -0.010187551929930594,
+          "rmse_bps": 114.57404112510555,
+          "spearman": 0.02163248411370534
+        },
+        "rows": {
+          "calibration": 2959,
+          "evaluation": 8623,
+          "fit": 46782,
+          "threshold": 2863
+        },
+        "seed": 20280730,
+        "wall_seconds": 0.713578708935529
+      },
+      {
+        "calibration": {
+          "intercept": 0.02241820165158631,
+          "slope": 0.17327301496053027
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cpu_seconds": 0.6831430000000012,
+        "delayed_entry": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "economics": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250709018718094,
+          "bootstrap_95_lower_bps": -13.918705520729148,
+          "bootstrap_95_upper_bps": -0.6966084580075301,
+          "fees_bps": 5510.0,
+          "funding_bps": -162.410711852917,
+          "gross_bps": 2198.7507030744437,
+          "long_expectancy_bps": -6.462498590174385,
+          "long_trades": 550,
+          "market_execution_bps": 222.2376849278103,
+          "max_drawdown_bps": 4739.307980589576,
+          "median_net_bps": -12.206647680392855,
+          "monthly_net_bps": {
+            "2025-03": -2100.487515843623,
+            "2025-04": -711.9929307865978,
+            "2025-05": -883.4172470760614
+          },
+          "net_expectancy_bps": -6.707618318886179,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.8298543295514209,
+          "short_expectancy_bps": -141.5234691103718,
+          "short_trades": 1,
+          "total_net_bps": -3695.8976937062844,
+          "trades": 551,
+          "win_rate": 0.43920145190562615
+        },
+        "fold": "2025_spring",
+        "fold_index": 3,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 551.609375,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": true
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": -29.95559049756241,
+            "bootstrap_80_upper_bps": -14.190644279775109,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": -21.608279260853887,
+            "trades": 167
+          },
+          {
+            "bootstrap_80_lower_bps": -37.227756285484276,
+            "bootstrap_80_upper_bps": -8.927476697244446,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": -21.822954300331585,
+            "trades": 101
+          },
+          {
+            "bootstrap_80_lower_bps": -49.39010276518698,
+            "bootstrap_80_upper_bps": 8.611514291408724,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": -17.003071526821245,
+            "trades": 36
+          },
+          {
+            "bootstrap_80_lower_bps": -20.20071186601247,
+            "bootstrap_80_upper_bps": 58.386622139710155,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": 18.457971816883052,
+            "trades": 20
+          },
+          {
+            "bootstrap_80_lower_bps": -2.3649470048187538,
+            "bootstrap_80_upper_bps": 75.72085717488527,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": 20.977862813765462,
+            "trades": 9
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.5188882586500284,
+          "balanced_accuracy": 0.334945875063152,
+          "decile_calibration": [
+            {
+              "bias_bps": 4.982199760472329,
+              "bin": 1,
+              "count": 882,
+              "observed_mean_bps": -4.160053774977255,
+              "predicted_mean_bps": 0.8221459854950742
+            },
+            {
+              "bias_bps": 0.045985955309114646,
+              "bin": 2,
+              "count": 882,
+              "observed_mean_bps": 1.377143236093882,
+              "predicted_mean_bps": 1.4231291914029967
+            },
+            {
+              "bias_bps": 1.4807782539958847,
+              "bin": 3,
+              "count": 882,
+              "observed_mean_bps": 0.28479096310907753,
+              "predicted_mean_bps": 1.7655692171049622
+            },
+            {
+              "bias_bps": -9.782195579281503,
+              "bin": 4,
+              "count": 882,
+              "observed_mean_bps": 11.854222217036126,
+              "predicted_mean_bps": 2.0720266377546226
+            },
+            {
+              "bias_bps": 4.079509424411112,
+              "bin": 5,
+              "count": 882,
+              "observed_mean_bps": -1.692517978905232,
+              "predicted_mean_bps": 2.3869914455058803
+            },
+            {
+              "bias_bps": -0.9685795433063222,
+              "bin": 6,
+              "count": 881,
+              "observed_mean_bps": 3.734316089506944,
+              "predicted_mean_bps": 2.7657365462006216
+            },
+            {
+              "bias_bps": -4.059514040941387,
+              "bin": 7,
+              "count": 881,
+              "observed_mean_bps": 7.297677660230959,
+              "predicted_mean_bps": 3.238163619289572
+            },
+            {
+              "bias_bps": -5.292796996124216,
+              "bin": 8,
+              "count": 881,
+              "observed_mean_bps": 9.227107000256783,
+              "predicted_mean_bps": 3.934310004132567
+            },
+            {
+              "bias_bps": 4.309230105690118,
+              "bin": 9,
+              "count": 881,
+              "observed_mean_bps": 0.928264744290417,
+              "predicted_mean_bps": 5.237494849980536
+            },
+            {
+              "bias_bps": -4.104139867833419,
+              "bin": 10,
+              "count": 881,
+              "observed_mean_bps": 15.610205543069174,
+              "predicted_mean_bps": 11.506065675235755
+            }
+          ],
+          "mae_bps": 70.4627177100923,
+          "observations": 8815,
+          "r2": 0.0004812659133519581,
+          "rmse_bps": 107.28918550299534,
+          "spearman": 0.050273356316078675
+        },
+        "rows": {
+          "calibration": 2959,
+          "evaluation": 8815,
+          "fit": 55614,
+          "threshold": 2671
+        },
+        "seed": 20280731,
+        "wall_seconds": 0.6708881249651313
+      },
+      {
+        "calibration": {
+          "intercept": -0.0242405625721394,
+          "slope": 1.8808819920477235
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cpu_seconds": 0.7198009999999968,
+        "delayed_entry": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "economics": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250709018718094,
+          "bootstrap_95_lower_bps": -14.165779557441907,
+          "bootstrap_95_upper_bps": -1.5295909503630545,
+          "fees_bps": 5510.0,
+          "funding_bps": 38.660095212900124,
+          "gross_bps": 1086.0974207263916,
+          "long_expectancy_bps": -7.726484052486137,
+          "long_trades": 293,
+          "market_execution_bps": 97.70147792420978,
+          "max_drawdown_bps": 5452.41820835451,
+          "median_net_bps": -9.482634973760435,
+          "monthly_net_bps": {
+            "2025-06": 82.59327626201257,
+            "2025-07": -1354.0682872529671,
+            "2025-08": -3211.4689509939626
+          },
+          "net_expectancy_bps": -8.136014450063373,
+          "positive_month_fraction": 0.3333333333333333,
+          "profit_factor": 0.7185067942820388,
+          "short_expectancy_bps": -8.60110129692434,
+          "short_trades": 258,
+          "total_net_bps": -4482.943961984918,
+          "trades": 551,
+          "win_rate": 0.426497277676951
+        },
+        "fold": "2025_summer",
+        "fold_index": 4,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 630.359375,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": true
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": -20.36378183616719,
+            "bootstrap_80_upper_bps": -9.812281216588493,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": -15.491235062464014,
+            "trades": 185
+          },
+          {
+            "bootstrap_80_lower_bps": -14.942025582260438,
+            "bootstrap_80_upper_bps": 3.9367379458793015,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": -5.434024416035461,
+            "trades": 176
+          },
+          {
+            "bootstrap_80_lower_bps": -17.050665613785903,
+            "bootstrap_80_upper_bps": 0.11725056717935203,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": -7.764658942009755,
+            "trades": 148
+          },
+          {
+            "bootstrap_80_lower_bps": -16.14636638635959,
+            "bootstrap_80_upper_bps": 3.8553841080712945,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": -5.261449591780022,
+            "trades": 101
+          },
+          {
+            "bootstrap_80_lower_bps": -19.811914793827377,
+            "bootstrap_80_upper_bps": 0.6096130571469496,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": -8.515045477186202,
+            "trades": 59
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.5117413499716392,
+          "balanced_accuracy": 0.3406559756729181,
+          "decile_calibration": [
+            {
+              "bias_bps": -9.261878947179973,
+              "bin": 1,
+              "count": 882,
+              "observed_mean_bps": -5.4433776673894725,
+              "predicted_mean_bps": -14.705256614569446
+            },
+            {
+              "bias_bps": -5.426806487630485,
+              "bin": 2,
+              "count": 882,
+              "observed_mean_bps": -0.07516760939337547,
+              "predicted_mean_bps": -5.501974097023861
+            },
+            {
+              "bias_bps": -5.9846951872456895,
+              "bin": 3,
+              "count": 882,
+              "observed_mean_bps": 3.3140714828217557,
+              "predicted_mean_bps": -2.6706237044239343
+            },
+            {
+              "bias_bps": -1.9401430828591137,
+              "bin": 4,
+              "count": 882,
+              "observed_mean_bps": 1.1765128301864998,
+              "predicted_mean_bps": -0.7636302526726141
+            },
+            {
+              "bias_bps": -2.256352553522287,
+              "bin": 5,
+              "count": 882,
+              "observed_mean_bps": 2.922397802749635,
+              "predicted_mean_bps": 0.6660452492273481
+            },
+            {
+              "bias_bps": 1.5451539628906807,
+              "bin": 6,
+              "count": 881,
+              "observed_mean_bps": 0.37509000584280305,
+              "predicted_mean_bps": 1.9202439687334838
+            },
+            {
+              "bias_bps": 8.776522477512517,
+              "bin": 7,
+              "count": 881,
+              "observed_mean_bps": -5.434555515773954,
+              "predicted_mean_bps": 3.3419669617385623
+            },
+            {
+              "bias_bps": 4.900436832848704,
+              "bin": 8,
+              "count": 881,
+              "observed_mean_bps": 0.17313762832952606,
+              "predicted_mean_bps": 5.07357446117823
+            },
+            {
+              "bias_bps": 2.8113899742626787,
+              "bin": 9,
+              "count": 881,
+              "observed_mean_bps": 4.859135342282865,
+              "predicted_mean_bps": 7.670525316545544
+            },
+            {
+              "bias_bps": 9.143928113733637,
+              "bin": 10,
+              "count": 881,
+              "observed_mean_bps": 8.269006028628436,
+              "predicted_mean_bps": 17.412934142362072
+            }
+          ],
+          "mae_bps": 47.1124135376814,
+          "observations": 8815,
+          "r2": -0.008039691448846309,
+          "rmse_bps": 67.8593424017475,
+          "spearman": 0.049596650909395905
+        },
+        "rows": {
+          "calibration": 2863,
+          "evaluation": 8815,
+          "fit": 64254,
+          "threshold": 2959
+        },
+        "seed": 20280732,
+        "wall_seconds": 0.7847975827753544
+      },
+      {
+        "calibration": {
+          "intercept": 0.0430962099450513,
+          "slope": 0.8507016232364123
+        },
+        "candidate_id": "g3_1_ridge_4h_flow_s2",
+        "convergence_warnings": [],
+        "cost_stress_1_5x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cost_stress_2_0x": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "cpu_seconds": 0.7332109999999972,
+        "delayed_entry": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "economics": {
+          "action_coverage": 0.0,
+          "bootstrap_95_lower_bps": null,
+          "bootstrap_95_upper_bps": null,
+          "fees_bps": 0.0,
+          "funding_bps": 0.0,
+          "gross_bps": 0.0,
+          "long_expectancy_bps": null,
+          "long_trades": 0,
+          "market_execution_bps": 0.0,
+          "max_drawdown_bps": 0.0,
+          "median_net_bps": null,
+          "monthly_net_bps": {},
+          "net_expectancy_bps": null,
+          "positive_month_fraction": 0.0,
+          "profit_factor": null,
+          "short_expectancy_bps": null,
+          "short_trades": 0,
+          "total_net_bps": 0.0,
+          "trades": 0,
+          "win_rate": null
+        },
+        "fixed_zero_hurdle": {
+          "action_coverage": 0.06250716825324006,
+          "bootstrap_95_lower_bps": -18.004780106631625,
+          "bootstrap_95_upper_bps": -5.042230067190478,
+          "fees_bps": 5450.0,
+          "funding_bps": -139.26302121917067,
+          "gross_bps": -553.4609202895948,
+          "long_expectancy_bps": -12.699493255992675,
+          "long_trades": 503,
+          "market_execution_bps": 230.78553969731166,
+          "max_drawdown_bps": 7061.407542954068,
+          "median_net_bps": -7.500208259760209,
+          "monthly_net_bps": {
+            "2025-09": -1225.7512404960135,
+            "2025-10": -1621.726915905791,
+            "2025-11": -3526.0313248042717
+          },
+          "net_expectancy_bps": -11.694512809552435,
+          "positive_month_fraction": 0.0,
+          "profit_factor": 0.6829676624864142,
+          "short_expectancy_bps": 0.3413244418628113,
+          "short_trades": 42,
+          "total_net_bps": -6373.509481206077,
+          "trades": 545,
+          "win_rate": 0.43486238532110094
+        },
+        "fold": "2025_autumn",
+        "fold_index": 5,
+        "hyperparameters": {
+          "alpha": 1.0,
+          "solver": "lsqr"
+        },
+        "peak_rss_mb": 551.71875,
+        "policy": {
+          "hurdle_bps": 0.0,
+          "no_trade": true
+        },
+        "policy_grid": [
+          {
+            "bootstrap_80_lower_bps": -19.400280452370897,
+            "bootstrap_80_upper_bps": -6.969206225149391,
+            "hurdle_bps": 0.0,
+            "net_expectancy_bps": -12.743770009514412,
+            "trades": 185
+          },
+          {
+            "bootstrap_80_lower_bps": -14.12256693910066,
+            "bootstrap_80_upper_bps": -0.2718846314054981,
+            "hurdle_bps": 3.0,
+            "net_expectancy_bps": -7.2226107055142705,
+            "trades": 158
+          },
+          {
+            "bootstrap_80_lower_bps": -17.77580347799966,
+            "bootstrap_80_upper_bps": -2.3816885534909997,
+            "hurdle_bps": 6.0,
+            "net_expectancy_bps": -10.584270507599761,
+            "trades": 97
+          },
+          {
+            "bootstrap_80_lower_bps": -17.05637310665066,
+            "bootstrap_80_upper_bps": 6.80484505501327,
+            "hurdle_bps": 10.0,
+            "net_expectancy_bps": -6.12408645814269,
+            "trades": 37
+          },
+          {
+            "bootstrap_80_lower_bps": -41.15029410454365,
+            "bootstrap_80_upper_bps": 6.266291108057758,
+            "hurdle_bps": 15.0,
+            "net_expectancy_bps": -23.377206787855627,
+            "trades": 15
+          }
+        ],
+        "predictive": {
+          "accuracy": 0.49787819704094505,
+          "balanced_accuracy": 0.33204153232205674,
+          "decile_calibration": [
+            {
+              "bias_bps": 6.370134418082532,
+              "bin": 1,
+              "count": 872,
+              "observed_mean_bps": -7.82996269077699,
+              "predicted_mean_bps": -1.459828272694458
+            },
+            {
+              "bias_bps": -0.2506087563876762,
+              "bin": 2,
+              "count": 872,
+              "observed_mean_bps": 1.5461882806020881,
+              "predicted_mean_bps": 1.295579524214412
+            },
+            {
+              "bias_bps": -1.0528450763292652,
+              "bin": 3,
+              "count": 872,
+              "observed_mean_bps": 3.2890657662301157,
+              "predicted_mean_bps": 2.2362206899008505
+            },
+            {
+              "bias_bps": -4.214989557940004,
+              "bin": 4,
+              "count": 872,
+              "observed_mean_bps": 7.294434071883821,
+              "predicted_mean_bps": 3.079444513943818
+            },
+            {
+              "bias_bps": 3.1695064278539045,
+              "bin": 5,
+              "count": 872,
+              "observed_mean_bps": 0.87405828493391,
+              "predicted_mean_bps": 4.0435647127878145
+            },
+            {
+              "bias_bps": 3.384535239063257,
+              "bin": 6,
+              "count": 872,
+              "observed_mean_bps": 1.7354380021400742,
+              "predicted_mean_bps": 5.119973241203331
+            },
+            {
+              "bias_bps": 6.003845447050795,
+              "bin": 7,
+              "count": 872,
+              "observed_mean_bps": 0.4197005125218649,
+              "predicted_mean_bps": 6.423545959572659
+            },
+            {
+              "bias_bps": 14.074108281573244,
+              "bin": 8,
+              "count": 872,
+              "observed_mean_bps": -5.8087185867511035,
+              "predicted_mean_bps": 8.26538969482214
+            },
+            {
+              "bias_bps": 25.484212308948003,
+              "bin": 9,
+              "count": 872,
+              "observed_mean_bps": -13.875048021432873,
+              "predicted_mean_bps": 11.609164287515128
+            },
+            {
+              "bias_bps": 40.712060261488325,
+              "bin": 10,
+              "count": 871,
+              "observed_mean_bps": -14.5876850414599,
+              "predicted_mean_bps": 26.124375220028426
+            }
+          ],
+          "mae_bps": 61.047862978221424,
+          "observations": 8719,
+          "r2": -0.02686825402166626,
+          "rmse_bps": 90.41304552760442,
+          "spearman": -0.04031754856727579
+        },
+        "rows": {
+          "calibration": 2959,
+          "evaluation": 8719,
+          "fit": 72990,
+          "threshold": 2959
+        },
+        "seed": 20280733,
+        "wall_seconds": 0.8255585832521319
+      }
+    ],
+    "generation": 3,
+    "holm_adjusted_p_value": 1.0,
+    "horizon": "4h",
+    "horizon_bars": 16,
+    "model": "ridge",
+    "parameter_variant": 0,
+    "parent_id": "g2_1_ridge_4h_flow_v0",
+    "peak_rss_mb": 630.359375,
+    "positive_fold_pnl_fraction": 1.0,
+    "positive_folds": 0,
+    "positive_stress_folds": 0,
+    "predictive": {
+      "accuracy": 0.510379766121967,
+      "balanced_accuracy": 0.33628997747428296,
+      "decile_calibration": [
+        {
+          "bias_bps": -31.34278761226435,
+          "bin": 1,
+          "count": 5251,
+          "observed_mean_bps": -2.2260701329625725,
+          "predicted_mean_bps": -33.56885774522692
+        },
+        {
+          "bias_bps": -3.9431062286814944,
+          "bin": 2,
+          "count": 5251,
+          "observed_mean_bps": -3.9126257855748436,
+          "predicted_mean_bps": -7.855732014256338
+        },
+        {
+          "bias_bps": 1.5823443867858054,
+          "bin": 3,
+          "count": 5251,
+          "observed_mean_bps": -1.6596380643357886,
+          "predicted_mean_bps": -0.07729367754998336
+        },
+        {
+          "bias_bps": -1.0940060603339092,
+          "bin": 4,
+          "count": 5251,
+          "observed_mean_bps": 2.5178954714033037,
+          "predicted_mean_bps": 1.4238894110693945
+        },
+        {
+          "bias_bps": -4.442110146320897,
+          "bin": 5,
+          "count": 5251,
+          "observed_mean_bps": 6.480339407511336,
+          "predicted_mean_bps": 2.0382292611904385
+        },
+        {
+          "bias_bps": -2.9252387212885558,
+          "bin": 6,
+          "count": 5251,
+          "observed_mean_bps": 5.690878173791915,
+          "predicted_mean_bps": 2.765639452503359
+        },
+        {
+          "bias_bps": -4.010132886204519,
+          "bin": 7,
+          "count": 5250,
+          "observed_mean_bps": 7.831990929597038,
+          "predicted_mean_bps": 3.8218580433925187
+        },
+        {
+          "bias_bps": 4.07991665104582,
+          "bin": 8,
+          "count": 5250,
+          "observed_mean_bps": 1.396334568250458,
+          "predicted_mean_bps": 5.476251219296278
+        },
+        {
+          "bias_bps": 8.893456031684893,
+          "bin": 9,
+          "count": 5250,
+          "observed_mean_bps": -0.5065874225444719,
+          "predicted_mean_bps": 8.386868609140421
+        },
+        {
+          "bias_bps": 22.6959122061608,
+          "bin": 10,
+          "count": 5250,
+          "observed_mean_bps": -0.9844284217866413,
+          "predicted_mean_bps": 21.711483784374156
+        }
+      ],
+      "mae_bps": 66.8471133792434,
+      "observations": 52506,
+      "r2": -0.0577746803650232,
+      "rmse_bps": 102.59065505031754,
+      "spearman": 0.012948987178993631,
+      "spearman_95_lower": 0.004395785780594147,
+      "spearman_95_upper": 0.021500294054691078
+    },
+    "qualification": {
+      "checks": {
+        "bootstrap_lower": false,
+        "converged": true,
+        "delayed_entry": false,
+        "effective_trades": true,
+        "fold_concentration": false,
+        "holm_significance": false,
+        "net_expectancy_bps": false,
+        "positive_folds": false,
+        "positive_months": false,
+        "profit_factor": false,
+        "spearman": false,
+        "stress_2x": false,
+        "stress_folds": false
+      },
+      "pass": false
+    },
+    "raw_positive_p_value": 0.9812368161581912,
+    "rows": 52506,
+    "seed_offset": 20000,
+    "status": "predictive_only",
+    "target_variant": "vol_scaled",
+    "wall_seconds": 3.997076792176813
+  },
+  "verdict": "no_edge_qualified"
+}

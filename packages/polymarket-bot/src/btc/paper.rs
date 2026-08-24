@@ -533,8 +533,12 @@ impl PaperVenue {
             None => return paper_reject(base, "missing_dynamic_fee_rate"),
         };
 
-        let (checkpoint, exit_book_ready) = {
+        let (book_checked_at, checkpoint, exit_book_ready) = {
             let registry = self.registry.read().await;
+            // Establish the causality boundary after acquiring the registry snapshot. Otherwise
+            // an update received while this task waits for the read lock can appear to come from
+            // the future relative to the earlier simulated arrival timestamp.
+            let book_checked_at = Utc::now();
             let exit_book_ready = !self.execution.require_exit_book.unwrap_or(false)
                 || registry
                     .book_readiness()
@@ -545,14 +549,18 @@ impl PaperVenue {
                     .any(|book| {
                         book.bootstrapped
                             && book.integrity_status == FeedIntegrityStatus::Ok
-                            && book
-                                .source_timestamp
-                                .is_some_and(|timestamp| timestamp - arrival_at <= max_book_age)
+                            && book.source_timestamp.is_some_and(|timestamp| {
+                                timestamp - book_checked_at <= max_book_age
+                            })
                             && book
                                 .received_at
-                                .is_some_and(|timestamp| timestamp <= arrival_at)
+                                .is_some_and(|timestamp| timestamp <= book_checked_at)
                     });
-            (registry.checkpoint(&request.token_id), exit_book_ready)
+            (
+                book_checked_at,
+                registry.checkpoint(&request.token_id),
+                exit_book_ready,
+            )
         };
         if !exit_book_ready {
             return paper_reject(base, "missing_or_unready_exit_orderbook");
@@ -573,13 +581,13 @@ impl PaperVenue {
         }
         // Local receipt time is the causality boundary. Exchange source time independently guards
         // against delayed market data while retaining the existing clock-lead behavior.
-        if checkpoint.received_at > arrival_at
-            || checkpoint.source_timestamp - arrival_at > max_book_age
+        if checkpoint.received_at > book_checked_at
+            || checkpoint.source_timestamp - book_checked_at > max_book_age
         {
             return paper_reject_with_checkpoint(base, "future_arrival_orderbook", &checkpoint);
         }
-        let source_age = arrival_at - checkpoint.source_timestamp;
-        let receive_age = arrival_at - checkpoint.received_at;
+        let source_age = book_checked_at - checkpoint.source_timestamp;
+        let receive_age = book_checked_at - checkpoint.received_at;
         let Some(depth) =
             available_ask_depth(&checkpoint.asks, request.price, visible_depth_haircut)
         else {
@@ -1395,7 +1403,6 @@ mod tests {
                 asks,
                 source_timestamp: source_at,
                 source_hash: Some("book-hash".to_string()),
-                raw_payload: serde_json::json!({}),
             },
             received_at,
         );
@@ -2202,6 +2209,48 @@ mod tests {
             order.request.metadata["paper_execution"]["arrival_source_age_ms"]
                 .as_i64()
                 .is_some_and(|age| age < 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_snapshot_after_nominal_arrival_is_not_treated_as_future() {
+        let received_at = Utc::now() - ChronoDuration::milliseconds(10);
+        let nominal_arrival_at = received_at - ChronoDuration::milliseconds(10);
+        let venue = venue(
+            registry_with_book_times(
+                received_at,
+                received_at,
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Decimal::ONE,
+        );
+        let request = request(dec!(3), dec!(0.40));
+
+        let execution = venue
+            .execute_at_arrival(
+                "paper-registry-snapshot-after-arrival",
+                &request,
+                None,
+                None,
+                nominal_arrival_at,
+                nominal_arrival_at,
+                dec!(100),
+                Duration::ZERO,
+                Decimal::ONE,
+                ChronoDuration::hours(24),
+                true,
+                None,
+            )
+            .await;
+
+        assert_eq!(execution.state, OrderState::Filled);
+        assert!(
+            execution.metadata["paper_execution"]["arrival_receive_age_ms"]
+                .as_i64()
+                .is_some_and(|age| age >= 0)
         );
     }
 

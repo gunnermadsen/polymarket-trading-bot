@@ -1,10 +1,10 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 
 use super::types::{
-    BinanceFiveMinuteSummary, BinanceOneSecondKline, BinanceOneSecondWindow,
+    BinanceFiveMinuteSummary, BinanceOneSecondKline, BinanceOneSecondWindow, OrderbookCheckpoint,
     BINANCE_PREWINDOW_SUMMARY_CAPACITY,
 };
 
@@ -518,12 +518,33 @@ pub fn directional_external_feature_requirements(
                 open_interest: true,
             }
         }
+        "btc-5m-payoff-aware-q5-features-v1" => DirectionalExternalFeatureRequirements {
+            oracle: true,
+            ..DirectionalExternalFeatureRequirements::default()
+        },
+        "btc-5m-payoff-aware-middle-features-v1" => DirectionalExternalFeatureRequirements {
+            oracle: true,
+            chainlink_candles: true,
+            ..DirectionalExternalFeatureRequirements::default()
+        },
+        "btc-5m-payoff-aware-fair-value-features-v1" => DirectionalExternalFeatureRequirements {
+            oracle: true,
+            chainlink_candles: true,
+            ..DirectionalExternalFeatureRequirements::default()
+        },
+        "btc-5m-payoff-aware-middle-oi-features-v1" => DirectionalExternalFeatureRequirements {
+            oracle: true,
+            chainlink_candles: true,
+            open_interest: true,
+            ..DirectionalExternalFeatureRequirements::default()
+        },
         _ => DirectionalExternalFeatureRequirements::default(),
     }
 }
 
 pub fn directional_schema_requires_opening_boundary(schema_version: &str) -> bool {
     schema_version == BTC_DIRECTIONAL_BOUNDARY_FEATURE_SCHEMA_VERSION
+        || schema_version.starts_with("btc-5m-payoff-aware-")
         || directional_external_feature_requirements(schema_version).oracle
 }
 
@@ -2079,6 +2100,496 @@ fn derive_asymmetric_early_core_features(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn build_payoff_aware_feature_values(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    opening_boundary: Decimal,
+    external: &DirectionalExternalFeatureInputs<'_>,
+    up_book: &OrderbookCheckpoint,
+    down_book: &OrderbookCheckpoint,
+    fee_rate: f64,
+    feature_names: &[String],
+) -> Result<Vec<f64>, DirectionalFeatureError> {
+    let seconds_elapsed = (feature_as_of - window_start).num_seconds();
+    if !(15..=240).contains(&seconds_elapsed) {
+        return Err(DirectionalFeatureError::InvalidTiming {
+            feature_as_of,
+            seconds_elapsed,
+            reason: if seconds_elapsed < 15 {
+                DirectionalFeatureTimingReason::BeforeFirstCandidate
+            } else {
+                DirectionalFeatureTimingReason::AfterLastCandidate
+            },
+        });
+    }
+    let required_start = window_start - chrono::Duration::seconds(1);
+    let required_end = feature_as_of - chrono::Duration::seconds(1);
+    let completed = collect_required_candles(window, required_start, required_end)?;
+    let candles = completed
+        .into_iter()
+        .map(NumericCandle::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    let end = candles.len() - 1;
+    let logs = candles
+        .iter()
+        .map(|candle| candle.close.ln())
+        .collect::<Vec<_>>();
+    let returns = (1..candles.len())
+        .map(|index| logs[index] - logs[index - 1])
+        .collect::<Vec<_>>();
+    let boundary = opening_boundary
+        .to_f64()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .ok_or(DirectionalFeatureError::InvalidOpeningBoundary)?;
+    let close = candles[end].close;
+    let path = (logs[end] - logs[0]) * BPS;
+    let boundary_gap = (close / boundary).ln() * BPS;
+    let window_basis = (candles[0].close / boundary).ln() * BPS;
+    let mut values = HashMap::<String, f64>::new();
+    let mut put = |name: &str, value: f64| {
+        values.insert(name.to_string(), value);
+    };
+    put("seconds_elapsed_scaled", seconds_elapsed as f64 / 300.0);
+    put(
+        "seconds_remaining_scaled",
+        (300 - seconds_elapsed) as f64 / 300.0,
+    );
+    put("btc_path_from_window_open_bps", path);
+    put("btc_cross_venue_boundary_gap_bps", boundary_gap);
+    put("btc_window_open_cross_venue_basis_bps", window_basis);
+    let horizon = |seconds: usize| early_horizon_return(&logs, end, seconds).unwrap_or(f64::NAN);
+    for seconds in [1, 5, 15, 30, 60, 90, 120, 180] {
+        put(&format!("btc_return_{seconds}s_bps"), horizon(seconds));
+    }
+    let volatility = |seconds: usize| {
+        let minimum = if seconds <= 60 {
+            (seconds / 2).max(2)
+        } else {
+            seconds
+        };
+        rolling_volatility(&returns, end, seconds, minimum)
+            .map(|value| value * BPS)
+            .unwrap_or(f64::NAN)
+    };
+    for seconds in [5, 15, 30, 60, 90, 120, 180] {
+        put(
+            &format!("btc_realized_volatility_{seconds}s_bps"),
+            volatility(seconds),
+        );
+    }
+    let partial_range = |seconds: usize| {
+        rolling_high_low_partial(&candles, end, seconds, (seconds / 2).max(2))
+            .map(|(high, low)| (high - low) / close * BPS)
+            .unwrap_or(f64::NAN)
+    };
+    for seconds in [5, 30, 60] {
+        put(&format!("btc_range_{seconds}s_bps"), partial_range(seconds));
+    }
+    let return_5 = horizon(5);
+    let return_15 = horizon(15);
+    let return_30 = horizon(30);
+    let return_60 = horizon(60);
+    let absolute = |seconds: usize| {
+        rolling_absolute_return_partial(&returns, end, seconds, (seconds / 2).max(2))
+            .unwrap_or(f64::NAN)
+            * BPS
+    };
+    put(
+        "btc_path_efficiency_30s",
+        return_30.abs() / (absolute(30) + EPSILON),
+    );
+    put(
+        "btc_path_efficiency_60s",
+        return_60.abs() / (absolute(60) + EPSILON),
+    );
+    let position = |seconds: usize| {
+        rolling_high_low_partial(&candles, end, seconds, (seconds / 2).max(2))
+            .map(|(high, low)| (close - low) / (high - low + EPSILON))
+            .unwrap_or(f64::NAN)
+    };
+    put("btc_range_position_30s", position(30));
+    put("btc_range_position_60s", position(60));
+    let mut signed_flows = HashMap::new();
+    let mut quote_volumes = HashMap::new();
+    let mut trade_counts = HashMap::new();
+    let mut buy_shares = HashMap::new();
+    for seconds in [5, 30, 60, 90, 120, 180] {
+        let minimum = if seconds <= 60 {
+            (seconds / 2).max(1)
+        } else {
+            seconds
+        };
+        let quote = rolling_sum_partial(&candles, end, seconds, minimum, |candle| {
+            candle.quote_volume
+        })
+        .unwrap_or(f64::NAN);
+        let buy = rolling_sum_partial(&candles, end, seconds, minimum, |candle| {
+            candle.taker_buy_quote_volume
+        })
+        .unwrap_or(f64::NAN);
+        let trades =
+            rolling_sum_partial(&candles, end, seconds, minimum, |candle| candle.trade_count)
+                .unwrap_or(f64::NAN);
+        let flow = (2.0 * buy - quote) / (quote + EPSILON);
+        signed_flows.insert(seconds, flow);
+        quote_volumes.insert(seconds, quote);
+        trade_counts.insert(seconds, trades);
+        buy_shares.insert(seconds, buy / (quote + EPSILON));
+        put(&format!("btc_signed_flow_{seconds}s"), flow);
+    }
+    for seconds in [5, 30, 60] {
+        put(
+            &format!("btc_log_quote_volume_{seconds}s"),
+            quote_volumes[&seconds].ln_1p(),
+        );
+        put(
+            &format!("btc_log_trade_count_{seconds}s"),
+            trade_counts[&seconds].ln_1p(),
+        );
+        put(
+            &format!("btc_taker_buy_share_{seconds}s"),
+            buy_shares[&seconds],
+        );
+    }
+    let vol5 = volatility(5);
+    let vol30 = volatility(30);
+    let vol60 = volatility(60);
+    let vol120 = volatility(120);
+    let vol180 = volatility(180);
+    put("btc_volatility_expansion_5_to_30", vol5 / (vol30 + EPSILON));
+    put(
+        "btc_volume_surprise_5_to_60",
+        quote_volumes[&5] / (quote_volumes[&60] / 12.0 + EPSILON),
+    );
+    let path_stats = elapsed_path_stats(&logs);
+    let boundary_stats = elapsed_anchor_stats(&logs, boundary.ln());
+    put("btc_path_cross_count", path_stats.cross_count as f64);
+    put(
+        "btc_seconds_since_path_cross",
+        path_stats.seconds_since_cross as f64,
+    );
+    put(
+        "btc_fraction_time_path_positive",
+        path_stats.positive_fraction,
+    );
+    put(
+        "btc_fraction_time_path_negative",
+        1.0 - path_stats.positive_fraction,
+    );
+    put(
+        "btc_boundary_cross_count",
+        boundary_stats.cross_count as f64,
+    );
+    put(
+        "btc_seconds_since_boundary_cross",
+        boundary_stats.seconds_since_cross as f64,
+    );
+    let terminal = vol60 * ((300 - seconds_elapsed).max(1) as f64).sqrt() + EPSILON;
+    put("btc_path_terminal_volatility_z", path / terminal);
+    put("btc_path_abs_terminal_volatility_z", path.abs() / terminal);
+    put(
+        "btc_boundary_terminal_volatility_z",
+        boundary_gap / terminal,
+    );
+    let old_boundary = candles
+        .get(end.saturating_sub(5))
+        .map(|candle| (candle.close / boundary).ln() * BPS)
+        .unwrap_or(boundary_gap);
+    put(
+        "btc_boundary_distance_velocity_5s_bps",
+        boundary_gap.abs() - old_boundary.abs(),
+    );
+    put(
+        "btc_boundary_momentum_alignment_5s",
+        sign(boundary_gap) * sign(return_5),
+    );
+    put(
+        "btc_momentum_agreement_5_15",
+        sign(return_5) * sign(return_15),
+    );
+    put(
+        "btc_momentum_agreement_15_30",
+        sign(return_15) * sign(return_30),
+    );
+    put(
+        "btc_momentum_multihorizon_score",
+        (sign(return_5) + sign(return_15) + sign(return_30) + sign(return_60)) / 4.0,
+    );
+    put(
+        "btc_momentum_acceleration_5_vs_30",
+        return_5 - return_30 * 5.0 / 30.0,
+    );
+    put(
+        "btc_momentum_acceleration_15_vs_60",
+        return_15 - return_60 * 15.0 / 60.0,
+    );
+    put(
+        "btc_reversal_5_vs_30",
+        f64::from(return_5 * return_30 < 0.0),
+    );
+    let extremes = elapsed_path_extremes(&candles);
+    let direction = if path >= 0.0 { 1.0 } else { -1.0 };
+    let high_bps = (extremes.running_high / candles[0].close).ln() * BPS;
+    let low_bps = (extremes.running_low / candles[0].close).ln() * BPS;
+    let drawdown = (extremes.running_high / close).ln() * BPS;
+    let rebound = (close / extremes.running_low).ln() * BPS;
+    let (favorable, adverse, pullback, recovery) = if direction > 0.0 {
+        (high_bps.max(0.0), (-low_bps).max(0.0), drawdown, rebound)
+    } else {
+        ((-low_bps).max(0.0), high_bps.max(0.0), rebound, drawdown)
+    };
+    put("btc_path_max_favorable_excursion_bps", favorable);
+    put("btc_path_max_adverse_excursion_bps", adverse);
+    put("btc_path_pullback_from_favorable_extreme_bps", pullback);
+    put("btc_path_recovery_from_adverse_extreme_bps", recovery);
+    put(
+        "btc_seconds_since_path_high_scaled",
+        extremes.seconds_since_high as f64 / 300.0,
+    );
+    put(
+        "btc_seconds_since_path_low_scaled",
+        extremes.seconds_since_low as f64 / 300.0,
+    );
+    put("btc_volatility_shock_30_vs_120", vol30 / (vol120 + EPSILON));
+    put("btc_volatility_shock_60_vs_180", vol60 / (vol180 + EPSILON));
+    for seconds in [5, 30, 60, 90, 120] {
+        put(
+            &format!("btc_path_sign_normalized_return_{seconds}s_bps"),
+            direction * horizon(seconds),
+        );
+        put(
+            &format!("btc_path_sign_normalized_flow_{seconds}s"),
+            direction * signed_flows[&seconds],
+        );
+    }
+    let (high30, low30) =
+        rolling_high_low_partial(&candles, end, 30, 15).unwrap_or((f64::NAN, f64::NAN));
+    let (high60, low60) =
+        rolling_high_low_partial(&candles, end, 60, 30).unwrap_or((f64::NAN, f64::NAN));
+    put(
+        "btc_distance_from_high_30s_bps",
+        (high30 - close) / close * BPS,
+    );
+    put(
+        "btc_distance_from_low_30s_bps",
+        (close - low30) / close * BPS,
+    );
+    put(
+        "btc_distance_from_high_60s_bps",
+        (high60 - close) / close * BPS,
+    );
+    put(
+        "btc_distance_from_low_60s_bps",
+        (close - low60) / close * BPS,
+    );
+    let elapsed_vols = (0..=end)
+        .filter_map(|row| rolling_volatility(&returns, row, 60, 30))
+        .map(|value| value * BPS)
+        .collect::<Vec<_>>();
+    let elapsed_mean = elapsed_vols.iter().sum::<f64>() / elapsed_vols.len().max(1) as f64;
+    put(
+        "btc_volatility_regime_60_vs_elapsed",
+        vol60 / (elapsed_mean + EPSILON),
+    );
+    put(
+        "btc_flow_persistence_5_30",
+        signed_flows[&5] * signed_flows[&30],
+    );
+    put(
+        "btc_flow_persistence_30_60",
+        signed_flows[&30] * signed_flows[&60],
+    );
+    put(
+        "btc_price_flow_agreement_30s",
+        sign(return_30) * signed_flows[&30],
+    );
+    put(
+        "btc_price_flow_divergence_30s",
+        -sign(return_30) * signed_flows[&30],
+    );
+    let hour = feature_as_of.hour() as f64 * std::f64::consts::TAU / 24.0;
+    let weekday = feature_as_of.weekday().number_from_monday() as f64 * std::f64::consts::TAU / 7.0;
+    put("hour_sin", hour.sin());
+    put("hour_cos", hour.cos());
+    put("weekday_sin", weekday.sin());
+    put("weekday_cos", weekday.cos());
+    let close30 = candles
+        .get(end.saturating_sub(30))
+        .map(|candle| candle.close)
+        .unwrap_or(close);
+    let oracle = derive_oracle_features(
+        external.oracle_rounds,
+        window_start,
+        feature_as_of,
+        seconds_elapsed,
+        boundary,
+        close,
+        close30,
+        return_30,
+        path,
+        vol60,
+    )?;
+    for (name, value) in BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.iter().zip(oracle) {
+        put(name, value);
+    }
+    put("early_oracle_eligible", 1.0);
+    if feature_names
+        .iter()
+        .any(|name| name.starts_with("chainlink_candle_"))
+    {
+        let chainlink =
+            derive_chainlink_candle_features(external.chainlink_candles, feature_as_of)?;
+        for (name, value) in BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES
+            .iter()
+            .zip(chainlink)
+        {
+            put(name, value);
+        }
+    }
+    if feature_names
+        .iter()
+        .any(|name| name.starts_with("binance_oi_"))
+    {
+        let oi = derive_open_interest_features(external.open_interest, feature_as_of, path)?;
+        for (name, value) in BTC_DIRECTIONAL_BINANCE_OPEN_INTEREST_FEATURE_NAMES
+            .iter()
+            .zip(oi)
+        {
+            put(name, value);
+        }
+    }
+    append_payoff_book_features(&mut values, up_book, down_book, feature_as_of, fee_rate)?;
+    feature_names
+        .iter()
+        .map(|name| {
+            values.get(name).copied().ok_or_else(|| {
+                unavailable("payoff_model", "required payoff feature is unavailable")
+            })
+        })
+        .collect()
+}
+
+fn append_payoff_book_features(
+    values: &mut HashMap<String, f64>,
+    up: &OrderbookCheckpoint,
+    down: &OrderbookCheckpoint,
+    observed_at: DateTime<Utc>,
+    fee_rate: f64,
+) -> Result<(), DirectionalFeatureError> {
+    let quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200];
+    let curve = |book: &OrderbookCheckpoint| -> Option<(Vec<f64>, f64)> {
+        let mut asks = book.asks.iter().collect::<Vec<_>>();
+        asks.sort_by_key(|level| level.price);
+        let depth = asks
+            .iter()
+            .filter_map(|level| level.size.to_f64())
+            .sum::<f64>();
+        if depth < 800.0 {
+            return None;
+        }
+        let mut output = Vec::new();
+        for quantity in quantities {
+            let mut remaining = quantity as f64;
+            let mut notional = 0.0;
+            for level in &asks {
+                let size = level.size.to_f64()?;
+                let price = level.price.to_f64()?;
+                let take = remaining.min(size);
+                notional += take * price;
+                remaining -= take;
+                if remaining <= 1e-12 {
+                    break;
+                }
+            }
+            if remaining > 1e-9 {
+                return None;
+            }
+            output.push(notional / quantity as f64);
+        }
+        Some((output, depth))
+    };
+    let (up_curve, up_depth) = curve(up).ok_or_else(|| {
+        unavailable(
+            "polymarket_book",
+            "UP book lacks the frozen full-ladder depth",
+        )
+    })?;
+    let (down_curve, down_depth) = curve(down).ok_or_else(|| {
+        unavailable(
+            "polymarket_book",
+            "DOWN book lacks the frozen full-ladder depth",
+        )
+    })?;
+    for (index, quantity) in quantities.iter().enumerate() {
+        values.insert(format!("up_ask_vwap_{quantity}"), up_curve[index]);
+        values.insert(format!("down_ask_vwap_{quantity}"), down_curve[index]);
+    }
+    values.insert(
+        "pm_vwap5_overround".into(),
+        up_curve[0] + down_curve[0] - 1.0,
+    );
+    values.insert(
+        "pm_vwap50_overround".into(),
+        up_curve[7] + down_curve[7] - 1.0,
+    );
+    values.insert(
+        "pm_vwap200_overround".into(),
+        up_curve[13] + down_curve[13] - 1.0,
+    );
+    for (side, curve) in [("up", &up_curve), ("down", &down_curve)] {
+        values.insert(format!("pm_{side}_slope_5_25"), curve[4] - curve[0]);
+        values.insert(format!("pm_{side}_slope_25_100"), curve[9] - curve[4]);
+        values.insert(format!("pm_{side}_slope_100_200"), curve[13] - curve[9]);
+    }
+    values.insert("pm_up_depth_log".into(), up_depth.ln_1p());
+    values.insert("pm_down_depth_log".into(), down_depth.ln_1p());
+    values.insert(
+        "pm_depth_imbalance".into(),
+        (up_depth - down_depth) / (up_depth + down_depth).max(EPSILON),
+    );
+    let up_age = duration_seconds(up.received_at, observed_at)?;
+    let down_age = duration_seconds(down.received_at, observed_at)?;
+    values.insert("pm_up_book_age_seconds".into(), up_age);
+    values.insert("pm_down_book_age_seconds".into(), down_age);
+    let reserve = 0.005;
+    let up_cost = up_curve[0] + fee_rate * up_curve[0] * (1.0 - up_curve[0]) + reserve;
+    let down_cost = down_curve[0] + fee_rate * down_curve[0] * (1.0 - down_curve[0]) + reserve;
+    let up_best = up
+        .best_ask
+        .and_then(|value| value.to_f64())
+        .ok_or_else(|| unavailable("polymarket_book", "UP best ask is missing"))?;
+    let down_best = down
+        .best_ask
+        .and_then(|value| value.to_f64())
+        .ok_or_else(|| unavailable("polymarket_book", "DOWN best ask is missing"))?;
+    for (name, value) in [
+        ("pm_yes_cost_per_share", up_cost),
+        ("pm_no_cost_per_share", down_cost),
+        ("pm_yes_vwap_slippage", up_curve[0] - up_best),
+        ("pm_no_vwap_slippage", down_curve[0] - down_best),
+        ("pm_yes_depth_log", up_depth.ln_1p()),
+        ("pm_no_depth_log", down_depth.ln_1p()),
+        ("pm_yes_book_age_seconds", up_age),
+        ("pm_no_book_age_seconds", down_age),
+        (
+            "pm_yes_cost_logit",
+            (up_cost.clamp(1e-6, 1.0 - 1e-6) / (1.0 - up_cost.clamp(1e-6, 1.0 - 1e-6))).ln(),
+        ),
+        (
+            "pm_no_cost_logit",
+            (down_cost.clamp(1e-6, 1.0 - 1e-6) / (1.0 - down_cost.clamp(1e-6, 1.0 - 1e-6))).ln(),
+        ),
+        ("pm_cost_overround", up_cost + down_cost - 1.0),
+        ("pm_yes_minus_no_cost", up_cost - down_cost),
+        ("fee_rate", fee_rate),
+    ] {
+        values.insert(name.into(), value);
+    }
+    Ok(())
+}
+
 fn derive_directional_features(
     candles: &[NumericCandle],
     feature_as_of: DateTime<Utc>,
@@ -3054,6 +3565,15 @@ mod tests {
                 refprice: true,
                 chainlink_candles: true,
                 open_interest: true,
+            }
+        );
+        assert_eq!(
+            directional_external_feature_requirements("btc-5m-payoff-aware-fair-value-features-v1"),
+            DirectionalExternalFeatureRequirements {
+                oracle: true,
+                refprice: false,
+                chainlink_candles: true,
+                open_interest: false,
             }
         );
     }

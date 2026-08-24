@@ -51,24 +51,6 @@ struct BtcDecisionEdgeProjection<'a> {
     size: Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedSession {
-    pub connection_id: Uuid,
-    pub feed_name: String,
-    pub endpoint: String,
-    pub reconnect_ordinal: i32,
-    pub started_at: DateTime<Utc>,
-    pub connected_at: Option<DateTime<Utc>>,
-    pub disconnected_at: Option<DateTime<Utc>>,
-    pub messages_received: i64,
-    pub messages_persisted: i64,
-    pub decode_errors: i64,
-    pub integrity_gaps: i64,
-    pub dropped_messages: i64,
-    pub disconnect_reason: Option<String>,
-    pub metadata: serde_json::Value,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BtcMarketLabel {
     pub market_id: String,
@@ -1525,69 +1507,6 @@ impl BtcRepository {
                 result.rows_affected()
             );
         }
-        Ok(())
-    }
-
-    pub async fn start_feed_session(&self, session: &FeedSession) -> Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO polymarket.feed_sessions (
-              connection_id, feed_name, endpoint, reconnect_ordinal, started_at, connected_at,
-              messages_received, messages_persisted, decode_errors, integrity_gaps,
-              dropped_messages, metadata
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-            ON CONFLICT (connection_id) DO NOTHING
-            "#,
-        )
-        .bind(session.connection_id)
-        .bind(&session.feed_name)
-        .bind(&session.endpoint)
-        .bind(session.reconnect_ordinal)
-        .bind(session.started_at)
-        .bind(session.connected_at)
-        .bind(session.messages_received)
-        .bind(session.messages_persisted)
-        .bind(session.decode_errors)
-        .bind(session.integrity_gaps)
-        .bind(session.dropped_messages)
-        .bind(&session.metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to start BTC feed session")?;
-        Ok(())
-    }
-
-    pub async fn finish_feed_session(&self, session: &FeedSession) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE polymarket.feed_sessions
-            SET connected_at = COALESCE($2, connected_at),
-                disconnected_at = $3,
-                messages_received = $4,
-                messages_persisted = $5,
-                decode_errors = $6,
-                integrity_gaps = $7,
-                dropped_messages = $8,
-                disconnect_reason = $9,
-                metadata = $10,
-                updated_at = now()
-            WHERE connection_id = $1
-            "#,
-        )
-        .bind(session.connection_id)
-        .bind(session.connected_at)
-        .bind(session.disconnected_at)
-        .bind(session.messages_received)
-        .bind(session.messages_persisted)
-        .bind(session.decode_errors)
-        .bind(session.integrity_gaps)
-        .bind(session.dropped_messages)
-        .bind(&session.disconnect_reason)
-        .bind(&session.metadata)
-        .execute(&self.pool)
-        .await
-        .context("failed to finish BTC feed session")?;
         Ok(())
     }
 

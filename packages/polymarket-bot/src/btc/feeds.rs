@@ -26,13 +26,11 @@ pub enum ClobMessage {
         asks: Vec<OrderbookLevel>,
         source_timestamp: DateTime<Utc>,
         source_hash: Option<String>,
-        raw_payload: Value,
     },
     PriceChange {
         market_id: String,
         changes: Vec<PriceChange>,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     BestBidAsk {
         market_id: String,
@@ -40,7 +38,6 @@ pub enum ClobMessage {
         best_bid: Option<Decimal>,
         best_ask: Option<Decimal>,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     TickSizeChange {
         market_id: String,
@@ -48,7 +45,6 @@ pub enum ClobMessage {
         old_tick_size: Decimal,
         new_tick_size: Decimal,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     LastTradePrice {
         market_id: String,
@@ -56,14 +52,12 @@ pub enum ClobMessage {
         price: Decimal,
         size: Decimal,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
     MarketResolved {
         market_id: String,
         winning_token_id: String,
         winning_outcome: String,
         source_timestamp: DateTime<Utc>,
-        raw_payload: Value,
     },
 }
 
@@ -111,7 +105,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             asks: parse_levels(object.get("asks"), "asks")?,
             source_timestamp,
             source_hash: string_field(object, &["hash"]),
-            raw_payload: Value::Null,
         },
         "price_change" => {
             let raw_changes = object
@@ -147,7 +140,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload: Value::Null,
             }
         }
         "best_bid_ask" => ClobMessage::BestBidAsk {
@@ -156,7 +148,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             best_bid: optional_decimal_field(object, &["best_bid"])?,
             best_ask: optional_decimal_field(object, &["best_ask"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "tick_size_change" => ClobMessage::TickSizeChange {
             market_id,
@@ -164,7 +155,6 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             old_tick_size: required_decimal(object, &["old_tick_size"])?,
             new_tick_size: required_decimal(object, &["new_tick_size"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "last_trade_price" => ClobMessage::LastTradePrice {
             market_id,
@@ -172,14 +162,12 @@ pub fn parse_clob_messages(value: &Value) -> Result<Vec<ClobMessage>> {
             price: required_decimal(object, &["price"])?,
             size: required_decimal(object, &["size"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         "market_resolved" => ClobMessage::MarketResolved {
             market_id,
             winning_token_id: required_string(object, &["winning_asset_id"])?,
             winning_outcome: required_string(object, &["winning_outcome"])?,
             source_timestamp,
-            raw_payload: Value::Null,
         },
         other => bail!("unsupported CLOB market event type {other}"),
     };
@@ -713,6 +701,7 @@ pub struct BookApplyResult {
     pub(crate) token_id: Option<String>,
     pub(crate) source_timestamp: DateTime<Utc>,
     pub(crate) applied: bool,
+    pub(crate) book_mutated: bool,
     pub(crate) integrity_status: FeedIntegrityStatus,
 }
 
@@ -860,13 +849,14 @@ impl BookRegistry {
                 asks,
                 source_timestamp,
                 source_hash,
-                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
+                let mut book_mutated = false;
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
                     } else {
+                        book_mutated = true;
                         book.bids = levels_to_map(bids);
                         book.asks = levels_to_map(asks);
                         book.bootstrapped = true;
@@ -884,6 +874,7 @@ impl BookRegistry {
                     Some(token_id),
                     source_timestamp,
                     status == FeedIntegrityStatus::Ok,
+                    book_mutated,
                     status,
                 )]
             }
@@ -891,7 +882,6 @@ impl BookRegistry {
                 market_id,
                 changes,
                 source_timestamp,
-                raw_payload: _,
             } => {
                 let mut entries = Vec::with_capacity(changes.len());
                 for change in changes {
@@ -906,9 +896,11 @@ impl BookRegistry {
                         .or_default()
                         .push(index);
                 }
-                let mut outcomes = vec![(false, FeedIntegrityStatus::UnknownToken); entries.len()];
+                let mut outcomes =
+                    vec![(false, false, FeedIntegrityStatus::UnknownToken); entries.len()];
 
                 for (token_id, indexes) in by_token {
+                    let mut book_mutated = false;
                     let status = if let Some(book) = self.books.get_mut(&token_id) {
                         if !book.matches_market(&market_id) {
                             FeedIntegrityStatus::MarketMismatch
@@ -959,6 +951,7 @@ impl BookRegistry {
                             let status =
                                 book.reconcile_advertised_top(best_bid, best_ask, &mut undo);
                             if status == FeedIntegrityStatus::Ok {
+                                book_mutated = true;
                                 book.source_timestamp = Some(source_timestamp);
                                 book.received_at = Some(received_at);
                                 book.source_hash = indexes
@@ -981,19 +974,26 @@ impl BookRegistry {
                             | FeedIntegrityStatus::DecodeError
                     ) {
                         if let Some(current) = self.books.get_mut(&token_id) {
+                            book_mutated = current.integrity_status != status;
                             current.integrity_status = status;
                         }
                     }
                     for index in indexes {
-                        outcomes[index] = (status == FeedIntegrityStatus::Ok, status);
+                        outcomes[index] = (status == FeedIntegrityStatus::Ok, book_mutated, status);
                     }
                 }
 
                 entries
                     .into_iter()
                     .zip(outcomes)
-                    .map(|((change, _sequence), (applied, status))| {
-                        book_apply_result(Some(change.token_id), source_timestamp, applied, status)
+                    .map(|((change, _sequence), (applied, book_mutated, status))| {
+                        book_apply_result(
+                            Some(change.token_id),
+                            source_timestamp,
+                            applied,
+                            book_mutated,
+                            status,
+                        )
                     })
                     .collect()
             }
@@ -1003,7 +1003,6 @@ impl BookRegistry {
                 best_bid: _,
                 best_ask: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::TickSizeChange {
                 market_id,
@@ -1011,20 +1010,22 @@ impl BookRegistry {
                 old_tick_size: _,
                 new_tick_size,
                 source_timestamp,
-                raw_payload: _,
             } => {
                 let sequence = self.take_sequence();
                 let mut applied = false;
+                let mut book_mutated = false;
                 let status = if let Some(book) = self.books.get_mut(&token_id) {
                     if !book.matches_market(&market_id) {
                         FeedIntegrityStatus::MarketMismatch
                     } else if new_tick_size <= Decimal::ZERO {
                         FeedIntegrityStatus::DecodeError
                     } else if !book.bootstrapped {
+                        book_mutated = true;
                         book.tick_size = new_tick_size;
                         book.ingest_sequence = sequence;
                         FeedIntegrityStatus::PreSnapshot
                     } else {
+                        book_mutated = true;
                         book.tick_size = new_tick_size;
                         book.ingest_sequence = sequence;
                         applied = true;
@@ -1037,6 +1038,7 @@ impl BookRegistry {
                     Some(token_id),
                     source_timestamp,
                     applied,
+                    book_mutated,
                     status,
                 )]
             }
@@ -1046,14 +1048,12 @@ impl BookRegistry {
                 price: _,
                 size: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, token_id, source_timestamp)],
             ClobMessage::MarketResolved {
                 market_id,
                 winning_token_id,
                 winning_outcome: _,
                 source_timestamp,
-                raw_payload: _,
             } => vec![self.non_mutating_result(market_id, winning_token_id, source_timestamp)],
         }
     }
@@ -1189,7 +1189,7 @@ impl BookRegistry {
             Some(_) => (false, FeedIntegrityStatus::PreSnapshot),
             None => (false, FeedIntegrityStatus::UnknownToken),
         };
-        book_apply_result(Some(token_id), source_timestamp, applied, status)
+        book_apply_result(Some(token_id), source_timestamp, applied, false, status)
     }
 
     fn take_sequence(&mut self) -> u64 {
@@ -1360,12 +1360,14 @@ fn book_apply_result(
     token_id: Option<String>,
     source_timestamp: DateTime<Utc>,
     applied: bool,
+    book_mutated: bool,
     integrity_status: FeedIntegrityStatus,
 ) -> BookApplyResult {
     BookApplyResult {
         token_id,
         source_timestamp,
         applied,
+        book_mutated,
         integrity_status,
     }
 }
@@ -1945,7 +1947,6 @@ mod tests {
                 best_ask: Some(dec!(0.52)),
             }],
             source_timestamp: ts(1_783_902_701_000),
-            raw_payload: serde_json::json!({}),
         };
         let events = registry.apply(delta, ts(1_783_902_701_010));
         assert!(!events[0].applied);
@@ -1972,7 +1973,6 @@ mod tests {
                 }],
                 source_timestamp: ts(1_783_902_701_000),
                 source_hash: None,
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_005),
         );
@@ -2002,7 +2002,6 @@ mod tests {
                 }],
                 source_timestamp: ts(millis),
                 source_hash: Some(format!("hash-{token}")),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 5),
         );
@@ -2028,7 +2027,6 @@ mod tests {
                 }],
                 source_timestamp: ts(millis),
                 source_hash: Some(format!("hash-{token_id}")),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 5),
         );
@@ -2219,7 +2217,6 @@ mod tests {
                 }],
                 source_timestamp: ts(1_783_902_701_200),
                 source_hash: Some("retired-frame".to_string()),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2242,7 +2239,6 @@ mod tests {
                     best_ask: Some(dec!(0.61)),
                 }],
                 source_timestamp: ts(1_783_902_701_210),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_215),
         );
@@ -2307,7 +2303,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_010),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_015),
         );
@@ -2412,7 +2407,6 @@ mod tests {
                     .collect(),
                 source_timestamp: ts(millis),
                 source_hash: Some(source_hash.to_string()),
-                raw_payload: serde_json::json!({}),
             },
             ts(millis + 1),
         )
@@ -2464,7 +2458,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_101),
         );
@@ -2496,7 +2489,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_102),
         );
@@ -2577,7 +2569,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2615,7 +2606,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2648,7 +2638,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_200),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2707,7 +2696,6 @@ mod tests {
                     },
                 ],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2737,7 +2725,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_200),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_205),
         );
@@ -2803,7 +2790,6 @@ mod tests {
                     best_ask: Some(dec!(0.52)),
                 }],
                 source_timestamp: ts(1_783_902_701_100),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_105),
         );
@@ -2823,7 +2809,6 @@ mod tests {
                     best_ask: None,
                 }],
                 source_timestamp: ts(1_783_902_700_000),
-                raw_payload: serde_json::json!({}),
             },
             ts(1_783_902_701_200),
         );

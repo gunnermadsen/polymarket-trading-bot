@@ -55,6 +55,30 @@ impl KrakenRepository {
         Ok(inserted.rows_affected() == 1)
     }
 
+    pub async fn latest_completed_range_end(
+        &self,
+        dataset: KrakenDataset,
+        symbol: &str,
+        interval_seconds: i32,
+    ) -> Result<Option<DateTime<Utc>>> {
+        sqlx::query_scalar(
+            r#"
+            SELECT max(range_end)
+            FROM kraken.backfill_jobs
+            WHERE dataset = $1
+              AND symbol = $2
+              AND interval_seconds = $3
+              AND status = 'completed'
+            "#,
+        )
+        .bind(dataset.as_str())
+        .bind(symbol)
+        .bind(interval_seconds)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to load latest completed Kraken backfill range")
+    }
+
     pub async fn claim_next(
         &self,
         worker_id: &str,

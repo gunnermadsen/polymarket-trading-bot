@@ -57,8 +57,7 @@ use super::{
         GammaRestOfficialResolution,
     },
     repository::{
-        BtcMarketLabel, BtcOfficialResolutionWatch, BtcRepository, FeedSession,
-        PersistedOfficialResolution,
+        BtcMarketLabel, BtcOfficialResolutionWatch, BtcRepository, PersistedOfficialResolution,
     },
     types::{
         BinanceAggregateTrade, BinanceOneSecondKline, BinanceOneSecondWindow, BtcIntervalMarket,
@@ -395,9 +394,8 @@ pub struct ReferenceTransportMetrics {
 
 /// Operational health for the shared, inference-only Binance spot L2 feed.
 ///
-/// These counters deliberately live outside the persisted feed-session path: the
-/// L2 feed supplies model features at runtime and does not own a database data
-/// contract.
+/// These counters are runtime telemetry only: the L2 feed supplies model
+/// features at runtime and does not own a database data contract.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BinanceSpotL2RuntimeMetrics {
     pub enabled: bool,
@@ -476,7 +474,17 @@ pub struct BtcRuntimeMetrics {
     pub clob_last_subscription_update_at: Option<DateTime<Utc>>,
     pub clob_last_disconnect_at: Option<DateTime<Utc>>,
     pub clob_recovery_unavailable_since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_recovery_unavailable_age_milliseconds: Option<u64>,
     pub clob_last_disconnect_reason: Option<String>,
+    #[serde(default)]
+    pub clob_remote_close_1013_count: u64,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_age_milliseconds: Option<u64>,
+    #[serde(default)]
+    pub clob_last_remote_close_1013_reason: Option<String>,
     #[serde(default)]
     pub clob_book_unavailable_reason: Option<String>,
     #[serde(default)]
@@ -586,6 +594,18 @@ fn runtime_metrics_snapshot(
         .map(|received_at| {
             u64::try_from((checked_at - received_at).num_milliseconds()).unwrap_or(u64::MAX)
         });
+    metrics.clob_last_remote_close_1013_age_milliseconds = metrics
+        .clob_last_remote_close_1013_at
+        .filter(|closed_at| *closed_at <= checked_at)
+        .map(|closed_at| {
+            u64::try_from((checked_at - closed_at).num_milliseconds()).unwrap_or(u64::MAX)
+        });
+    metrics.clob_recovery_unavailable_age_milliseconds = metrics
+        .clob_recovery_unavailable_since
+        .filter(|unavailable_since| *unavailable_since <= checked_at)
+        .map(|unavailable_since| {
+            u64::try_from((checked_at - unavailable_since).num_milliseconds()).unwrap_or(u64::MAX)
+        });
     metrics
 }
 
@@ -691,9 +711,15 @@ impl ClobReadinessDiagnostic {
 struct ClobSubscriptionStats {
     updates: u64,
     active_assets: usize,
-    ignored_foreign_events: u64,
-    ignored_superseded_events: u64,
     last_updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Default)]
+struct ClobPendingFrameMetrics {
+    messages_received: u64,
+    events_applied: u64,
+    integrity_gaps: u64,
+    last_source_to_receive_lag_milliseconds: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -909,6 +935,7 @@ struct ClobSocketTelemetry {
     ingress_frames: u64,
     ingress_bytes: u64,
     last_ingress_sequence: u64,
+    ingress_queue_depth: usize,
     last_ingress_queue_dwell: StdDuration,
     max_ingress_queue_dwell: StdDuration,
     ingress_overflows: u64,
@@ -942,6 +969,7 @@ impl ClobSocketTelemetry {
             ingress_frames: 0,
             ingress_bytes: 0,
             last_ingress_sequence: 0,
+            ingress_queue_depth: 0,
             last_ingress_queue_dwell: StdDuration::ZERO,
             max_ingress_queue_dwell: StdDuration::ZERO,
             ingress_overflows: 0,
@@ -1035,6 +1063,19 @@ impl ClobSocketTelemetry {
             .map(|frame| frame.reason.as_str())
             .filter(|reason| !reason.is_empty())
             .map(bounded_clob_error_reason);
+    }
+}
+
+fn record_clob_remote_close_1013(
+    metrics: &mut BtcRuntimeMetrics,
+    telemetry: &ClobSocketTelemetry,
+    observed_at: DateTime<Utc>,
+) {
+    if telemetry.remote_close_observed && telemetry.remote_close_code == Some(1013) {
+        metrics.clob_remote_close_1013_count =
+            metrics.clob_remote_close_1013_count.saturating_add(1);
+        metrics.clob_last_remote_close_1013_at = Some(observed_at);
+        metrics.clob_last_remote_close_1013_reason = telemetry.remote_close_reason.clone();
     }
 }
 
@@ -1390,6 +1431,8 @@ fn publish_active_clob_socket_metrics(
     metrics.clob_active_ingress_frames = telemetry.ingress_frames;
     metrics.clob_active_ingress_bytes = telemetry.ingress_bytes;
     metrics.clob_active_last_ingress_sequence = telemetry.last_ingress_sequence;
+    metrics.clob_active_ingress_queue_depth =
+        u64::try_from(telemetry.ingress_queue_depth).unwrap_or(u64::MAX);
     metrics.clob_active_last_ingress_queue_dwell_milliseconds =
         duration_milliseconds(telemetry.last_ingress_queue_dwell);
     metrics.clob_active_max_ingress_queue_dwell_milliseconds =
@@ -1461,13 +1504,14 @@ struct ClobEpoch {
     transport: ClobIngressTransport,
     registry: BookRegistry,
     markets: Vec<BtcIntervalMarket>,
-    session: FeedSession,
+    connected_at: DateTime<Utc>,
     subscription_stats: ClobSubscriptionStats,
     telemetry: ClobSocketTelemetry,
     connected_instant: Instant,
     watchdog: ClobFeedWatchdog,
     healthy_epoch: bool,
     books_usable: bool,
+    pending_frame_metrics: ClobPendingFrameMetrics,
 }
 
 impl Drop for ClobEpoch {
@@ -1496,7 +1540,6 @@ enum ClobConnectOutcome {
 
 #[derive(Debug)]
 struct ClobConnectFailure {
-    session: FeedSession,
     reason: String,
     kind: ClobConnectFailureKind,
     telemetry: ClobSocketTelemetry,
@@ -1512,20 +1555,10 @@ async fn connect_clob_epoch(
     let connection_id = Uuid::new_v4();
     let attempt_started_at = Instant::now();
     let mut telemetry = ClobSocketTelemetry::new(&desired_markets);
-    let mut session = new_session(
-        connection_id,
-        "polymarket_clob_market",
-        &config.clob_ws_url,
-        connection_epoch,
-        Utc::now(),
-    );
     let mut registry = BookRegistry::new(connection_id);
     if let Err(error) = validate_clob_execution_market_set(&desired_markets) {
         let reason = bounded_clob_error_reason(&format!("invalid_subscription_target:{error}"));
-        session.disconnected_at = Some(Utc::now());
-        session.disconnect_reason = Some(reason.clone());
         return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-            session,
             reason,
             kind: ClobConnectFailureKind::Identity,
             telemetry,
@@ -1533,20 +1566,14 @@ async fn connect_clob_epoch(
     }
     if let Err(error) = register_clob_markets(&mut registry, &desired_markets) {
         let reason = bounded_clob_error_reason(&format!("invalid_subscription_identity:{error}"));
-        session.disconnected_at = Some(Utc::now());
-        session.disconnect_reason = Some(reason.clone());
         return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-            session,
             reason,
             kind: ClobConnectFailureKind::Identity,
             telemetry,
         }));
     }
     if *shutdown.borrow() {
-        session.disconnected_at = Some(Utc::now());
-        session.disconnect_reason = Some("shutdown".to_string());
         return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-            session,
             reason: "shutdown".to_string(),
             kind: ClobConnectFailureKind::Shutdown,
             telemetry,
@@ -1559,20 +1586,14 @@ async fn connect_clob_epoch(
     };
     let (mut socket, response) = match connect_result {
         None => {
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some("shutdown".to_string());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason: "shutdown".to_string(),
                 kind: ClobConnectFailureKind::Shutdown,
                 telemetry,
             }));
         }
         Some(Err(_)) => {
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some("connect_timeout".to_string());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason: "connect_timeout".to_string(),
                 kind: ClobConnectFailureKind::Connect,
                 telemetry,
@@ -1584,10 +1605,7 @@ async fn connect_clob_epoch(
                 telemetry.provenance = clob_response_provenance(response);
             }
             telemetry.last_transport_error = Some(clob_transport_error_detail(&error));
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some(reason.clone());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason,
                 kind: ClobConnectFailureKind::Connect,
                 telemetry,
@@ -1598,7 +1616,6 @@ async fn connect_clob_epoch(
     telemetry.provenance = clob_socket_provenance(&socket, &response);
     let connected_at = Utc::now();
     let connected_instant = Instant::now();
-    session.connected_at = Some(connected_at);
     match send_clob_text(
         &mut socket,
         clob_subscription(&desired_markets),
@@ -1608,20 +1625,14 @@ async fn connect_clob_epoch(
     {
         Ok(()) => {}
         Err(ClobSendFailure::Shutdown) => {
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some("shutdown".to_string());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason: "shutdown".to_string(),
                 kind: ClobConnectFailureKind::Shutdown,
                 telemetry,
             }));
         }
         Err(ClobSendFailure::Timeout) => {
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some("subscription_send_timeout".to_string());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason: "subscription_send_timeout".to_string(),
                 kind: ClobConnectFailureKind::Subscription,
                 telemetry,
@@ -1630,10 +1641,7 @@ async fn connect_clob_epoch(
         Err(ClobSendFailure::Transport { error, detail }) => {
             let reason = bounded_clob_error_reason(&format!("subscription_send_failed:{error}"));
             telemetry.last_transport_error = Some(detail);
-            session.disconnected_at = Some(Utc::now());
-            session.disconnect_reason = Some(reason.clone());
             return ClobConnectOutcome::Failed(Box::new(ClobConnectFailure {
-                session,
                 reason,
                 kind: ClobConnectFailureKind::Subscription,
                 telemetry,
@@ -1649,13 +1657,14 @@ async fn connect_clob_epoch(
             transport: start_clob_ingress(socket, heartbeat_interval, shutdown.clone()),
             registry,
             markets: desired_markets,
-            session,
+            connected_at,
             subscription_stats: ClobSubscriptionStats::default(),
             telemetry,
             connected_instant,
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         }),
         connect_latency: attempt_started_at.elapsed(),
     }
@@ -1698,19 +1707,6 @@ enum ReferenceDisconnectCause {
     TransportFailure,
     Shutdown,
     CriticalPersistence,
-}
-
-impl ReferenceDisconnectCause {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::ConnectFailure => "connect_failure",
-            Self::SubscriptionFailure => "subscription_failure",
-            Self::WatchdogTimeout(_) => "watchdog_timeout",
-            Self::TransportFailure => "transport_failure",
-            Self::Shutdown => "shutdown",
-            Self::CriticalPersistence => "critical_persistence",
-        }
-    }
 }
 
 impl ReferenceDisconnectReason {
@@ -2069,7 +2065,6 @@ impl BtcRuntime {
                 run_binance_supervisor(
                     self.config.clone(),
                     self.heartbeat.binance_interval,
-                    self.repository.clone(),
                     writer_tx.clone(),
                     state.clone(),
                     metrics.clone(),
@@ -3342,13 +3337,34 @@ enum ClobFrameAction {
     Disconnect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClobFrameOutcome {
+    action: ClobFrameAction,
+    readiness_may_have_changed: bool,
+}
+
+impl ClobFrameOutcome {
+    const fn continue_with(readiness_may_have_changed: bool) -> Self {
+        Self {
+            action: ClobFrameAction::Continue,
+            readiness_may_have_changed,
+        }
+    }
+
+    const fn disconnect() -> Self {
+        Self {
+            action: ClobFrameAction::Disconnect,
+            readiness_may_have_changed: false,
+        }
+    }
+}
+
 async fn publish_clob_registry(registry: &BookRegistry, shared_books: &Arc<RwLock<BookRegistry>>) {
     *shared_books.write().await = registry.clone();
 }
 
-async fn finish_active_clob_frame(
+fn finish_active_clob_frame(
     epoch: &mut ClobEpoch,
-    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
     processing_started: Instant,
     shared_books_lock_wait: StdDuration,
 ) {
@@ -3356,9 +3372,25 @@ async fn finish_active_clob_frame(
         Instant::now().saturating_duration_since(processing_started),
         shared_books_lock_wait,
     );
+    epoch.telemetry.ingress_queue_depth = epoch.transport.events.len();
+}
+
+async fn flush_clob_frame_metrics(epoch: &mut ClobEpoch, metrics: &Arc<RwLock<BtcRuntimeMetrics>>) {
+    let pending = std::mem::take(&mut epoch.pending_frame_metrics);
     let mut runtime_metrics = metrics.write().await;
-    runtime_metrics.clob_active_ingress_queue_depth =
-        u64::try_from(epoch.transport.events.len()).unwrap_or(u64::MAX);
+    runtime_metrics.clob_messages_received = runtime_metrics
+        .clob_messages_received
+        .saturating_add(pending.messages_received);
+    runtime_metrics.feed_events_applied = runtime_metrics
+        .feed_events_applied
+        .saturating_add(pending.events_applied);
+    runtime_metrics.integrity_gaps = runtime_metrics
+        .integrity_gaps
+        .saturating_add(pending.integrity_gaps);
+    if let Some(lag_milliseconds) = pending.last_source_to_receive_lag_milliseconds {
+        runtime_metrics.clob_active_last_source_to_receive_lag_milliseconds =
+            Some(lag_milliseconds);
+    }
     publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
 }
 
@@ -3367,9 +3399,8 @@ async fn apply_active_clob_frame(
     frame: ClobIngressFrame,
     shared_books: &Arc<RwLock<BookRegistry>>,
     metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> ClobFrameAction {
+) -> ClobFrameOutcome {
     let processing_started = Instant::now();
-    let ingress_queue_depth = epoch.transport.events.len();
     epoch
         .telemetry
         .record_ingress_frame(&frame, processing_started);
@@ -3399,10 +3430,10 @@ async fn apply_active_clob_frame(
                     );
                     record_active_clob_heartbeat_acknowledgement_metrics(metrics, sample).await;
                 }
-                return ClobFrameAction::Continue;
+                return ClobFrameOutcome::continue_with(false);
             }
             if text.trim().is_empty() {
-                return ClobFrameAction::Continue;
+                return ClobFrameOutcome::continue_with(false);
             }
             serde_json::from_str::<serde_json::Value>(&text)
                 .context("failed to decode CLOB websocket JSON")
@@ -3413,27 +3444,19 @@ async fn apply_active_clob_frame(
             .and_then(|value| parse_clob_messages(&value)),
         Message::Close(frame) => {
             epoch.telemetry.record_remote_close(frame.as_ref());
-            epoch.session.disconnect_reason = Some("remote_close".to_string());
-            return ClobFrameAction::Disconnect;
+            return ClobFrameOutcome::disconnect();
         }
-        _ => return ClobFrameAction::Continue,
+        _ => return ClobFrameOutcome::continue_with(false),
     };
     epoch.telemetry.last_data_or_heartbeat_at = Some(received_at);
-    epoch.session.messages_received = epoch.session.messages_received.saturating_add(1);
-    {
-        let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.clob_messages_received =
-            runtime_metrics.clob_messages_received.saturating_add(1);
-        runtime_metrics.clob_active_last_data_or_heartbeat_at = Some(received_at);
-        runtime_metrics.clob_active_ingress_queue_depth =
-            u64::try_from(ingress_queue_depth).unwrap_or(u64::MAX);
-        publish_active_clob_socket_metrics(&mut runtime_metrics, &epoch.telemetry);
-    }
+    epoch.pending_frame_metrics.messages_received = epoch
+        .pending_frame_metrics
+        .messages_received
+        .saturating_add(1);
     let messages = match parsed {
         Ok(messages) => messages,
         Err(error) => {
             epoch.registry.quarantine(FeedIntegrityStatus::DecodeError);
-            epoch.session.decode_errors = epoch.session.decode_errors.saturating_add(1);
             let lock_wait_started = Instant::now();
             let mut published_books = shared_books.write().await;
             let shared_books_lock_wait =
@@ -3446,61 +3469,65 @@ async fn apply_active_clob_frame(
             }
             record_error(metrics, error).await;
             epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
-            return ClobFrameAction::Continue;
+            return ClobFrameOutcome::continue_with(true);
         }
     };
-    let mut events = Vec::new();
+    let mut applied_count = 0_u64;
+    let mut integrity_gap_count = 0_u64;
+    let mut source_to_receive_lag_milliseconds: Option<i64> = None;
+    let mut mutated_token_ids = Vec::<String>::new();
     for message in messages {
-        events.extend(epoch.registry.apply(message, received_at));
-    }
-    let applied_count = events.iter().filter(|event| event.applied).count();
-    let integrity_gap_count = events.len().saturating_sub(applied_count);
-    let source_to_receive_lag_milliseconds = events
-        .iter()
-        .filter(|event| event.applied)
-        .map(|event| {
-            (received_at - event.source_timestamp)
-                .num_milliseconds()
-                .max(0)
-        })
-        .max();
-    let frame_token_ids = events
-        .iter()
-        .filter_map(|event| event.token_id.as_deref())
-        .fold(Vec::<String>::new(), |mut token_ids, token_id| {
-            if !token_ids.iter().any(|existing| existing == token_id) {
-                token_ids.push(token_id.to_string());
+        for event in epoch.registry.apply(message, received_at) {
+            if event.applied {
+                applied_count = applied_count.saturating_add(1);
+                let lag_milliseconds = (received_at - event.source_timestamp)
+                    .num_milliseconds()
+                    .max(0);
+                source_to_receive_lag_milliseconds = Some(
+                    source_to_receive_lag_milliseconds
+                        .unwrap_or_default()
+                        .max(lag_milliseconds),
+                );
+            } else {
+                integrity_gap_count = integrity_gap_count.saturating_add(1);
             }
-            token_ids
-        });
-    epoch.session.integrity_gaps = epoch
-        .session
-        .integrity_gaps
-        .saturating_add(i64::try_from(integrity_gap_count).unwrap_or(i64::MAX));
-    {
-        let mut runtime_metrics = metrics.write().await;
-        runtime_metrics.feed_events_applied = runtime_metrics
-            .feed_events_applied
-            .saturating_add(u64::try_from(applied_count).unwrap_or(u64::MAX));
-        runtime_metrics.integrity_gaps = runtime_metrics
-            .integrity_gaps
-            .saturating_add(u64::try_from(integrity_gap_count).unwrap_or(u64::MAX));
-        if let Some(lag_milliseconds) = source_to_receive_lag_milliseconds {
-            runtime_metrics.clob_active_last_source_to_receive_lag_milliseconds =
-                Some(lag_milliseconds);
+            if event.book_mutated {
+                if let Some(token_id) = event.token_id {
+                    if !mutated_token_ids
+                        .iter()
+                        .any(|existing| existing == &token_id)
+                    {
+                        mutated_token_ids.push(token_id);
+                    }
+                }
+            }
         }
     }
-    let frame_changed = !events.is_empty();
+    epoch.pending_frame_metrics.events_applied = epoch
+        .pending_frame_metrics
+        .events_applied
+        .saturating_add(applied_count);
+    epoch.pending_frame_metrics.integrity_gaps = epoch
+        .pending_frame_metrics
+        .integrity_gaps
+        .saturating_add(integrity_gap_count);
+    if source_to_receive_lag_milliseconds.is_some() {
+        epoch
+            .pending_frame_metrics
+            .last_source_to_receive_lag_milliseconds = source_to_receive_lag_milliseconds;
+    }
     let mut shared_books_lock_wait = StdDuration::ZERO;
-    if frame_changed {
+    if !mutated_token_ids.is_empty() {
         let lock_wait_started = Instant::now();
         let mut published_books = shared_books.write().await;
         shared_books_lock_wait = Instant::now().saturating_duration_since(lock_wait_started);
-        published_books
-            .publish_frame_books_from(&epoch.registry, frame_token_ids.iter().map(String::as_str));
+        published_books.publish_frame_books_from(
+            &epoch.registry,
+            mutated_token_ids.iter().map(String::as_str),
+        );
     }
     epoch.telemetry.last_shared_books_lock_wait = shared_books_lock_wait;
-    ClobFrameAction::Continue
+    ClobFrameOutcome::continue_with(!mutated_token_ids.is_empty())
 }
 
 #[derive(Debug)]
@@ -3553,7 +3580,6 @@ async fn complete_clob_epoch_with_close(
     consecutive_failures: u32,
     close_action: ClobCloseAction,
 ) {
-    let disconnected_at = Utc::now();
     let disconnected_instant = Instant::now();
     epoch.transport.reader_task.abort();
     epoch.transport.heartbeat_task.abort();
@@ -3593,15 +3619,6 @@ async fn complete_clob_epoch_with_close(
         }
     }
     let reason = bounded_clob_error_reason(&reason);
-    epoch.session.disconnected_at = Some(disconnected_at);
-    epoch.session.disconnect_reason = Some(reason.clone());
-    epoch.session.metadata = clob_session_metadata(
-        epoch.healthy_epoch,
-        cause,
-        retry_action,
-        consecutive_failures,
-        &epoch.subscription_stats,
-    );
     log_clob_disconnect(
         epoch.connection_id,
         epoch.connection_epoch,
@@ -3843,6 +3860,7 @@ async fn run_clob_supervisor(
                                 Ok(delta) => {
                                     let updated_at = Utc::now();
                                     publish_clob_registry(&epoch.registry, &shared_books).await;
+                                    flush_clob_frame_metrics(epoch, &metrics).await;
                                     if !delta.is_empty() {
                                         let mut runtime_metrics = metrics.write().await;
                                         runtime_metrics.clob_subscription_updates = runtime_metrics
@@ -3964,65 +3982,59 @@ async fn run_clob_supervisor(
                     Some(ClobIngressEvent::Frame(frame)) => {
                         let epoch = active.as_mut().expect("CLOB epoch remains installed");
                         let processing_started = Instant::now();
-                        match apply_active_clob_frame(
+                        let outcome = apply_active_clob_frame(
                             epoch,
                             frame,
                             &shared_books,
                             &metrics,
                         )
-                        .await
-                        {
+                        .await;
+                        match outcome.action {
                             ClobFrameAction::Disconnect => {
                                 let shared_books_lock_wait =
                                     epoch.telemetry.last_shared_books_lock_wait;
                                 finish_active_clob_frame(
                                     epoch,
-                                    &metrics,
                                     processing_started,
                                     shared_books_lock_wait,
-                                )
-                                .await;
+                                );
                                 active_failure = Some((
-                                    epoch
-                                        .session
-                                        .disconnect_reason
-                                        .clone()
-                                        .unwrap_or_else(|| "remote_close".to_string()),
+                                    "remote_close".to_string(),
                                     ClobDisconnectCause::TransportFailure,
                                 ));
                             }
                             ClobFrameAction::Continue => {
-                                let checked_at = Utc::now();
-                                epoch.watchdog.refresh_bootstrap(
-                                    Instant::now(),
-                                    &epoch.registry,
-                                    &epoch.markets,
-                                    checked_at,
-                                );
-                                update_clob_usability(
-                                    &epoch.registry,
-                                    &epoch.markets,
-                                    checked_at,
-                                    Instant::now(),
-                                    max_book_age,
-                                    &mut epoch.books_usable,
-                                    &mut epoch.healthy_epoch,
-                                    &metrics,
-                                    epoch.connection_id,
-                                    epoch.connection_epoch,
-                                    &mut consecutive_failures,
-                                    &mut recovery_window,
-                                )
-                                .await;
+                                if outcome.readiness_may_have_changed {
+                                    let checked_at = Utc::now();
+                                    epoch.watchdog.refresh_bootstrap(
+                                        Instant::now(),
+                                        &epoch.registry,
+                                        &epoch.markets,
+                                        checked_at,
+                                    );
+                                    update_clob_usability(
+                                        &epoch.registry,
+                                        &epoch.markets,
+                                        checked_at,
+                                        Instant::now(),
+                                        max_book_age,
+                                        &mut epoch.books_usable,
+                                        &mut epoch.healthy_epoch,
+                                        &metrics,
+                                        epoch.connection_id,
+                                        epoch.connection_epoch,
+                                        &mut consecutive_failures,
+                                        &mut recovery_window,
+                                    )
+                                    .await;
+                                }
                                 let shared_books_lock_wait =
                                     epoch.telemetry.last_shared_books_lock_wait;
                                 finish_active_clob_frame(
                                     epoch,
-                                    &metrics,
                                     processing_started,
                                     shared_books_lock_wait,
-                                )
-                                .await;
+                                );
                             }
                         }
                     }
@@ -4058,7 +4070,6 @@ async fn run_clob_supervisor(
                     }
                     Ok(ClobConnectOutcome::Failed(failure)) => {
                         let ClobConnectFailure {
-                            mut session,
                             reason,
                             kind,
                             telemetry,
@@ -4084,13 +4095,6 @@ async fn run_clob_supervisor(
                                 unreachable!("failed CLOB connect attempt must back off")
                             };
                             retry_at = Instant::now() + delay;
-                            session.metadata = clob_session_metadata(
-                                false,
-                                cause,
-                                retry_action,
-                                consecutive_failures,
-                                &ClobSubscriptionStats::default(),
-                            );
                             {
                                 let mut runtime_metrics = metrics.write().await;
                                 clob_failure_metrics(&mut runtime_metrics, cause);
@@ -4145,7 +4149,7 @@ async fn run_clob_supervisor(
                                     Some(epoch.connection_epoch);
                                 runtime_metrics.clob_connected_connection_id =
                                     Some(epoch.connection_id);
-                                runtime_metrics.clob_last_connected_at = epoch.session.connected_at;
+                                runtime_metrics.clob_last_connected_at = Some(epoch.connected_at);
                                 runtime_metrics.clob_active_subscribed_assets =
                                     u64::try_from(epoch.registry.len()).unwrap_or(u64::MAX);
                                 publish_active_clob_socket_metrics(
@@ -4195,6 +4199,7 @@ async fn run_clob_supervisor(
                         &mut recovery_window,
                     )
                     .await;
+                    flush_clob_frame_metrics(epoch, &metrics).await;
                     for market in &epoch.markets {
                         if !market.is_trade_window(checked_at) {
                             continue;
@@ -4215,14 +4220,8 @@ async fn run_clob_supervisor(
                                             .checkpoints_queued
                                             .saturating_add(1);
                                     }
-                                    PersistEnqueueOutcome::Saturated => {
-                                        epoch.session.dropped_messages =
-                                            epoch.session.dropped_messages.saturating_add(1);
-                                    }
-                                    PersistEnqueueOutcome::Closed => {
-                                        epoch.session.dropped_messages =
-                                            epoch.session.dropped_messages.saturating_add(1);
-                                    }
+                                    PersistEnqueueOutcome::Saturated
+                                    | PersistEnqueueOutcome::Closed => {}
                                 }
                             }
                         }
@@ -4240,6 +4239,7 @@ async fn run_clob_supervisor(
             let Some(mut failed) = active.take() else {
                 continue;
             };
+            flush_clob_frame_metrics(&mut failed, &metrics).await;
             let retry_action =
                 clob_retry_action(&config, failed.healthy_epoch, &mut consecutive_failures);
             retry_at = match retry_action {
@@ -4247,13 +4247,18 @@ async fn run_clob_supervisor(
                 ClobRetryAction::Backoff(delay) => Instant::now() + delay,
                 ClobRetryAction::Stop => Instant::now(),
             };
+            let unavailable_at = Utc::now();
             {
                 let mut runtime_metrics = metrics.write().await;
                 clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
-                runtime_metrics.clob_last_disconnect_at = Some(Utc::now());
+                runtime_metrics.clob_last_disconnect_at = Some(unavailable_at);
                 runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
+                record_clob_remote_close_1013(
+                    &mut runtime_metrics,
+                    &failed.telemetry,
+                    unavailable_at,
+                );
             }
-            let unavailable_at = Utc::now();
             let unavailable_instant = Instant::now();
             quarantine_clob_books_on_disconnect(&mut failed.registry, &shared_books).await;
             record_clob_epoch_unavailable(
@@ -4296,6 +4301,7 @@ async fn run_clob_supervisor(
     let stop_cause = ClobDisconnectCause::Shutdown;
     let stop_reason = "shutdown";
     if let Some(mut epoch) = active.take() {
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
         quarantine_clob_books_on_disconnect(&mut epoch.registry, &shared_books).await;
         let close_action = clob_stop_close_action(&epoch.telemetry);
         complete_clob_epoch_with_close(
@@ -4725,32 +4731,6 @@ fn clear_clob_connection_metrics(
     metrics.clob_consecutive_failures = consecutive_failures;
 }
 
-fn clob_session_metadata(
-    healthy_epoch: bool,
-    disconnect_cause: ClobDisconnectCause,
-    retry_action: ClobRetryAction,
-    consecutive_failures: u32,
-    subscription_stats: &ClobSubscriptionStats,
-) -> serde_json::Value {
-    let (next_action, retry_delay) = match retry_action {
-        ClobRetryAction::Stop => ("stop", None),
-        ClobRetryAction::ImmediateRecovery => ("immediate_recovery", None),
-        ClobRetryAction::Backoff(delay) => ("backoff", Some(delay)),
-    };
-    serde_json::json!({
-        "healthy_epoch": healthy_epoch,
-        "disconnect_cause": disconnect_cause.as_str(),
-        "consecutive_failures": consecutive_failures,
-        "retry_delay_ms": retry_delay.map(duration_milliseconds),
-        "next_action": next_action,
-        "subscription_updates": subscription_stats.updates,
-        "active_subscribed_assets": subscription_stats.active_assets,
-        "ignored_foreign_events": subscription_stats.ignored_foreign_events,
-        "ignored_superseded_events": subscription_stats.ignored_superseded_events,
-        "last_subscription_update_at": subscription_stats.last_updated_at,
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 fn log_clob_disconnect(
     connection_id: Uuid,
@@ -5072,40 +5052,6 @@ fn bounded_reference_detail(detail: impl fmt::Display) -> String {
     bounded.value
 }
 
-fn reference_session_metadata(
-    disconnect_reason: ReferenceDisconnectReason,
-    disconnect_detail: Option<&str>,
-    retry_action: ReferenceRetryAction,
-    consecutive_failures: u32,
-    connected_duration: Option<StdDuration>,
-    stats: &ReferenceSessionStats,
-) -> serde_json::Value {
-    let (next_action, retry_delay) = match retry_action {
-        ReferenceRetryAction::Stop => ("stop", None),
-        ReferenceRetryAction::ImmediateRecovery => ("immediate_recovery", None),
-        ReferenceRetryAction::Backoff(delay) => ("backoff", Some(delay)),
-    };
-    serde_json::json!({
-        "disconnect_reason": disconnect_reason,
-        "disconnect_detail": disconnect_detail,
-        "disconnect_cause": disconnect_reason.cause().as_str(),
-        "healthy_epoch": stats.healthy_epoch,
-        "stable_epoch": stats.stable_epoch,
-        "consecutive_failures": consecutive_failures,
-        "retry_delay_ms": retry_delay.map(duration_milliseconds),
-        "next_action": next_action,
-        "connected_duration_ms": connected_duration.map(duration_milliseconds),
-        "time_to_first_required_tick_ms": stats.time_to_first_required_tick_milliseconds,
-        "required_tick_count": stats.required_ticks,
-        "heartbeat_probes": stats.heartbeat_probes,
-        "heartbeat_acknowledgements": stats.heartbeat_acknowledgements,
-        "last_required_tick_at": stats.last_required_tick_at,
-        "last_frame_at": stats.last_frame_at,
-        "last_pong_at": stats.last_pong_at,
-        "remote_close_code": stats.remote_close_code,
-    })
-}
-
 fn record_reference_connected(
     metrics: &mut BtcRuntimeMetrics,
     kind: ReferenceFeedKind,
@@ -5293,13 +5239,6 @@ async fn run_rtds_supervisor(
         reconnect_ordinal = reconnect_ordinal.saturating_add(1);
         let connection_id = Uuid::new_v4();
         let mut sequence = 0u64;
-        let mut session = new_session(
-            connection_id,
-            "polymarket_rtds",
-            &config.rtds_ws_url,
-            reconnect_ordinal,
-            Utc::now(),
-        );
         let attempt_started = Instant::now();
         let connect_result = tokio::select! {
             biased;
@@ -5333,21 +5272,6 @@ async fn run_rtds_supervisor(
                     connection_id,
                     kind,
                 );
-                session.disconnected_at = Some(disconnected_at);
-                session.disconnect_reason = Some(reason.as_str().to_string());
-                session.metadata = reference_session_metadata(
-                    reason,
-                    detail.as_deref(),
-                    retry_action,
-                    retry_state.consecutive_failures,
-                    None,
-                    &ReferenceSessionStats::default(),
-                );
-                if !start_feed_session_or_fail(&repository, &session, &metrics).await
-                    || !finish_feed_session_or_fail(&repository, &session, &metrics).await
-                {
-                    return;
-                }
                 {
                     let mut runtime_metrics = metrics.write().await;
                     runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
@@ -5387,10 +5311,6 @@ async fn run_rtds_supervisor(
         };
         let connected_at = Utc::now();
         let connected_instant = Instant::now();
-        session.connected_at = Some(connected_at);
-        if !start_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
         {
             let mut runtime_metrics = metrics.write().await;
             record_reference_connected(
@@ -5541,7 +5461,6 @@ async fn run_rtds_supervisor(
                                         Message::Text(text) if text.trim().is_empty() => {}
                                         Message::Text(text) => {
                                             sequence = sequence.saturating_add(1);
-                                            session.messages_received = session.messages_received.saturating_add(1);
                                             let decoded = serde_json::from_str::<serde_json::Value>(&text)
                                                 .context("failed to decode RTDS JSON");
                                             if let Ok(value) = decoded.as_ref() {
@@ -5553,7 +5472,6 @@ async fn run_rtds_supervisor(
                                                             .chainlink_twap_60
                                                             .observe(point),
                                                         Err(error) => {
-                                                            session.decode_errors = session.decode_errors.saturating_add(1);
                                                             {
                                                                 let mut runtime_metrics = metrics.write().await;
                                                                 runtime_metrics.decode_errors = runtime_metrics
@@ -5726,20 +5644,9 @@ async fn run_rtds_supervisor(
                                                     )
                                                     .await
                                                     {
-                                                        PersistEnqueueOutcome::Queued => {
-                                                            session.messages_persisted = session
-                                                                .messages_persisted
-                                                                .saturating_add(1);
-                                                        }
-                                                        PersistEnqueueOutcome::Saturated => {
-                                                            session.dropped_messages = session
-                                                                .dropped_messages
-                                                                .saturating_add(1);
-                                                        }
+                                                        PersistEnqueueOutcome::Queued
+                                                        | PersistEnqueueOutcome::Saturated => {}
                                                         PersistEnqueueOutcome::Closed => {
-                                                            session.dropped_messages = session
-                                                                .dropped_messages
-                                                                .saturating_add(1);
                                                             disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
                                                             fatal_persistence_error = Some(anyhow::anyhow!(
                                                                 "RTDS reference persistence queue closed"
@@ -5750,7 +5657,6 @@ async fn run_rtds_supervisor(
                                                 }
                                                 Ok(None) => {}
                                                 Err(error) => {
-                                                    session.decode_errors = session.decode_errors.saturating_add(1);
                                                     {
                                                         let mut runtime_metrics = metrics.write().await;
                                                         runtime_metrics.decode_errors =
@@ -5802,16 +5708,6 @@ async fn run_rtds_supervisor(
             kind,
         );
         let connected_duration = Some(disconnected_instant.duration_since(connected_instant));
-        session.disconnected_at = Some(disconnected_at);
-        session.disconnect_reason = Some(disconnect_reason.as_str().to_string());
-        session.metadata = reference_session_metadata(
-            disconnect_reason,
-            disconnect_detail.as_deref(),
-            retry_action,
-            retry_state.consecutive_failures,
-            connected_duration,
-            &stats,
-        );
         {
             let mut runtime_metrics = metrics.write().await;
             if retry_action != ReferenceRetryAction::Stop {
@@ -5837,9 +5733,6 @@ async fn run_rtds_supervisor(
             connected_duration,
             disconnect_detail.as_deref(),
         );
-        if !finish_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
         if let Some(error) = fatal_persistence_error {
             record_critical_persistence_error(&metrics, error).await;
             return;
@@ -7130,7 +7023,6 @@ async fn run_binance_spot_l2_connection(
 async fn run_binance_supervisor(
     config: BtcRuntimeConfig,
     heartbeat_interval: StdDuration,
-    repository: BtcRepository,
     writer: mpsc::Sender<PersistItem>,
     state: Arc<RwLock<RealtimeState>>,
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
@@ -7160,13 +7052,6 @@ async fn run_binance_supervisor(
         reconnect_ordinal = reconnect_ordinal.saturating_add(1);
         let connection_id = Uuid::new_v4();
         let mut sequence = 0u64;
-        let mut session = new_session(
-            connection_id,
-            "binance_agg_trade",
-            &config.binance_ws_url,
-            reconnect_ordinal,
-            Utc::now(),
-        );
         let attempt_started = Instant::now();
         let connect_result = tokio::select! {
             biased;
@@ -7200,21 +7085,6 @@ async fn run_binance_supervisor(
                     connection_id,
                     kind,
                 );
-                session.disconnected_at = Some(disconnected_at);
-                session.disconnect_reason = Some(reason.as_str().to_string());
-                session.metadata = reference_session_metadata(
-                    reason,
-                    detail.as_deref(),
-                    retry_action,
-                    retry_state.consecutive_failures,
-                    None,
-                    &ReferenceSessionStats::default(),
-                );
-                if !start_feed_session_or_fail(&repository, &session, &metrics).await
-                    || !finish_feed_session_or_fail(&repository, &session, &metrics).await
-                {
-                    return;
-                }
                 {
                     let mut runtime_metrics = metrics.write().await;
                     runtime_metrics.reconnects = runtime_metrics.reconnects.saturating_add(1);
@@ -7254,10 +7124,6 @@ async fn run_binance_supervisor(
         };
         let connected_at = Utc::now();
         let connected_instant = Instant::now();
-        session.connected_at = Some(connected_at);
-        if !start_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
         {
             let mut runtime_metrics = metrics.write().await;
             record_reference_connected(
@@ -7487,8 +7353,6 @@ async fn run_binance_supervisor(
                             match message {
                                 Message::Text(text) => {
                                     sequence = sequence.saturating_add(1);
-                                    session.messages_received =
-                                        session.messages_received.saturating_add(1);
                                     let parsed = serde_json::from_str::<serde_json::Value>(&text)
                                         .context("failed to decode Binance aggregate trade JSON")
                                         .and_then(|value| {
@@ -7625,20 +7489,9 @@ async fn run_binance_supervisor(
                                             )
                                             .await
                                             {
-                                                PersistEnqueueOutcome::Queued => {
-                                                    session.messages_persisted = session
-                                                        .messages_persisted
-                                                        .saturating_add(1);
-                                                }
-                                                PersistEnqueueOutcome::Saturated => {
-                                                    session.dropped_messages = session
-                                                        .dropped_messages
-                                                        .saturating_add(1);
-                                                }
+                                                PersistEnqueueOutcome::Queued
+                                                | PersistEnqueueOutcome::Saturated => {}
                                                 PersistEnqueueOutcome::Closed => {
-                                                    session.dropped_messages = session
-                                                        .dropped_messages
-                                                        .saturating_add(1);
                                                     disconnect_reason = ReferenceDisconnectReason::CriticalWriterQueue;
                                                     fatal_persistence_error = Some(anyhow::anyhow!(
                                                         "Binance reference persistence queue closed"
@@ -7648,8 +7501,6 @@ async fn run_binance_supervisor(
                                             }
                                         }
                                         Err(error) => {
-                                            session.decode_errors =
-                                                session.decode_errors.saturating_add(1);
                                             {
                                                 let mut runtime_metrics = metrics.write().await;
                                                 runtime_metrics.decode_errors =
@@ -7718,16 +7569,6 @@ async fn run_binance_supervisor(
             kind,
         );
         let connected_duration = Some(disconnected_instant.duration_since(connected_instant));
-        session.disconnected_at = Some(disconnected_at);
-        session.disconnect_reason = Some(disconnect_reason.as_str().to_string());
-        session.metadata = reference_session_metadata(
-            disconnect_reason,
-            disconnect_detail.as_deref(),
-            retry_action,
-            retry_state.consecutive_failures,
-            connected_duration,
-            &stats,
-        );
         {
             let mut runtime_metrics = metrics.write().await;
             if retry_action != ReferenceRetryAction::Stop {
@@ -7753,9 +7594,6 @@ async fn run_binance_supervisor(
             connected_duration,
             disconnect_detail.as_deref(),
         );
-        if !finish_feed_session_or_fail(&repository, &session, &metrics).await {
-            return;
-        }
         if let Some(error) = fatal_persistence_error {
             record_critical_persistence_error(&metrics, error).await;
             return;
@@ -8625,31 +8463,6 @@ fn is_rtds_reference_update(value: &serde_json::Value) -> bool {
         )
 }
 
-fn new_session(
-    connection_id: Uuid,
-    feed_name: &str,
-    endpoint: &str,
-    reconnect_ordinal: i32,
-    started_at: DateTime<Utc>,
-) -> FeedSession {
-    FeedSession {
-        connection_id,
-        feed_name: feed_name.to_string(),
-        endpoint: endpoint.to_string(),
-        reconnect_ordinal,
-        started_at,
-        connected_at: None,
-        disconnected_at: None,
-        messages_received: 0,
-        messages_persisted: 0,
-        decode_errors: 0,
-        integrity_gaps: 0,
-        dropped_messages: 0,
-        disconnect_reason: None,
-        metadata: serde_json::json!({}),
-    }
-}
-
 fn reconnect_backoff(config: &BtcRuntimeConfig, consecutive_failures: u32) -> StdDuration {
     let exponent = consecutive_failures.saturating_sub(1).min(10);
     let multiplier = 2u32.saturating_pow(exponent);
@@ -8811,48 +8624,6 @@ async fn record_critical_persistence_error(
     let mut runtime_metrics = metrics.write().await;
     runtime_metrics.persistence_errors = runtime_metrics.persistence_errors.saturating_add(1);
     runtime_metrics.last_error = Some(format!("{error:#}"));
-}
-
-async fn start_feed_session_or_fail(
-    repository: &BtcRepository,
-    session: &FeedSession,
-    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> bool {
-    match repository.start_feed_session(session).await {
-        Ok(()) => true,
-        Err(error) => {
-            record_critical_persistence_error(
-                metrics,
-                error.context(format!(
-                    "failed to durably start {} feed session {}",
-                    session.feed_name, session.connection_id
-                )),
-            )
-            .await;
-            false
-        }
-    }
-}
-
-async fn finish_feed_session_or_fail(
-    repository: &BtcRepository,
-    session: &FeedSession,
-    metrics: &Arc<RwLock<BtcRuntimeMetrics>>,
-) -> bool {
-    match repository.finish_feed_session(session).await {
-        Ok(()) => true,
-        Err(error) => {
-            record_critical_persistence_error(
-                metrics,
-                error.context(format!(
-                    "failed to durably finish {} feed session {}",
-                    session.feed_name, session.connection_id
-                )),
-            )
-            .await;
-            false
-        }
-    }
 }
 
 fn primary_runtime_failure(metrics: &BtcRuntimeMetrics) -> Option<String> {
@@ -9220,7 +8991,6 @@ mod tests {
                     }],
                     source_timestamp: source_at,
                     source_hash: Some(format!("hash-{token_id}")),
-                    raw_payload: serde_json::json!({}),
                 },
                 source_at + Duration::milliseconds(1),
             );
@@ -9249,7 +9019,6 @@ mod tests {
                 }],
                 source_timestamp: source_at,
                 source_hash: Some(format!("hash-{token_id}")),
-                raw_payload: serde_json::json!({}),
             },
             source_at + Duration::milliseconds(1),
         );
@@ -9424,7 +9193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_clob_frame_publishes_canonical_book_without_persistence() {
+    async fn direct_clob_frame_publishes_only_mutated_canonical_books() {
         let current = market();
         let received_at = current.window_start + Duration::seconds(100);
         let received_instant = Instant::now();
@@ -9444,19 +9213,14 @@ mod tests {
             transport: start_test_clob_ingress(socket),
             registry: registry.clone(),
             markets: vec![current.clone()],
-            session: new_session(
-                connection_id,
-                "polymarket_clob_market",
-                "ws://127.0.0.1",
-                1,
-                received_at,
-            ),
+            connected_at: received_at,
             subscription_stats: ClobSubscriptionStats::default(),
             telemetry: ClobSocketTelemetry::new(std::slice::from_ref(&current)),
             connected_instant: received_instant,
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let shared_books = Arc::new(RwLock::new(registry));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
@@ -9485,7 +9249,11 @@ mod tests {
         )
         .await;
 
-        assert_eq!(action, ClobFrameAction::Continue);
+        assert_eq!(action.action, ClobFrameAction::Continue);
+        assert!(action.readiness_may_have_changed);
+        let shared_books_lock_wait = epoch.telemetry.last_shared_books_lock_wait;
+        finish_active_clob_frame(&mut epoch, received_instant, shared_books_lock_wait);
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
         let checkpoint = shared_books
             .read()
             .await
@@ -9493,11 +9261,57 @@ mod tests {
             .unwrap();
         assert_eq!(checkpoint.best_bid, Some(dec!(0.48)));
         assert_eq!(checkpoint.best_ask, Some(dec!(0.52)));
-        let metrics = metrics.read().await;
-        assert_eq!(metrics.dropped_messages, 0);
-        assert_eq!(metrics.clob_active_ingress_frames, 1);
-        assert_eq!(metrics.clob_active_last_ingress_sequence, 1);
-        assert_eq!(metrics.clob_active_ingress_overflows, 0);
+        {
+            let runtime_metrics = metrics.read().await;
+            assert_eq!(runtime_metrics.dropped_messages, 0);
+            assert_eq!(runtime_metrics.clob_messages_received, 1);
+            assert_eq!(runtime_metrics.feed_events_applied, 1);
+            assert_eq!(runtime_metrics.clob_active_ingress_frames, 1);
+            assert_eq!(runtime_metrics.clob_active_last_ingress_sequence, 1);
+            assert_eq!(runtime_metrics.clob_active_ingress_overflows, 0);
+        }
+
+        let unpublished_connection_id = Uuid::new_v4();
+        *shared_books.write().await = BookRegistry::new(unpublished_connection_id);
+        let payload = serde_json::json!({
+            "event_type": "last_trade_price",
+            "market": current.market_id,
+            "asset_id": current.up_token_id,
+            "price": "0.50",
+            "size": "1",
+            "timestamp": received_at.timestamp_millis().to_string()
+        });
+        let message = Message::Text(payload.to_string().into());
+        let outcome = apply_active_clob_frame(
+            &mut epoch,
+            ClobIngressFrame {
+                payload_bytes: message.len(),
+                message,
+                received_at,
+                received_instant,
+                sequence: 2,
+                _byte_permit: None,
+            },
+            &shared_books,
+            &metrics,
+        )
+        .await;
+
+        assert_eq!(outcome.action, ClobFrameAction::Continue);
+        assert!(!outcome.readiness_may_have_changed);
+        assert_eq!(
+            shared_books.read().await.connection_id(),
+            unpublished_connection_id
+        );
+        {
+            let runtime_metrics = metrics.read().await;
+            assert_eq!(runtime_metrics.clob_messages_received, 1);
+            assert_eq!(runtime_metrics.feed_events_applied, 1);
+        }
+        flush_clob_frame_metrics(&mut epoch, &metrics).await;
+        let runtime_metrics = metrics.read().await;
+        assert_eq!(runtime_metrics.clob_messages_received, 2);
+        assert_eq!(runtime_metrics.feed_events_applied, 2);
     }
 
     #[tokio::test]
@@ -9527,19 +9341,14 @@ mod tests {
             transport: start_test_clob_ingress(socket),
             registry,
             markets: vec![current.clone()],
-            session: new_session(
-                connection_id,
-                "polymarket_clob_market",
-                "ws://127.0.0.1",
-                1,
-                current.window_start,
-            ),
+            connected_at: current.window_start,
             subscription_stats: ClobSubscriptionStats::default(),
             telemetry: ClobSocketTelemetry::new(std::slice::from_ref(&current)),
             connected_instant,
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let (_shutdown_tx, mut shutdown) = watch::channel(false);
 
@@ -9577,6 +9386,41 @@ mod tests {
         assert_eq!(
             telemetry.remote_close_reason.as_deref(),
             Some("planned maintenance")
+        );
+    }
+
+    #[test]
+    fn remote_clob_close_1013_updates_only_its_telemetry() {
+        let observed_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let frame = CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again,
+            reason: "service overloaded".into(),
+        };
+        let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        let mut metrics = BtcRuntimeMetrics::default();
+        telemetry.record_remote_close(Some(&frame));
+
+        record_clob_remote_close_1013(&mut metrics, &telemetry, observed_at);
+
+        assert_eq!(metrics.clob_remote_close_1013_count, 1);
+        assert_eq!(metrics.clob_last_remote_close_1013_at, Some(observed_at));
+        assert_eq!(
+            metrics.clob_last_remote_close_1013_reason.as_deref(),
+            Some("service overloaded")
+        );
+
+        let non_1013 = CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Away,
+            reason: "planned maintenance".into(),
+        };
+        telemetry.record_remote_close(Some(&non_1013));
+        record_clob_remote_close_1013(&mut metrics, &telemetry, observed_at + Duration::seconds(1));
+
+        assert_eq!(metrics.clob_remote_close_1013_count, 1);
+        assert_eq!(metrics.clob_last_remote_close_1013_at, Some(observed_at));
+        assert_eq!(
+            metrics.clob_last_remote_close_1013_reason.as_deref(),
+            Some("service overloaded")
         );
     }
 
@@ -9835,7 +9679,6 @@ mod tests {
                     }],
                     source_timestamp: checked_at - Duration::seconds(3),
                     source_hash: Some(format!("delayed-{token_id}")),
-                    raw_payload: serde_json::json!({}),
                 },
                 checked_at,
             );
@@ -9857,19 +9700,14 @@ mod tests {
             transport: start_test_clob_ingress(client),
             registry,
             markets: vec![current.clone()],
-            session: new_session(
-                connection_id,
-                "polymarket_clob_market",
-                "ws://127.0.0.1",
-                1,
-                checked_at,
-            ),
+            connected_at: checked_at,
             subscription_stats: ClobSubscriptionStats::default(),
             telemetry: ClobSocketTelemetry::new(std::slice::from_ref(&current)),
             connected_instant,
             watchdog,
             healthy_epoch: false,
             books_usable: false,
+            pending_frame_metrics: ClobPendingFrameMetrics::default(),
         };
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let mut failures = 0;
@@ -9921,7 +9759,6 @@ mod tests {
                     }],
                     source_timestamp: recovered_at,
                     source_hash: Some(format!("fresh-{token_id}")),
-                    raw_payload: serde_json::json!({}),
                 },
                 recovered_at,
             );
@@ -10104,6 +9941,38 @@ mod tests {
     }
 
     #[test]
+    fn runtime_metrics_snapshot_reports_recent_1013_age() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let metrics = BtcRuntimeMetrics {
+            clob_last_remote_close_1013_at: Some(checked_at - Duration::milliseconds(1250)),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+
+        assert_eq!(
+            snapshot.clob_last_remote_close_1013_age_milliseconds,
+            Some(1250)
+        );
+    }
+
+    #[test]
+    fn runtime_metrics_snapshot_reports_current_clob_unavailable_age() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+        let metrics = BtcRuntimeMetrics {
+            clob_recovery_unavailable_since: Some(checked_at - Duration::seconds(95)),
+            ..BtcRuntimeMetrics::default()
+        };
+
+        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+
+        assert_eq!(
+            snapshot.clob_recovery_unavailable_age_milliseconds,
+            Some(95_000)
+        );
+    }
+
+    #[test]
     fn clob_watchdog_bootstrap_requires_both_current_books() {
         let current = market();
         let checked_at = current.window_start + Duration::minutes(1);
@@ -10210,7 +10079,6 @@ mod tests {
                     asks,
                     source_timestamp: checked_at,
                     source_hash: Some(format!("one-sided-{token_id}")),
-                    raw_payload: serde_json::json!({}),
                 },
                 checked_at + Duration::milliseconds(1),
             );
@@ -10374,7 +10242,6 @@ mod tests {
                     }],
                     source_timestamp: observed_at,
                     source_hash: None,
-                    raw_payload: serde_json::json!({}),
                 },
                 observed_at + Duration::milliseconds(5),
             );
@@ -10761,7 +10628,7 @@ mod tests {
     async fn primary_persistence_shutdown_abandonment_fails_the_integrity_audit() {
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
 
-        record_primary_persistence_shutdown_abandonment(&metrics, "feed event", 3).await;
+        record_primary_persistence_shutdown_abandonment(&metrics, "checkpoint", 3).await;
 
         let status = metrics.read().await;
         assert_eq!(status.dropped_messages, 3);
@@ -11214,6 +11081,9 @@ mod tests {
             clob_active_max_shared_books_lock_wait_milliseconds: 4,
             clob_active_heartbeat_probes: 11,
             clob_active_heartbeat_acknowledgements: 10,
+            clob_remote_close_1013_count: 2,
+            clob_last_remote_close_1013_at: Some(updated_at),
+            clob_last_remote_close_1013_reason: Some("service overloaded".to_string()),
             ..BtcRuntimeMetrics::default()
         }));
         let status = runtime_status_from_inputs(
@@ -11268,6 +11138,15 @@ mod tests {
         assert_eq!(
             value["metrics"]["clob_last_subscription_update_at"],
             serde_json::json!(updated_at)
+        );
+        assert_eq!(value["metrics"]["clob_remote_close_1013_count"], 2);
+        assert_eq!(
+            value["metrics"]["clob_last_remote_close_1013_at"],
+            serde_json::json!(updated_at)
+        );
+        assert_eq!(
+            value["metrics"]["clob_last_remote_close_1013_reason"],
+            "service overloaded"
         );
         assert!(value["metrics"].get("clob_planned_reconnects").is_none());
     }
@@ -12009,44 +11888,6 @@ mod tests {
                 display: Some(closed),
             })
         );
-    }
-
-    #[test]
-    fn clob_session_metadata_keeps_only_bounded_subscription_summary() {
-        let updated_at = Utc.timestamp_opt(1_783_902_650, 0).unwrap();
-        let stats = ClobSubscriptionStats {
-            updates: 7,
-            active_assets: 12,
-            ignored_foreign_events: 3,
-            ignored_superseded_events: 5,
-            last_updated_at: Some(updated_at),
-        };
-        let metadata = clob_session_metadata(
-            true,
-            ClobDisconnectCause::TransportFailure,
-            ClobRetryAction::ImmediateRecovery,
-            0,
-            &stats,
-        );
-        assert_eq!(metadata["subscription_updates"], 7);
-        assert_eq!(metadata["active_subscribed_assets"], 12);
-        assert_eq!(metadata["ignored_foreign_events"], 3);
-        assert_eq!(metadata["ignored_superseded_events"], 5);
-        assert_eq!(
-            metadata["last_subscription_update_at"],
-            serde_json::json!(updated_at)
-        );
-        assert!(metadata.get("subscription_history").is_none());
-        for telemetry_field in [
-            "connection_role",
-            "peer_address",
-            "edge_request_id",
-            "heartbeat_probes",
-            "subscription_target_fingerprint_sha256",
-            "transport_error_class",
-        ] {
-            assert!(metadata.get(telemetry_field).is_none());
-        }
     }
 
     #[test]
@@ -12843,46 +12684,13 @@ mod tests {
     }
 
     #[test]
-    fn reference_detail_and_session_metadata_remain_bounded() {
+    fn reference_detail_remains_bounded() {
         let bounded_unicode = bounded_reference_detail("é".repeat(200));
         assert_eq!(bounded_unicode.len(), 256);
         assert_eq!(bounded_unicode.chars().count(), 128);
         let split_boundary = bounded_reference_detail(format!("{}é", "x".repeat(255)));
         assert_eq!(split_boundary.len(), 255);
         assert!(split_boundary.is_char_boundary(split_boundary.len()));
-
-        let observed_at = Utc.timestamp_opt(1_783_902_701, 0).unwrap();
-        let stats = ReferenceSessionStats {
-            healthy_epoch: true,
-            stable_epoch: true,
-            required_ticks: 7,
-            heartbeat_probes: 3,
-            heartbeat_acknowledgements: 2,
-            last_required_tick_at: Some(observed_at),
-            last_frame_at: Some(observed_at),
-            last_pong_at: Some(observed_at),
-            time_to_first_required_tick_milliseconds: Some(12),
-            remote_close_code: Some(1001),
-        };
-        let metadata = reference_session_metadata(
-            ReferenceDisconnectReason::RemoteClose,
-            Some(&bounded_unicode),
-            ReferenceRetryAction::Backoff(StdDuration::from_millis(1_250)),
-            4,
-            Some(StdDuration::from_secs(45)),
-            &stats,
-        );
-        let fields = metadata.as_object().unwrap();
-
-        assert_eq!(fields.len(), 17);
-        assert!(fields
-            .values()
-            .all(|value| !value.is_array() && !value.is_object()));
-        assert_eq!(metadata["disconnect_reason"], "remote_close");
-        assert_eq!(metadata["disconnect_cause"], "transport_failure");
-        assert_eq!(metadata["disconnect_detail"], bounded_unicode);
-        assert_eq!(metadata["retry_delay_ms"], 1_250);
-        assert_eq!(metadata["next_action"], "backoff");
     }
 
     #[test]

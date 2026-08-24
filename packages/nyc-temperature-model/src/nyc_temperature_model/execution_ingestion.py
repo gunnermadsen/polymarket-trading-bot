@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pyarrow as pa
 import pyarrow.dataset as ds
 
+from . import PROCESS_ID
 from .config import Settings
 from .database import connection, insert_artifact
 from .jobs import Job, update_progress
@@ -185,18 +187,123 @@ def _completed_decision_times(settings: Settings, job: Job, groups) -> set[datet
     with connection(settings.database_url) as conn:
         rows = conn.execute(
             """
-            SELECT decision_time, count(*)::int AS snapshot_count
+            SELECT decision_time, quality_flags
             FROM weather.execution_snapshots
             WHERE decision_time >= %s AND decision_time < %s
-            GROUP BY decision_time
             """,
             (job.range_start, job.range_end),
         ).fetchall()
+    counts: dict[datetime, int] = {}
+    retryable_gaps: set[datetime] = set()
+    for row in rows:
+        decision_time = row["decision_time"]
+        counts[decision_time] = counts.get(decision_time, 0) + 1
+        if _retryable_archive_gap(row["quality_flags"]):
+            retryable_gaps.add(decision_time)
     return {
-        row["decision_time"]
-        for row in rows
-        if expected.get(row["decision_time"]) == row["snapshot_count"]
+        decision_time
+        for decision_time, count in counts.items()
+        if expected.get(decision_time) == count and decision_time not in retryable_gaps
     }
+
+
+def _retryable_archive_gap(flags: list[str] | str | None) -> bool:
+    if isinstance(flags, str):
+        flags = json.loads(flags)
+    return any(
+        str(flag).startswith(("pmxt_archive_missing_", "pmxt_archive_corrupt_"))
+        for flag in (flags or [])
+    )
+
+
+def _manifest_digest(groups) -> tuple[str, int]:
+    manifest = []
+    archive_hours = set()
+    for decision_time, markets in groups:
+        hour = decision_time.replace(minute=0, second=0, microsecond=0)
+        required_hours = [
+            value
+            for value in (hour - timedelta(hours=1), hour)
+            if value >= PMXT_COVERAGE_START.replace(minute=0)
+        ]
+        archive_hours.update(required_hours)
+        manifest.append(
+            {
+                "decision_time": decision_time.isoformat(),
+                "archive_hours": [value.isoformat() for value in required_hours],
+                "markets": [
+                    {
+                        "market_id": market["market_id"],
+                        "condition_id": market["condition_id"],
+                        "yes_token_id": market["yes_token_id"],
+                        "no_token_id": market["no_token_id"],
+                    }
+                    for market in sorted(markets, key=lambda value: value["market_id"])
+                ],
+            }
+        )
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest(), len(archive_hours)
+
+
+def _timestamp(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _last_trade_rows(
+    events: list[dict[str, Any]], markets: list[dict], decision_time: datetime
+) -> list[dict[str, Any]]:
+    tokens = {}
+    for market in markets:
+        tokens[str(market["yes_token_id"])] = (market["market_id"], "YES")
+        tokens[str(market["no_token_id"])] = (market["market_id"], "NO")
+    rows = []
+    for event in events:
+        if str(event["event_type"]) != "last_trade_price" or event.get("price") is None:
+            continue
+        token_id = str(event["asset_id"])
+        mapped = tokens.get(token_id)
+        if mapped is None:
+            continue
+        received_at = _timestamp(event["timestamp_received"])
+        source_timestamp = _timestamp(event["timestamp"])
+        if received_at > decision_time:
+            continue
+        price = Decimal(str(event["price"]))
+        if not Decimal(0) < price < Decimal(1):
+            continue
+        size = Decimal(str(event["size"])) if event.get("size") is not None else None
+        side = str(event.get("side") or "").upper() or None
+        if side not in (None, "BUY", "SELL"):
+            side = None
+        identity = json.dumps(
+            {
+                "market_id": mapped[0],
+                "token_id": token_id,
+                "source_timestamp": source_timestamp.isoformat(),
+                "provider_received_at": received_at.isoformat(),
+                "price": str(price),
+                "size": str(size) if size is not None else None,
+                "side": side,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        rows.append(
+            {
+                "event_id": hashlib.sha256(identity).hexdigest(),
+                "market_id": mapped[0],
+                "token_id": token_id,
+                "outcome": mapped[1],
+                "source_timestamp": source_timestamp,
+                "provider_received_at": received_at,
+                "price": price,
+                "size": size,
+                "trade_side": side,
+                "source_artifact_id": event["_source_artifact_id"],
+            }
+        )
+    return rows
 
 
 def _archive_flag(availability: str, archive_hour: datetime) -> str:
@@ -212,6 +319,7 @@ def _record_archive(
     digest: str | None = None,
     size: int | None = None,
     error: BaseException | None = None,
+    record_count: int = 0,
 ) -> str:
     metadata = {"archive_hour": archive_hour.isoformat(), "availability": availability}
     if error is not None:
@@ -224,7 +332,7 @@ def _record_archive(
             source_uri=uri,
             sha256=digest,
             compressed_bytes=size,
-            record_count=0,
+            record_count=record_count,
             metadata=metadata,
             source_start=archive_hour,
             source_end=archive_hour + timedelta(hours=1),
@@ -272,6 +380,7 @@ def _load_archive_events(
         availability="recovered" if recovered else "available",
         digest=state["digest"],
         size=state["size"],
+        record_count=len(events),
     )
     path.unlink(missing_ok=True)
     return events, artifact_id, None
@@ -279,6 +388,7 @@ def _load_archive_events(
 
 def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
     groups = _decision_groups(settings, job)
+    manifest_sha256, expected_archive_hours = _manifest_digest(groups)
     completed_decisions = _completed_decision_times(settings, job, groups)
     snapshots = sum(
         len(markets) * 3
@@ -288,6 +398,7 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
     reused_decision_groups = len(completed_decisions)
     archives_seen: set[str] = set()
     archive_gaps: set[str] = set()
+    last_trade_prices = 0
     if completed_decisions:
         update_progress(
             settings,
@@ -317,6 +428,8 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
             archive_events, artifact_id, archive_flag = _load_archive_events(
                 settings, archive_hour, condition_ids
             )
+            for event in archive_events:
+                event["_source_artifact_id"] = artifact_id
             events.extend(archive_events)
             artifact_ids.append(artifact_id)
             archives_seen.add(_archive_spec(settings.pmxt_base_url, archive_hour)[0])
@@ -324,6 +437,7 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
                 archive_flags.append(archive_flag)
                 archive_gaps.add(archive_flag)
         events.sort(key=lambda row: (row["timestamp_received"], row["timestamp"]))
+        trade_rows = _last_trade_rows(events, markets, decision_time)
         books: dict[str, Book] = {}
         for event in events:
             received = event["timestamp_received"]
@@ -334,6 +448,24 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
             asset = str(event["asset_id"])
             _apply_event(books.setdefault(asset, Book()), event)
         with connection(settings.database_url) as conn, conn.transaction():
+            if trade_rows:
+                with conn.cursor() as cursor:
+                    cursor.executemany(
+                        """
+                        INSERT INTO weather.pmxt_last_trade_prices (
+                          process_id,event_id,market_id,token_id,outcome,source_timestamp,
+                          provider_received_at,price,size,trade_side,source_artifact_id
+                        ) VALUES (
+                          %(process_id)s,%(event_id)s,%(market_id)s,%(token_id)s,%(outcome)s,
+                          %(source_timestamp)s,%(provider_received_at)s,%(price)s,%(size)s,
+                          %(trade_side)s,%(source_artifact_id)s
+                        )
+                        ON CONFLICT (process_id,event_id) DO UPDATE SET
+                          source_artifact_id=EXCLUDED.source_artifact_id
+                        """,
+                        [{**row, "process_id": PROCESS_ID} for row in trade_rows],
+                    )
+                last_trade_prices += len(trade_rows)
             for market in markets:
                 yes = books.get(market["yes_token_id"], Book())
                 no = books.get(market["no_token_id"], Book())
@@ -396,6 +528,8 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
                 "snapshots": snapshots,
                 "archives": len(archives_seen),
                 "archive_gaps": len(archive_gaps),
+                "last_trade_prices": last_trade_prices,
+                "manifest_sha256": manifest_sha256,
                 "reused_decision_groups": reused_decision_groups,
                 "last_decision_time": decision_time.isoformat(),
             },
@@ -404,5 +538,8 @@ def ingest_pmxt_execution(settings: Settings, job: Job) -> dict:
         "decision_groups": len(groups),
         "snapshots": snapshots,
         "archives": len(archives_seen),
+        "expected_archive_hours": expected_archive_hours,
         "archive_gaps": sorted(archive_gaps),
+        "last_trade_prices": last_trade_prices,
+        "manifest_sha256": manifest_sha256,
     }

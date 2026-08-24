@@ -106,7 +106,7 @@ pub use process_runner::{
 };
 pub use repository::{
     BtcMarketLabel, BtcOfficialResolutionWatch, BtcPaperSettlementRecord, BtcRepository,
-    BtcRunManifest, FeedSession, PersistedOfficialResolution,
+    BtcRunManifest, PersistedOfficialResolution,
 };
 pub use runtime::{
     runtime_status_from_inputs, BinanceSpotL2RuntimeMetrics, BtcHeartbeatConfig,

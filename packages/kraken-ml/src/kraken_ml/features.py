@@ -90,10 +90,42 @@ OI_FEATURES = [
     "oi_z96",
 ]
 
+POSITIONING_FEATURES = PRICE_FEATURES + [
+    "future_basis",
+    "future_basis_delta_1",
+    "future_basis_z96",
+    "funding_rate_bps",
+    "funding_rate_z96",
+    *OI_FEATURES,
+]
+
+TOURNAMENT_FLOW_FEATURES = POSITIONING_FEATURES + [
+    "aggressor_differential",
+    "aggressor_z16",
+    "aggressor_z96",
+    "trade_volume_log",
+    "trade_volume_z16",
+    "trade_count_log",
+    "trade_count_z16",
+    "cvd_delta_1",
+    "cvd_delta_4",
+    "cvd_delta_z96",
+    "buy_sell_imbalance",
+    "liquidation_log",
+    "liquidation_z96",
+]
+TOURNAMENT_MICROSTRUCTURE_FEATURES = TOURNAMENT_FLOW_FEATURES + FULL_FEATURES[
+    len(FLOW_FEATURES) :
+]
+TOURNAMENT_ONLY_FEATURES = ["funding_rate_bps", "funding_rate_z96"]
+
 REGRESSION_FEATURE_SETS = {
     "price": PRICE_FEATURES,
     "oi": OI_FEATURES,
     "price_oi": PRICE_FEATURES + OI_FEATURES,
+    "positioning": POSITIONING_FEATURES,
+    "flow": TOURNAMENT_FLOW_FEATURES,
+    "microstructure": TOURNAMENT_MICROSTRUCTURE_FEATURES,
 }
 
 FEATURE_SETS = {
@@ -101,7 +133,7 @@ FEATURE_SETS = {
     "flow": FLOW_FEATURES,
     "full": FULL_FEATURES,
 }
-FEATURE_SCHEMA_VERSION = 4
+FEATURE_SCHEMA_VERSION = 5
 
 TARGET_COLUMNS = [
     "label",
@@ -302,6 +334,7 @@ def build_feature_frame(
                 "oi_change_16_bps"
             ),
             pl.col("future_basis").diff().alias("future_basis_delta_1"),
+            (10_000.0 * pl.col("relative_funding_rate")).alias("funding_rate_bps"),
             pl.col("trade_volume").log1p().alias("trade_volume_log"),
             pl.col("trade_count").log1p().alias("trade_count_log"),
             # Kraken's archived CVD level restarts at every archive-object
@@ -339,6 +372,7 @@ def build_feature_frame(
             _zscore("trade_candle_volume_log", 16, "trade_candle_volume_z16"),
             _zscore("trade_candle_volume_log", 96, "trade_candle_volume_z96"),
             _zscore("future_basis", 96, "future_basis_z96"),
+            _zscore("funding_rate_bps", 96, "funding_rate_z96"),
             _zscore("oi_log", 96, "oi_z96"),
             _zscore("aggressor_differential", 16, "aggressor_z16"),
             _zscore("aggressor_differential", 96, "aggressor_z96"),
@@ -372,6 +406,7 @@ def build_feature_frame(
         "bucket_start",
         *TARGET_COLUMNS,
         *FULL_FEATURES,
+        *TOURNAMENT_ONLY_FEATURES,
     ]
     result = frame.select(selected)
     validate_feature_frame(result, config, horizon_bars=horizon)
@@ -407,11 +442,12 @@ def validate_feature_frame(
         raise RuntimeError("feature frame does not end at the final complete target")
     if frame.select(pl.col("label").is_null().any()).item():
         raise RuntimeError("feature frame contains null labels")
-    nulls = frame.select(pl.col(FULL_FEATURES).null_count()).row(0, named=True)
+    all_features = [*FULL_FEATURES, *TOURNAMENT_ONLY_FEATURES]
+    nulls = frame.select(pl.col(all_features).null_count()).row(0, named=True)
     missing = {column: count for column, count in nulls.items() if count}
     if missing:
         raise RuntimeError(f"feature columns contain nulls: {missing}")
-    finite_columns = [*FULL_FEATURES, "long_net_bps", "short_net_bps"]
+    finite_columns = [*all_features, "long_net_bps", "short_net_bps"]
     non_finite = {
         column: frame.filter(~pl.col(column).is_finite()).height for column in finite_columns
     }

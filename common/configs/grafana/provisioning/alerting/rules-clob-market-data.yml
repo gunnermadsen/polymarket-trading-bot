@@ -1,0 +1,311 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: clob-market-data-20s
+    folder: Polymarket Trading Path
+    interval: 20s
+    rules:
+      - uid: clob_remote_close_1013
+        title: CLOB remote close 1013 observed
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: polymarket-bot-runtime
+            relativeTimeRange:
+              from: 60
+              to: 0
+            model:
+              columns:
+                - selector: shared_market_data.metrics.clob_last_remote_close_1013_age_milliseconds
+                  text: CLOB Last Remote Close 1013 Age
+                  type: number
+              datasource:
+                type: yesoreyeram-infinity-datasource
+                uid: polymarket-bot-runtime
+              format: table
+              intervalMs: 1000
+              json_options:
+                root_is_not_array: true
+              maxDataPoints: 43200
+              parser: backend
+              refId: A
+              root_selector: ""
+              source: url
+              type: json
+              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
+              url_options:
+                data: ""
+                method: GET
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings:
+                mode: dropNN
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 300000
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: The shared Polymarket CLOB WebSocket received close code 1013 within the last five minutes.
+          summary: CLOB market-data transport was asked to try again later
+        labels:
+          condition: remote_close_1013
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: clob_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
+      - uid: clob_book_unavailable_sustained
+        title: CLOB order book unavailable for trading
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: polymarket-bot-runtime
+            relativeTimeRange:
+              from: 60
+              to: 0
+            model:
+              columns:
+                - selector: shared_market_data.metrics.clob_recovery_unavailable_age_milliseconds
+                  text: CLOB Recovery Unavailable Age
+                  type: number
+              datasource:
+                type: yesoreyeram-infinity-datasource
+                uid: polymarket-bot-runtime
+              format: table
+              intervalMs: 1000
+              json_options:
+                root_is_not_array: true
+              maxDataPoints: 43200
+              parser: backend
+              refId: A
+              root_selector: ""
+              source: url
+              type: json
+              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
+              url_options:
+                data: ""
+                method: GET
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings:
+                mode: dropNN
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 90000
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: The shared CLOB order book has remained unavailable to the trading path for more than 90 seconds.
+          summary: CLOB order-book evidence is unavailable for trading
+        labels:
+          condition: clob_book_unavailable
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: clob_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
+
+  - orgId: 1
+    name: live-order-integrity-20s
+    folder: Polymarket Trading Path
+    interval: 20s
+    rules:
+      - uid: live_order_reconciliation_degraded
+        title: Live order reconciliation degraded
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: postgres
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              datasource:
+                type: grafana-postgresql-datasource
+                uid: postgres
+              editorMode: code
+              format: table
+              intervalMs: 1000
+              maxDataPoints: 43200
+              rawQuery: true
+              rawSql: |
+                WITH active_live_processes AS MATERIALIZED (
+                  SELECT process_id
+                  FROM polymarket.trading_processes
+                  WHERE enabled
+                    AND status IN ('starting', 'running', 'stopping')
+                    AND config #>> '{execution,mode}' = 'live'
+                ), latest_reconciliation AS MATERIALIZED (
+                  SELECT process.process_id,
+                         reconciliation.status,
+                         reconciliation.unresolved_count,
+                         reconciliation.completed_at
+                  FROM active_live_processes process
+                  LEFT JOIN LATERAL (
+                    SELECT status, unresolved_count, completed_at
+                    FROM polymarket.live_reconciliation_runs
+                    WHERE process_id = process.process_id
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                  ) reconciliation ON true
+                )
+                SELECT COUNT(*) FILTER (
+                  WHERE status IS NULL
+                     OR status <> 'completed'
+                     OR unresolved_count > 0
+                     OR completed_at IS NULL
+                     OR completed_at < now() - interval '90 seconds'
+                )::double precision AS value
+                FROM latest_reconciliation;
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings:
+                mode: dropNN
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 60s
+        annotations:
+          description: At least one active live process has unresolved, failed, missing, or stale order reconciliation evidence.
+          summary: Live order state cannot be reconciled cleanly
+        labels:
+          condition: live_order_reconciliation_degraded
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: order_integrity
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
