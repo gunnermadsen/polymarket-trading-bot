@@ -1,0 +1,110 @@
+[training]
+profile = "btc_5m_twap60_challenger_tournament"
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260825
+data_watermark = "2026-08-25T00:00:00Z"
+
+[regimes]
+legacy_start = "2026-06-07T00:00:00Z"
+authentic_counterfactual_start = "2026-08-01T00:00:00Z"
+twap30_transition_start = "2026-08-07T00:00:00Z"
+current_twap60_start = "2026-08-14T00:00:00Z"
+end = "2026-08-25T00:00:00Z"
+
+[entry]
+start_second = 60
+champion_start_second = 90
+end_second_exclusive = 180
+cadence_seconds = 5
+cells = [[60, 90], [90, 120], [120, 150], [150, 180]]
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[proxy]
+calibration_start = "2026-08-01T00:00:00Z"
+calibration_end = "2026-08-07T00:00:00Z"
+validation_end = "2026-08-14T00:00:00Z"
+confirmation_end = "2026-08-25T00:00:00Z"
+weights = [0.10, 0.25, 0.50]
+authentic_transition_weights = [0.50, 0.75, 1.00]
+regime_weight_cap = 0.50
+minimum_validation_agreement = 0.90
+
+[model]
+calibration_cs = [0.10, 0.25, 0.50, 1.00]
+hierarchical_shrinkage_rows = [100, 200, 400]
+hyperparameter_combinations = 36
+
+[policy]
+confidence_thresholds = [0.65, 0.70, 0.75, 0.80, 0.85]
+stress_edge_thresholds = [0.00, 0.005, 0.01, 0.02, 0.03, 0.05]
+loss_severity_thresholds = [0.05, 0.10, 0.20, 0.30, 0.50]
+wait_advantage_thresholds = [-0.02, 0.00, 0.02]
+price_bucket_edges = [0.00, 0.65, 0.75, 0.85, 1.01]
+
+[[folds]]
+name = "current_20260814_15"
+train_end = "2026-08-14T00:00:00Z"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-16T00:00:00Z"
+
+[[folds]]
+name = "current_20260816_17"
+train_end = "2026-08-16T00:00:00Z"
+test_start = "2026-08-16T00:00:00Z"
+test_end = "2026-08-18T00:00:00Z"
+
+[[folds]]
+name = "current_20260818_19"
+train_end = "2026-08-18T00:00:00Z"
+test_start = "2026-08-18T00:00:00Z"
+test_end = "2026-08-20T00:00:00Z"
+
+[[folds]]
+name = "current_20260820_21"
+train_end = "2026-08-20T00:00:00Z"
+test_start = "2026-08-20T00:00:00Z"
+test_end = "2026-08-22T00:00:00Z"
+
+[[folds]]
+name = "current_20260822_23"
+train_end = "2026-08-22T00:00:00Z"
+test_start = "2026-08-22T00:00:00Z"
+test_end = "2026-08-24T00:00:00Z"
+
+[[folds]]
+name = "current_20260824"
+train_end = "2026-08-24T00:00:00Z"
+test_start = "2026-08-24T00:00:00Z"
+test_end = "2026-08-25T00:00:00Z"
+
+[gates]
+minimum_accuracy = 0.75
+champion_accuracy_tolerance = 0.02
+minimum_profit_factor = 1.25
+minimum_market_coverage = 0.10
+minimum_champion_relative_coverage = 0.70
+maximum_entry_delay_seconds = 5.0
+minimum_profitable_fold_ratio = 0.70
+target_cvar_improvement = 0.15
+bootstrap_resamples = 2000
+bootstrap_confidence = 0.95
+
+[paths]
+core_config = "configs/btc-5m-twap60-challenger-core-20260607-20260825.toml"
+label_source_sql = "sql/btc-twap60-label-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_current_source_sql = "sql/btc-twap60-core-current-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+cache = "data/btc-twap60-challenger-tournament-20260607-20260825"
+runs = "runs/btc-twap60-challenger-tournament-20260607-20260825"
+committed_results = "training-results/btc-5m-twap60-challenger-tournament-20260607-20260825"
+champion_tournament = "training-results/btc-5m-middle-market-ablation-tournament-20260525/20260820T191331Z/tournament.joblib"
+champion_runtime_model = "runtime-models/btc-5m-chainlink-stratified-payoff-paper-20260820/model.json"
+champion_runtime_manifest = "runtime-models/btc-5m-chainlink-stratified-payoff-paper-20260820/manifest.json"
