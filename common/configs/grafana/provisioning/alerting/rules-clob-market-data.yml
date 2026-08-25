@@ -197,6 +197,95 @@ groups:
           service: polymarket-bot
           severity: warning
         isPaused: false
+      - uid: binance_reference_unavailable
+        title: Binance required reference feed unavailable for trading
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: polymarket-bot-runtime
+            relativeTimeRange:
+              from: 60
+              to: 0
+            model:
+              columns:
+                - selector: shared_market_data.metrics.binance_transport.recovery_unavailable_age_milliseconds
+                  text: Binance Reference Recovery Unavailable Age
+                  type: number
+              datasource:
+                type: yesoreyeram-infinity-datasource
+                uid: polymarket-bot-runtime
+              format: table
+              intervalMs: 1000
+              json_options:
+                root_is_not_array: true
+              maxDataPoints: 43200
+              parser: backend
+              refId: A
+              root_selector: ""
+              source: url
+              type: json
+              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
+              url_options:
+                data: ""
+                method: GET
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings:
+                mode: dropNN
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 60000
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: The required Binance aggregate-trade reference feed has remained unavailable to the trading path for more than 60 seconds.
+          summary: Required Binance reference-price evidence is unavailable for trading
+        labels:
+          condition: binance_reference_feed_unavailable
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: reference_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
 
   - orgId: 1
     name: live-order-integrity-20s
