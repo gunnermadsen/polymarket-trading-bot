@@ -21,7 +21,6 @@ import pyarrow as pa
 
 from .chainlink_oi_features import (
     _attach_candle_features,
-    _query_frame,
 )
 from .continuous_edge_training import (
     BOOK_RAW_FEATURES,
@@ -295,9 +294,39 @@ def _isolated_query_frame(
             return _query_capacity_frame(
                 connection, query, parameters, cursor_name=cursor_name
             )
-        return _query_frame(connection, query, parameters, cursor_name=cursor_name)
+        return _query_stable_frame(
+            connection, query, parameters, cursor_name=cursor_name
+        )
     finally:
         connection.close()
+
+
+def _query_stable_frame(
+    connection: Any,
+    query: str,
+    parameters: dict[str, Any],
+    *,
+    cursor_name: str,
+) -> pl.DataFrame:
+    chunks: list[pl.DataFrame] = []
+    columns: list[str] = []
+    with connection.transaction():
+        connection.execute("SET TRANSACTION READ ONLY")
+        with connection.cursor(name=cursor_name) as cursor:
+            cursor.execute(query, parameters)
+            columns = [column.name for column in cursor.description or ()]
+            while rows := cursor.fetchmany(25_000):
+                chunks.append(
+                    pl.DataFrame(
+                        rows,
+                        schema=columns,
+                        orient="row",
+                        infer_schema_length=None,
+                    )
+                )
+    if not chunks:
+        return pl.DataFrame({column: [] for column in columns})
+    return pl.concat(chunks, how="vertical_relaxed", rechunk=True)
 
 
 def _query_completed_candles(
