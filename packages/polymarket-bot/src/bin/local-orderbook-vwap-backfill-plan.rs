@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_START: &str = "2026-08-14T18:00:00Z";
 const DEFAULT_END: &str = "2026-08-25T00:00:00Z";
 const MATERIALIZATION_CONTRACT: &str = "local-orderbook-capacity-vwap-v1";
+const RETRY_GENERATION_ENV: &str = "POLYMARKET_LOCAL_VWAP_RETRY_GENERATION";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,6 +27,12 @@ async fn main() -> Result<()> {
         .init();
     let start = configured_time("POLYMARKET_LOCAL_VWAP_START", DEFAULT_START)?;
     let end = configured_time("POLYMARKET_LOCAL_VWAP_END", DEFAULT_END)?;
+    let retry_generation = env::var(RETRY_GENERATION_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "0".to_string())
+        .parse::<u32>()
+        .with_context(|| format!("{RETRY_GENERATION_ENV} must be an unsigned integer"))?;
     if end <= start {
         bail!("local VWAP end must be later than start");
     }
@@ -47,8 +54,8 @@ async fn main() -> Result<()> {
             range_end: next_hour,
             parameters: json!({"source": "local_orderbook"}),
             idempotency_key: format!(
-                "polymarket_local_orderbook_capacity:{}:{MATERIALIZATION_CONTRACT}",
-                hour.format("%Y-%m-%dT%H")
+                "polymarket_local_orderbook_capacity:{}:{MATERIALIZATION_CONTRACT}:retry-{retry_generation}",
+                hour.format("%Y-%m-%dT%H"),
             ),
         }
         .validate()
@@ -61,7 +68,7 @@ async fn main() -> Result<()> {
         enqueued = enqueued.saturating_add(1);
         hour = next_hour;
     }
-    info!(%start, %end, enqueued, "local VWAP historical plan ready");
+    info!(%start, %end, enqueued, retry_generation, "local VWAP historical plan ready");
     Ok(())
 }
 
