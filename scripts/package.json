@@ -1,0 +1,8 @@
+{
+  "name": "polymarket-local-scripts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chainlink/data-streams-sdk": "1.2.1"
+  }
+}
