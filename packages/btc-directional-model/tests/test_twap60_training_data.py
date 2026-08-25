@@ -10,9 +10,18 @@ from btc_directional_model.twap60_training_data import (
     attach_causal_refprice_features,
     authentic_labels,
     canonical_refprice_path,
+    ensure_oracle_eligibility_compatibility,
     piecewise_average,
     verify_runtime_refprice_golden_vectors,
 )
+
+
+def test_current_oracle_eligibility_is_compatible_with_established_feature_name() -> None:
+    frame = pl.DataFrame({"oracle_model_eligible": [True, False]})
+
+    frame = ensure_oracle_eligibility_compatibility(frame)
+
+    assert frame["early_oracle_eligible"].to_list() == [True, False]
 
 
 def test_piecewise_average_integrates_trailing_sixty_seconds() -> None:

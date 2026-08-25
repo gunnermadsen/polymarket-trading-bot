@@ -929,6 +929,16 @@ def verify_runtime_refprice_golden_vectors(
     }
 
 
+def ensure_oracle_eligibility_compatibility(frame: pl.DataFrame) -> pl.DataFrame:
+    if "early_oracle_eligible" in frame.columns:
+        return frame
+    if "oracle_model_eligible" not in frame.columns:
+        raise RuntimeError("training core is missing oracle eligibility evidence")
+    return frame.with_columns(
+        pl.col("oracle_model_eligible").alias("early_oracle_eligible")
+    )
+
+
 def build_tournament_frame(
     paths: DataPaths,
     *,
@@ -947,6 +957,7 @@ def build_tournament_frame(
     core = pl.concat(
         [historical_core, current_core], how="diagonal_relaxed", rechunk=True
     ).unique(subset=["market_id", "observed_at"], keep="last")
+    core = ensure_oracle_eligibility_compatibility(core)
     refprice = load_source_group(paths, "refprice")
     candles = load_source_group(paths, "candles").unique(
         subset=["close_timestamp"], keep="last"
