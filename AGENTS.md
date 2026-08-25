@@ -70,9 +70,13 @@ Think of Capitonic as a vision to generate income through systems with automatio
 ## Branching
 
 - Commit changes in coherent groups organized by feature domain.
-- When building a new image, tag the commit for which the image was built:
--- using this pattern for container images: image/<image_name>/sha256-<docker-sha256-hash>
--- using this pattern for a container image using a new model: model/<model-name-with-metadata>
+- After building an immutable container image, tag the exact source commit used for that build with `image/<image_name>/sha256-<docker-sha256-hash>`.
+- A `model/<model-name-with-metadata>` tag records provenance for a new immutable model artifact produced by an executed model-build or training workflow. Create it only when that exact artifact exists, its identity can be verified, and the tag can point to the commit that first records or unambiguously references it.
+- Deploying, activating, configuring, copying, exporting for runtime use, or packaging an existing model does not constitute a new model build and must not create a new `model/...` tag. Building a container that uses an existing model receives an `image/...` tag only; record the existing model tag, model key, or artifact SHA-256 in the image tag annotation.
+- Starting a paper or live trading process with an existing model must not place a `model/...` tag on the process configuration commit, deployment commit, current branch tip, or latest repository commit. Reuse the existing model identity without moving or recreating its tag.
+- Model tags must be annotated and record the model artifact SHA-256, artifact path or immutable URI, producing commit, executed model-build or training-run identity, source or input identity, qualification status, and deployment status at tagging time.
+- Never infer model-tag eligibility from a model filename, manifest, process deployment, container build, branch name, or the fact that a commit is recent. If the task did not produce a new immutable model artifact, do not create a `model/...` tag.
+- These rules govern Git tag creation and provenance only. They do not gate, delay, prohibit, prescribe, or otherwise interfere with model training, retraining, evaluation, export, or experimentation.
 - Use these standard branch names for new cycle work: `integration-<YYYY-MM-DD>`, `feature/<feature-name>`, and `defect/<defect-name>`. Use another branch name only when the user explicitly requests it.
 - By default, every new independent feature domain uses a dedicated `feature/<feature-name>` branch and every defect uses a dedicated `defect/<defect-name>` branch. An explicitly requested branch name may override this naming default.
 - Create feature and defect branches from the latest tip of the active integration branch, never from `development` while an integration cycle is active.
