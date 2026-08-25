@@ -10,6 +10,7 @@ from btc_directional_model.refprice_twap_training import (
     FAMILIES,
     TWAP_INPUT_FEATURES,
     _apply_frozen_policy,
+    _attribution,
     load_config,
 )
 
@@ -87,3 +88,12 @@ def test_admission_is_symmetric_and_has_no_streak_rule() -> None:
 
     assert selected["market_id"].to_list() == ["down", "up"]
     assert "streak" not in str(config.policies).lower()
+
+
+def test_attribution_uses_only_frozen_descendant_arms() -> None:
+    row = {key: 0.0 for key in ("net_pnl", "stress_net_pnl", "brier", "log_loss", "ece_10")}
+    results = {arm: {family: row for family in FAMILIES} for arm in ARMS}
+
+    attribution = _attribution(results)
+
+    assert set(attribution["q5"]) == {"incumbent_to_R", "R_to_T", "T_to_RT", "R_to_RT"}

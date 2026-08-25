@@ -1459,10 +1459,10 @@ def _attribution(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for family in FAMILIES:
         output[family] = {
-            "existing_to_watermark_refresh": "incumbent remains fixed external benchmark",
-            "W_to_R": _metric_delta(results["W"][family], results["R"][family]),
+            "incumbent_to_R": "incumbent remains fixed external benchmark",
             "R_to_T": _metric_delta(results["R"][family], results["T"][family]),
-            "W_to_T": _metric_delta(results["W"][family], results["T"][family]),
+            "T_to_RT": _metric_delta(results["T"][family], results["RT"][family]),
+            "R_to_RT": _metric_delta(results["R"][family], results["RT"][family]),
         }
     return output
 
