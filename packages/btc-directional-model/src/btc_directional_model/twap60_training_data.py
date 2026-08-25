@@ -17,12 +17,17 @@ from typing import Any, Literal
 
 import numpy as np
 import polars as pl
+import pyarrow as pa
 
 from .chainlink_oi_features import (
     _attach_candle_features,
     _query_frame,
 )
-from .continuous_edge_training import BOOK_RAW_FEATURES, attach_book_features
+from .continuous_edge_training import (
+    BOOK_RAW_FEATURES,
+    CAPACITY_SCHEMA,
+    attach_book_features,
+)
 from .core_extract import (
     CORE_ORACLE_ROUND_SCHEMA,
     POLYGON_CHAINLINK_BTCUSD_PROXY,
@@ -202,7 +207,7 @@ def extract_tournament_sources(
                     },
                     cursor_name=f"btc_twap60_candles_{day:%Y%m%d}",
                 ),
-                "execution": _query_frame(
+                "execution": _query_capacity_frame(
                     connection, sql["execution"], parameters,
                     cursor_name=f"btc_twap60_execution_{day:%Y%m%d}",
                 ),
@@ -233,6 +238,30 @@ def load_source_group(paths: DataPaths, name: str) -> pl.DataFrame:
     rows = manifest["partitions"][name]
     frames = [pl.read_parquet(paths.cache / row["path"]) for row in rows]
     return pl.concat(frames, how="diagonal_relaxed", rechunk=True) if frames else pl.DataFrame()
+
+
+def _query_capacity_frame(
+    connection: Any,
+    query: str,
+    parameters: dict[str, Any],
+    *,
+    cursor_name: str,
+) -> pl.DataFrame:
+    """Decode nullable capacity columns with the repository's fixed Arrow schema."""
+
+    chunks: list[pl.DataFrame] = []
+    with connection.transaction():
+        connection.execute("SET TRANSACTION READ ONLY")
+        with connection.cursor(name=cursor_name) as cursor:
+            cursor.execute(query, parameters)
+            while rows := cursor.fetchmany(25_000):
+                records = [
+                    dict(zip(CAPACITY_SCHEMA.names, row, strict=True)) for row in rows
+                ]
+                chunks.append(pl.from_arrow(pa.Table.from_pylist(records, schema=CAPACITY_SCHEMA)))
+    if not chunks:
+        return pl.from_arrow(pa.Table.from_pylist([], schema=CAPACITY_SCHEMA))
+    return pl.concat(chunks, how="vertical", rechunk=True)
 
 
 def build_current_core_features(
