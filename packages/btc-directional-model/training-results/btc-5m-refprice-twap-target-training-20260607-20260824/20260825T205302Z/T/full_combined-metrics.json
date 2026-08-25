@@ -1,0 +1,169 @@
+{
+  "accuracy": 0.6835443037974683,
+  "artifact_sha256": "a632b05513076a16bd37180da26960785bfa8cfdab4ae37e14bd856aa4510a51",
+  "average_probability_up": 0.5042020139602099,
+  "brier": 0.14215443092548538,
+  "directions": {
+    "DOWN": {
+      "losses": 30,
+      "net_pnl": -3.680640000000002,
+      "trades": 103,
+      "wins": 73
+    },
+    "UP": {
+      "losses": 20,
+      "net_pnl": -12.394413516,
+      "trades": 55,
+      "wins": 35
+    }
+  },
+  "ece_10": 0.03023778712055439,
+  "entry_cells": {
+    "early_15_89": {
+      "net_pnl": 0.0,
+      "trades": 0,
+      "wins": 0
+    },
+    "late_180_240": {
+      "net_pnl": 0.0,
+      "trades": 0,
+      "wins": 0
+    },
+    "middle_120_149": {
+      "net_pnl": -21.007719999999996,
+      "trades": 102,
+      "wins": 68
+    },
+    "middle_150_179": {
+      "net_pnl": 9.749951484,
+      "trades": 14,
+      "wins": 12
+    },
+    "middle_90_119": {
+      "net_pnl": -4.817285000000002,
+      "trades": 42,
+      "wins": 28
+    }
+  },
+  "entry_price_buckets": {
+    "0.00-0.65": {
+      "net_pnl": -8.449638515999997,
+      "trades": 50,
+      "wins": 25
+    },
+    "0.65-0.75": {
+      "net_pnl": -10.569625000000002,
+      "trades": 40,
+      "wins": 26
+    },
+    "0.75-0.85": {
+      "net_pnl": -1.7246350000000066,
+      "trades": 44,
+      "wins": 35
+    },
+    "0.85-1.01": {
+      "net_pnl": 4.668845000000004,
+      "trades": 24,
+      "wins": 22
+    }
+  },
+  "evaluation_markets": 487,
+  "evaluation_rows": 6468,
+  "expectancy_per_trade": -0.1017408450379747,
+  "log_loss": 0.4392779865238349,
+  "losses": 50,
+  "market_coverage": 0.324435318275154,
+  "net_pnl": -16.075053516000004,
+  "no_trade_markets": 329,
+  "prediction_market_coverage": 0.839835728952772,
+  "prediction_markets": 409,
+  "settled": 158,
+  "stress_net_pnl": -23.975053516000003,
+  "vwap_capacity": {
+    "10": {
+      "expectancy_per_trade": -0.20456142451018985,
+      "net_pnl": -32.32070507261,
+      "stress_net_pnl": -48.120705072610015,
+      "trades": 158
+    },
+    "100": {
+      "expectancy_per_trade": -2.204242624061924,
+      "net_pnl": -348.270334601784,
+      "stress_net_pnl": -506.27033460178427,
+      "trades": 158
+    },
+    "125": {
+      "expectancy_per_trade": -2.808858749310456,
+      "net_pnl": -443.79968239105204,
+      "stress_net_pnl": -641.299682391052,
+      "trades": 158
+    },
+    "15": {
+      "expectancy_per_trade": -0.3089147215175377,
+      "net_pnl": -48.80852599977095,
+      "stress_net_pnl": -72.50852599977097,
+      "trades": 158
+    },
+    "150": {
+      "expectancy_per_trade": -3.4356675349613677,
+      "net_pnl": -542.8354705238961,
+      "stress_net_pnl": -779.8354705238962,
+      "trades": 158
+    },
+    "175": {
+      "expectancy_per_trade": -4.085153613716505,
+      "net_pnl": -645.4542709672079,
+      "stress_net_pnl": -921.9542709672085,
+      "trades": 158
+    },
+    "20": {
+      "expectancy_per_trade": -0.414192969261614,
+      "net_pnl": -65.44248914333501,
+      "stress_net_pnl": -97.04248914333502,
+      "trades": 158
+    },
+    "200": {
+      "expectancy_per_trade": -4.75774850534441,
+      "net_pnl": -751.7242638444168,
+      "stress_net_pnl": -1067.7242638444166,
+      "trades": 158
+    },
+    "25": {
+      "expectancy_per_trade": -0.5204152395611902,
+      "net_pnl": -82.22560785066804,
+      "stress_net_pnl": -121.72560785066806,
+      "trades": 158
+    },
+    "30": {
+      "expectancy_per_trade": -0.6272569001698771,
+      "net_pnl": -99.10659022684057,
+      "stress_net_pnl": -146.50659022684056,
+      "trades": 158
+    },
+    "40": {
+      "expectancy_per_trade": -0.8430747103949371,
+      "net_pnl": -133.20580424240006,
+      "stress_net_pnl": -196.4058042424,
+      "trades": 158
+    },
+    "5": {
+      "expectancy_per_trade": -0.1017408450379747,
+      "net_pnl": -16.075053516000004,
+      "stress_net_pnl": -23.975053516000003,
+      "trades": 158
+    },
+    "50": {
+      "expectancy_per_trade": -1.0611156935090253,
+      "net_pnl": -167.65627957442598,
+      "stress_net_pnl": -246.65627957442612,
+      "trades": 158
+    },
+    "75": {
+      "expectancy_per_trade": -1.6222949298708447,
+      "net_pnl": -256.3225989195935,
+      "stress_net_pnl": -374.8225989195935,
+      "trades": 158
+    }
+  },
+  "wins": 108
+}
