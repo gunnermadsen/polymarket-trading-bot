@@ -1,0 +1,124 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: directional-runtime-health-20s
+    folder: Polymarket Trading Path
+    interval: 20s
+    rules:
+      - uid: rtds_chainlink_candle_window_unavailable
+        title: RTDS Chainlink candle window unavailable
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 120, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: polymarket_btc_rtds_chainlink_candle_window_ready
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings: {mode: dropNN}
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              conditions:
+                - evaluator: {params: [1], type: lt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 120s
+        annotations:
+          description: The shared runtime cannot construct the 61 contiguous closed RTDS Chainlink candle minutes required by directional models.
+          summary: RTDS Chainlink candle evidence is unavailable for prediction
+        labels:
+          condition: rtds_chainlink_candle_window_unavailable
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: directional_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
+      - uid: polygon_oracle_unavailable
+        title: Polygon oracle unavailable for prediction
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 60, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: polymarket_btc_polygon_oracle_ready
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings: {mode: dropNN}
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              conditions:
+                - evaluator: {params: [1], type: lt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 60s
+        annotations:
+          description: No causally valid and sufficiently fresh Polygon Chainlink BTC/USD oracle round is available from the configured endpoints.
+          summary: Polygon oracle evidence is unavailable for prediction
+        labels:
+          condition: polygon_oracle_unavailable
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: directional_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false

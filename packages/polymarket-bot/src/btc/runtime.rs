@@ -68,6 +68,7 @@ use super::{
 
 const BOUNDARY_LABEL_VERSION: &str = "chainlink_first_tick_at_or_after_boundary_v1";
 const BOUNDARY_HYDRATION_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(30);
+const DIRECTIONAL_CHAINLINK_HYDRATION_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(30);
 const CRITICAL_WRITE_ATTEMPTS: usize = 3;
 const CRITICAL_WRITE_INITIAL_BACKOFF: StdDuration = StdDuration::from_millis(25);
 const PRIMARY_PERSISTENCE_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(1);
@@ -553,6 +554,14 @@ pub struct BtcRuntimeMetrics {
     pub binance_spot_l2: BinanceSpotL2RuntimeMetrics,
     pub rtds_chainlink_ticks_received: u64,
     pub rtds_binance_ticks_received: u64,
+    #[serde(default)]
+    pub rtds_chainlink_candle_window_ready: bool,
+    #[serde(default)]
+    pub rtds_chainlink_candle_complete_minutes: u64,
+    #[serde(default)]
+    pub polygon_oracle_ready: bool,
+    #[serde(default)]
+    pub polygon_oracle_age_seconds: Option<u64>,
     pub binance_ticks_received: u64,
     pub binance_model_recovery_required: bool,
     pub binance_model_recovery_attempts: u64,
@@ -588,8 +597,20 @@ pub struct BtcRuntimeStatus {
 
 fn runtime_metrics_snapshot(
     mut metrics: BtcRuntimeMetrics,
+    state: &RealtimeState,
     checked_at: DateTime<Utc>,
 ) -> BtcRuntimeMetrics {
+    let complete_minutes = state
+        .directional_external
+        .chainlink_candle_complete_minutes(checked_at);
+    metrics.rtds_chainlink_candle_complete_minutes =
+        u64::try_from(complete_minutes).unwrap_or(u64::MAX);
+    metrics.rtds_chainlink_candle_window_ready = complete_minutes == 61;
+    metrics.polygon_oracle_ready = state.directional_external.polygon_oracle_ready(checked_at);
+    metrics.polygon_oracle_age_seconds = state
+        .directional_external
+        .polygon_oracle_age_seconds(checked_at)
+        .and_then(|age| u64::try_from(age).ok());
     metrics
         .binance_transport
         .recovery_unavailable_age_milliseconds = metrics
@@ -1943,6 +1964,65 @@ pub struct BtcRuntime {
     directional_external: DirectionalExternalRuntimeConfig,
 }
 
+async fn apply_directional_chainlink_history(
+    state: &Arc<RwLock<RealtimeState>>,
+    ticks: Vec<ReferencePriceTick>,
+) {
+    let mut realtime = state.write().await;
+    for tick in ticks {
+        if let Err(error) = realtime.directional_external.observe_rtds_chainlink(&tick) {
+            tracing::warn!(
+                error = %error,
+                "directional Chainlink midpoint bootstrap rejected a tick"
+            );
+        }
+    }
+}
+
+async fn run_directional_chainlink_hydration_recovery(
+    repository: BtcRepository,
+    state: Arc<RwLock<RealtimeState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut retry_delay = StdDuration::from_secs(1);
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+            _ = sleep(retry_delay) => {}
+        }
+        let bootstrap_end = Utc::now();
+        let bootstrap_start = bootstrap_end - chrono::Duration::minutes(62);
+        match repository
+            .load_directional_external_chainlink_mid_history(bootstrap_start, bootstrap_end)
+            .await
+        {
+            Ok(ticks) => {
+                let tick_count = ticks.len();
+                apply_directional_chainlink_history(&state, ticks).await;
+                tracing::info!(
+                    tick_count,
+                    "directional Chainlink midpoint bootstrap recovered"
+                );
+                let _ = shutdown.changed().await;
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "directional Chainlink midpoint bootstrap retry failed closed"
+                );
+                retry_delay =
+                    (retry_delay * 2).min(DIRECTIONAL_CHAINLINK_HYDRATION_RETRY_MAX_DELAY);
+            }
+        }
+    }
+}
+
 impl BtcRuntime {
     pub fn new(
         config: BtcRuntimeConfig,
@@ -1986,6 +2066,7 @@ impl BtcRuntime {
         let state = self
             .state
             .unwrap_or_else(|| Arc::new(RwLock::new(RealtimeState::default())));
+        let mut directional_chainlink_hydration_failed = false;
         if self.directional_external.enabled {
             let bootstrap_end = Utc::now();
             let bootstrap_start = bootstrap_end - chrono::Duration::minutes(62);
@@ -1994,23 +2075,14 @@ impl BtcRuntime {
                 .load_directional_external_chainlink_mid_history(bootstrap_start, bootstrap_end)
                 .await
             {
-                Ok(ticks) => {
-                    let mut realtime = state.write().await;
-                    for tick in ticks {
-                        if let Err(error) =
-                            realtime.directional_external.observe_rtds_chainlink(&tick)
-                        {
-                            tracing::warn!(
-                                error = %error,
-                                "directional Chainlink midpoint bootstrap rejected a tick"
-                            );
-                        }
-                    }
+                Ok(ticks) => apply_directional_chainlink_history(&state, ticks).await,
+                Err(error) => {
+                    directional_chainlink_hydration_failed = true;
+                    tracing::warn!(
+                        error = %error,
+                        "directional Chainlink midpoint bootstrap failed closed"
+                    );
                 }
-                Err(error) => tracing::warn!(
-                    error = %error,
-                    "directional Chainlink midpoint bootstrap failed closed"
-                ),
             }
         }
         let books = self
@@ -2104,6 +2176,18 @@ impl BtcRuntime {
                 metrics.clone(),
             ),
         ];
+        if directional_chainlink_hydration_failed {
+            tasks.push(spawn_runtime_task(
+                "directional_chainlink_hydration",
+                run_directional_chainlink_hydration_recovery(
+                    self.repository.clone(),
+                    state.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
+                metrics.clone(),
+            ));
+        }
         if self.config.binance_spot_l2_enabled {
             tasks.push(spawn_runtime_task(
                 "binance_spot_l2",
@@ -2204,7 +2288,11 @@ impl BtcRuntimeHandle {
             enabled: self.enabled,
             running: self.running.load(Ordering::Relaxed),
             readiness,
-            metrics: runtime_metrics_snapshot(self.metrics.read().await.clone(), checked_at),
+            metrics: runtime_metrics_snapshot(
+                self.metrics.read().await.clone(),
+                &state,
+                checked_at,
+            ),
         }
     }
 
@@ -2357,7 +2445,7 @@ pub async fn runtime_status_from_inputs(
         enabled: config.enabled,
         running: running.load(Ordering::Relaxed),
         readiness,
-        metrics: runtime_metrics_snapshot(metrics.read().await.clone(), checked_at),
+        metrics: runtime_metrics_snapshot(metrics.read().await.clone(), &state, checked_at),
     }
 }
 
@@ -9952,7 +10040,7 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         };
 
-        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+        let snapshot = runtime_metrics_snapshot(metrics, &RealtimeState::default(), checked_at);
 
         assert_eq!(
             snapshot.clob_active_last_inbound_frame_age_milliseconds,
@@ -9968,7 +10056,7 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         };
 
-        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+        let snapshot = runtime_metrics_snapshot(metrics, &RealtimeState::default(), checked_at);
 
         assert_eq!(
             snapshot.clob_last_remote_close_1013_age_milliseconds,
@@ -9984,7 +10072,7 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         };
 
-        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+        let snapshot = runtime_metrics_snapshot(metrics, &RealtimeState::default(), checked_at);
 
         assert_eq!(
             snapshot.clob_recovery_unavailable_age_milliseconds,
@@ -10007,7 +10095,7 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         };
 
-        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+        let snapshot = runtime_metrics_snapshot(metrics, &RealtimeState::default(), checked_at);
 
         assert_eq!(
             snapshot
@@ -10027,7 +10115,11 @@ mod tests {
     fn runtime_metrics_snapshot_reports_zero_reference_unavailable_age_when_healthy() {
         let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
 
-        let snapshot = runtime_metrics_snapshot(BtcRuntimeMetrics::default(), checked_at);
+        let snapshot = runtime_metrics_snapshot(
+            BtcRuntimeMetrics::default(),
+            &RealtimeState::default(),
+            checked_at,
+        );
 
         assert_eq!(
             snapshot

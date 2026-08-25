@@ -3283,6 +3283,65 @@ impl ControlApi for RuntimeControl {
         })
     }
 
+    async fn prometheus_metrics(&self) -> Result<String, HttpError> {
+        let runtime = match &self.btc_manager {
+            Some(manager) => manager.runtime_status().await,
+            None => serde_json::json!({}),
+        };
+        let metrics = runtime
+            .get("shared_market_data")
+            .and_then(|value| value.get("metrics"));
+        let candle_ready = metrics
+            .and_then(|value| value.get("rtds_chainlink_candle_window_ready"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let complete_minutes = metrics
+            .and_then(|value| value.get("rtds_chainlink_candle_complete_minutes"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let oracle_ready = metrics
+            .and_then(|value| value.get("polygon_oracle_ready"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let oracle_age = metrics
+            .and_then(|value| value.get("polygon_oracle_age_seconds"))
+            .and_then(serde_json::Value::as_u64);
+
+        let mut output = String::from(
+            "# HELP polymarket_btc_rtds_chainlink_candle_window_ready Whether the required 61 closed RTDS Chainlink candle minutes are available.\n\
+# TYPE polymarket_btc_rtds_chainlink_candle_window_ready gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_rtds_chainlink_candle_window_ready {}\n",
+            u8::from(candle_ready)
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_rtds_chainlink_candle_complete_minutes Complete closed RTDS Chainlink candle minutes in the required window.\n\
+# TYPE polymarket_btc_rtds_chainlink_candle_complete_minutes gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_rtds_chainlink_candle_complete_minutes {complete_minutes}\n"
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_polygon_oracle_ready Whether a causally valid and fresh Polygon oracle round is available.\n\
+# TYPE polymarket_btc_polygon_oracle_ready gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_polygon_oracle_ready {}\n",
+            u8::from(oracle_ready)
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_polygon_oracle_age_seconds Age in seconds of the latest accepted Polygon oracle round.\n\
+# TYPE polymarket_btc_polygon_oracle_age_seconds gauge\n",
+        );
+        if let Some(oracle_age) = oracle_age {
+            output.push_str(&format!(
+                "polymarket_btc_polygon_oracle_age_seconds {oracle_age}\n"
+            ));
+        }
+        Ok(output)
+    }
+
     async fn btc_realtime_status(&self) -> Result<serde_json::Value, HttpError> {
         let Some(manager) = &self.btc_manager else {
             return Ok(serde_json::json!({

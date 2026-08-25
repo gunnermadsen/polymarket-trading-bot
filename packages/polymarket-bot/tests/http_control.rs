@@ -42,6 +42,10 @@ impl ControlApi for FakeControlApi {
         })
     }
 
+    async fn prometheus_metrics(&self) -> Result<String, HttpError> {
+        Ok("# TYPE polymarket_btc_polygon_oracle_ready gauge\npolymarket_btc_polygon_oracle_ready 1\n".to_string())
+    }
+
     async fn btc_realtime_status(&self) -> Result<Value, HttpError> {
         Ok(serde_json::json!({"enabled": true, "readiness": {"ready": true}}))
     }
@@ -738,6 +742,30 @@ async fn health_is_public_and_admin_routes_require_bearer() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn prometheus_metrics_are_public_text_exposition() {
+    let app = http::router(Arc::new(FakeControlApi), "secret");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/prometheus/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/plain; version=0.0.4; charset=utf-8"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8(body.to_vec())
+        .unwrap()
+        .contains("polymarket_btc_polygon_oracle_ready 1"));
 }
 
 #[tokio::test]

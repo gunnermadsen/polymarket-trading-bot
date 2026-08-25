@@ -69,6 +69,11 @@ scrape_configs:
     static_configs:
       - targets:
           - 127.0.0.1:9090
+  - job_name: polymarket-bot
+    metrics_path: /prometheus/metrics
+    static_configs:
+      - targets:
+          - polymarket-bot:8097
 EOF
 
 exec /bin/prometheus \

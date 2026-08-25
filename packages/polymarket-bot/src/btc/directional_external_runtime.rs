@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     env, fmt,
     time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
 };
@@ -30,6 +30,7 @@ use crate::ingestion::{
     polygon_chainlink_oracle::{DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY, DEFAULT_POLYGON_RPC_URL},
 };
 
+use super::directional_features::BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS;
 use super::types::{RealtimeState, ReferencePriceSource, ReferencePriceTick};
 
 const REFPRICE_HISTORY_SECONDS: i64 = 70;
@@ -42,7 +43,9 @@ const OPEN_INTEREST_CAPACITY: usize = 32;
 const OPEN_INTEREST_LATEST_LIMIT: usize = 24;
 const MAX_SOURCE_ERROR_BYTES: usize = 256;
 const HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const POLYGON_RPC_TIMEOUT: StdDuration = StdDuration::from_secs(3);
 const POLYGON_ORACLE_FUTURE_TOLERANCE: chrono::Duration = chrono::Duration::seconds(2);
+const POLYGON_CHAIN_ID: u128 = 137;
 
 #[derive(Clone)]
 pub struct DirectionalExternalRuntimeConfig {
@@ -51,6 +54,7 @@ pub struct DirectionalExternalRuntimeConfig {
     pub chainlink_feed_id: String,
     pub chainlink_credentials: Option<ChainlinkCredentials>,
     pub polygon_rpc_url: String,
+    pub polygon_rpc_fallback_url: Option<String>,
     pub polygon_proxy_address: String,
     pub binance_futures_base_url: String,
     pub refprice_poll_interval: StdDuration,
@@ -70,6 +74,13 @@ impl fmt::Debug for DirectionalExternalRuntimeConfig {
                 &self.chainlink_credentials.as_ref().map(|_| "[redacted]"),
             )
             .field("polygon_rpc_url", &self.polygon_rpc_url)
+            .field(
+                "polygon_rpc_fallback_url",
+                &self
+                    .polygon_rpc_fallback_url
+                    .as_ref()
+                    .map(|_| "[configured]"),
+            )
             .field("polygon_proxy_address", &self.polygon_proxy_address)
             .field("binance_futures_base_url", &self.binance_futures_base_url)
             .field("refprice_poll_interval", &self.refprice_poll_interval)
@@ -90,6 +101,7 @@ impl Default for DirectionalExternalRuntimeConfig {
             chainlink_feed_id: DEFAULT_CHAINLINK_BTCUSD_FEED_ID.to_string(),
             chainlink_credentials: None,
             polygon_rpc_url: DEFAULT_POLYGON_RPC_URL.to_string(),
+            polygon_rpc_fallback_url: None,
             polygon_proxy_address: DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY.to_string(),
             binance_futures_base_url: DEFAULT_BINANCE_FUTURES_DATA_BASE_URL.to_string(),
             refprice_poll_interval: StdDuration::from_secs(2),
@@ -128,6 +140,7 @@ impl DirectionalExternalRuntimeConfig {
             .to_ascii_lowercase(),
             chainlink_credentials,
             polygon_rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", &defaults.polygon_rpc_url),
+            polygon_rpc_fallback_url: nonempty_env("POLYMARKET_POLYGON_RPC_FALLBACK_URL"),
             polygon_proxy_address: env_string(
                 "POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY",
                 &defaults.polygon_proxy_address,
@@ -172,6 +185,16 @@ impl DirectionalExternalRuntimeConfig {
         }
         if !self.polygon_rpc_url.starts_with("https://") {
             bail!("directional external Polygon endpoint must use HTTPS");
+        }
+        if self
+            .polygon_rpc_fallback_url
+            .as_deref()
+            .is_some_and(|url| !url.starts_with("https://"))
+        {
+            bail!("directional external Polygon fallback endpoint must use HTTPS");
+        }
+        if self.polygon_rpc_fallback_url.as_deref() == Some(self.polygon_rpc_url.as_str()) {
+            bail!("directional external Polygon fallback endpoint must differ from the primary");
         }
         if !self.binance_futures_base_url.starts_with("https://") {
             bail!("directional external Binance endpoint must use HTTPS");
@@ -234,6 +257,39 @@ pub struct DirectionalExternalState {
 }
 
 impl DirectionalExternalState {
+    pub fn chainlink_candle_complete_minutes(&self, at: DateTime<Utc>) -> usize {
+        const REQUIRED_MINUTES: i64 = 61;
+        let latest_close_seconds = at.timestamp().div_euclid(60) * 60;
+        let Some(latest_close) = DateTime::from_timestamp(latest_close_seconds, 0) else {
+            return 0;
+        };
+        let earliest_open = latest_close - chrono::Duration::minutes(REQUIRED_MINUTES);
+        self.chainlink_mid
+            .iter()
+            .filter(|point| {
+                point.available_at <= at
+                    && point.source_timestamp >= earliest_open
+                    && point.source_timestamp < latest_close
+            })
+            .map(|point| point.source_timestamp.timestamp().div_euclid(60))
+            .collect::<HashSet<_>>()
+            .len()
+            .min(REQUIRED_MINUTES as usize)
+    }
+
+    pub fn polygon_oracle_age_seconds(&self, at: DateTime<Utc>) -> Option<i64> {
+        self.oracle
+            .iter()
+            .filter(|point| point.available_at <= at && point.block_timestamp <= at)
+            .max_by_key(|point| (point.block_timestamp, point.phase_id, point.round_id))
+            .map(|point| (at - point.block_timestamp).num_seconds().max(0))
+    }
+
+    pub fn polygon_oracle_ready(&self, at: DateTime<Utc>) -> bool {
+        self.polygon_oracle_age_seconds(at)
+            .is_some_and(|age| age <= BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS)
+    }
+
     pub fn observe_rtds_chainlink(&mut self, tick: &ReferencePriceTick) -> Result<()> {
         if tick.source != ReferencePriceSource::RtdsChainlink {
             return Ok(());
@@ -500,19 +556,25 @@ struct ReportsPage {
 }
 
 struct PolygonOraclePoller {
-    rpc_url: String,
+    rpc_urls: Vec<String>,
     proxy_address: String,
     decimals: Option<u32>,
     latest_round: Option<u128>,
+    validated_endpoints: HashSet<usize>,
 }
 
 impl PolygonOraclePoller {
     fn new(config: &DirectionalExternalRuntimeConfig) -> Self {
+        let mut rpc_urls = vec![config.polygon_rpc_url.clone()];
+        if let Some(fallback) = &config.polygon_rpc_fallback_url {
+            rpc_urls.push(fallback.clone());
+        }
         Self {
-            rpc_url: config.polygon_rpc_url.clone(),
+            rpc_urls,
             proxy_address: config.polygon_proxy_address.clone(),
             decimals: None,
             latest_round: None,
+            validated_endpoints: HashSet::new(),
         }
     }
 
@@ -521,11 +583,57 @@ impl PolygonOraclePoller {
         client: &Client,
         at: DateTime<Utc>,
     ) -> Result<Vec<PolygonOraclePoint>> {
+        let mut failures = Vec::new();
+        for endpoint_index in 0..self.rpc_urls.len() {
+            match self.poll_endpoint(client, at, endpoint_index).await {
+                Ok(points) => {
+                    if endpoint_index > 0 {
+                        tracing::info!(
+                            endpoint_role = "fallback",
+                            "directional Polygon oracle fallback succeeded"
+                        );
+                    }
+                    return Ok(points);
+                }
+                Err(error) => failures.push(format!(
+                    "{}: {error:#}",
+                    if endpoint_index == 0 {
+                        "primary"
+                    } else {
+                        "fallback"
+                    }
+                )),
+            }
+        }
+        bail!("Polygon oracle endpoints failed: {}", failures.join("; "))
+    }
+
+    async fn poll_endpoint(
+        &mut self,
+        client: &Client,
+        at: DateTime<Utc>,
+        endpoint_index: usize,
+    ) -> Result<Vec<PolygonOraclePoint>> {
+        let rpc_url = self.rpc_urls[endpoint_index].clone();
+        if !self.validated_endpoints.contains(&endpoint_index) {
+            let chain_id = self
+                .rpc_request(client, &rpc_url, "eth_chainId", json!([]))
+                .await?;
+            let chain_id = chain_id
+                .as_str()
+                .context("Polygon eth_chainId omitted a hexadecimal result")?;
+            let chain_id = u128::from_str_radix(chain_id.trim_start_matches("0x"), 16)
+                .context("Polygon eth_chainId was invalid")?;
+            if chain_id != POLYGON_CHAIN_ID {
+                bail!("Polygon RPC returned unexpected chain ID {chain_id}");
+            }
+            self.validated_endpoints.insert(endpoint_index);
+        }
         let decimals = match self.decimals {
             Some(decimals) => decimals,
             None => {
                 let value = self
-                    .eth_call(client, &abi_calldata("decimals()", None))
+                    .eth_call(client, &rpc_url, &abi_calldata("decimals()", None))
                     .await?;
                 let decimals = u32::try_from(parse_u128_word(&value)?)
                     .context("Polygon oracle decimals overflow")?;
@@ -536,7 +644,7 @@ impl PolygonOraclePoller {
                 decimals
             }
         };
-        let latest = self.fetch_round(client, None, decimals).await?;
+        let latest = self.fetch_round(client, &rpc_url, None, decimals).await?;
         if self.latest_round == Some(composite_round_id(&latest)) {
             return Ok(Vec::new());
         }
@@ -551,7 +659,10 @@ impl PolygonOraclePoller {
                     break;
                 }
                 composite = (phase << 64) | (round - 1);
-                let point = match self.fetch_round(client, Some(composite), decimals).await {
+                let point = match self
+                    .fetch_round(client, &rpc_url, Some(composite), decimals)
+                    .await
+                {
                     Ok(point) => point,
                     Err(_) => break,
                 };
@@ -570,6 +681,7 @@ impl PolygonOraclePoller {
     async fn fetch_round(
         &self,
         client: &Client,
+        rpc_url: &str,
         round_id: Option<u128>,
         decimals: u32,
     ) -> Result<PolygonOraclePoint> {
@@ -578,7 +690,11 @@ impl PolygonOraclePoller {
             None => ("latestRoundData()", None),
         };
         let value = self
-            .eth_call(client, &abi_calldata(signature, argument.as_deref()))
+            .eth_call(
+                client,
+                rpc_url,
+                &abi_calldata(signature, argument.as_deref()),
+            )
             .await?;
         // A round can be published while the RPC request is in flight. Use the
         // completed response time for causality validation instead of the poll
@@ -588,15 +704,30 @@ impl PolygonOraclePoller {
         decode_polygon_oracle_round(&value, decimals, received_at)
     }
 
-    async fn eth_call(&self, client: &Client, data: &str) -> Result<String> {
+    async fn eth_call(&self, client: &Client, rpc_url: &str, data: &str) -> Result<String> {
+        self.rpc_request(
+            client,
+            rpc_url,
+            "eth_call",
+            json!([{"to": self.proxy_address, "data": data}, "latest"]),
+        )
+        .await?
+        .as_str()
+        .map(str::to_string)
+        .context("Polygon oracle RPC omitted a hexadecimal result")
+    }
+
+    async fn rpc_request(
+        &self,
+        client: &Client,
+        rpc_url: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         let response = client
-            .post(self.rpc_url.trim())
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "eth_call",
-                "params": [{"to": self.proxy_address, "data": data}, "latest"],
-            }))
+            .post(rpc_url.trim())
+            .timeout(POLYGON_RPC_TIMEOUT)
+            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}))
             .send()
             .await
             .context("failed to call Polygon oracle RPC")?
@@ -615,8 +746,7 @@ impl PolygonOraclePoller {
         }
         envelope
             .result
-            .and_then(|value| value.as_str().map(str::to_string))
-            .context("Polygon oracle RPC omitted a hexadecimal result")
+            .context("Polygon oracle RPC omitted a result")
     }
 }
 
@@ -802,6 +932,58 @@ fn current_timestamp_millis() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directional_health_reports_complete_candle_window_and_fresh_oracle() {
+        let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut state = DirectionalExternalState::default();
+        let earliest = at - chrono::Duration::minutes(61);
+        for minute in 0..61 {
+            let source_timestamp = earliest + chrono::Duration::minutes(minute);
+            state.chainlink_mid.push_back(ChainlinkMidPoint {
+                source_timestamp,
+                available_at: source_timestamp,
+                price: Decimal::new(60_000, 0),
+            });
+        }
+        state.oracle.push_back(PolygonOraclePoint {
+            phase_id: 1,
+            round_id: 42,
+            source_timestamp: at - chrono::Duration::seconds(5),
+            block_timestamp: at - chrono::Duration::seconds(5),
+            available_at: at - chrono::Duration::seconds(4),
+            price: Decimal::new(60_000, 0),
+        });
+
+        assert_eq!(state.chainlink_candle_complete_minutes(at), 61);
+        assert!(state.polygon_oracle_ready(at));
+        assert_eq!(state.polygon_oracle_age_seconds(at), Some(5));
+    }
+
+    #[test]
+    fn directional_health_fails_closed_for_incomplete_candles_and_stale_oracle() {
+        let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut state = DirectionalExternalState::default();
+        state.chainlink_mid.push_back(ChainlinkMidPoint {
+            source_timestamp: at - chrono::Duration::minutes(1),
+            available_at: at - chrono::Duration::minutes(1),
+            price: Decimal::new(60_000, 0),
+        });
+        state.oracle.push_back(PolygonOraclePoint {
+            phase_id: 1,
+            round_id: 42,
+            source_timestamp: at
+                - chrono::Duration::seconds(BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS + 1),
+            block_timestamp: at
+                - chrono::Duration::seconds(BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS + 1),
+            available_at: at
+                - chrono::Duration::seconds(BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS + 1),
+            price: Decimal::new(60_000, 0),
+        });
+
+        assert_eq!(state.chainlink_candle_complete_minutes(at), 1);
+        assert!(!state.polygon_oracle_ready(at));
+    }
 
     #[test]
     fn refprice_page_request_respects_chainlink_limit() {
