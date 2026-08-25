@@ -387,7 +387,7 @@ pub struct ReferenceTransportMetrics {
     pub last_disconnect_at: Option<DateTime<Utc>>,
     pub recovery_unavailable_since: Option<DateTime<Utc>>,
     #[serde(default)]
-    pub recovery_unavailable_age_milliseconds: Option<u64>,
+    pub recovery_unavailable_age_milliseconds: u64,
     pub last_disconnect_reason: Option<ReferenceDisconnectReason>,
     pub heartbeat_probes: u64,
     pub heartbeat_acknowledgements: u64,
@@ -598,14 +598,16 @@ fn runtime_metrics_snapshot(
         .filter(|unavailable_since| *unavailable_since <= checked_at)
         .map(|unavailable_since| {
             u64::try_from((checked_at - unavailable_since).num_milliseconds()).unwrap_or(u64::MAX)
-        });
+        })
+        .unwrap_or(0);
     metrics.rtds_transport.recovery_unavailable_age_milliseconds = metrics
         .rtds_transport
         .recovery_unavailable_since
         .filter(|unavailable_since| *unavailable_since <= checked_at)
         .map(|unavailable_since| {
             u64::try_from((checked_at - unavailable_since).num_milliseconds()).unwrap_or(u64::MAX)
-        });
+        })
+        .unwrap_or(0);
     metrics.clob_active_last_inbound_frame_age_milliseconds = metrics
         .clob_active_last_data_or_heartbeat_at
         .filter(|received_at| *received_at <= checked_at)
@@ -10011,13 +10013,33 @@ mod tests {
             snapshot
                 .binance_transport
                 .recovery_unavailable_age_milliseconds,
-            Some(65_000)
+            65_000
         );
         assert_eq!(
             snapshot
                 .rtds_transport
                 .recovery_unavailable_age_milliseconds,
-            Some(1250)
+            1250
+        );
+    }
+
+    #[test]
+    fn runtime_metrics_snapshot_reports_zero_reference_unavailable_age_when_healthy() {
+        let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
+
+        let snapshot = runtime_metrics_snapshot(BtcRuntimeMetrics::default(), checked_at);
+
+        assert_eq!(
+            snapshot
+                .binance_transport
+                .recovery_unavailable_age_milliseconds,
+            0
+        );
+        assert_eq!(
+            snapshot
+                .rtds_transport
+                .recovery_unavailable_age_milliseconds,
+            0
         );
     }
 
