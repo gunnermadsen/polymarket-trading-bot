@@ -139,7 +139,8 @@ def extract_tournament_sources(
         "database_mutations": False,
     }
     manifest_path = paths.cache / "source-manifest.json"
-    if manifest_path.exists() and not force:
+    checkpoint_path = paths.cache / "source-manifest.partial.json"
+    if manifest_path.exists() and not force and not checkpoint_path.exists():
         existing = json.loads(manifest_path.read_text())
         if existing.get("contract") != contract:
             raise RuntimeError("existing TWAP60 source cache contract changed")
@@ -149,6 +150,8 @@ def extract_tournament_sources(
                 if not target.is_file() or file_sha256(target) != row["sha256"]:
                     raise RuntimeError(f"cached source partition changed: {target.name}")
         return existing
+    if force:
+        checkpoint_path.unlink(missing_ok=True)
 
     sql = {
         "labels": paths.label_sql.read_text(),
@@ -159,11 +162,27 @@ def extract_tournament_sources(
         "execution": paths.execution_sql.read_text(),
     }
     partitions: dict[str, list[dict[str, Any]]] = {name: [] for name in sql}
-    connection = database_connection()
-    configure_read_only_connection(connection)
-    try:
-        day = range_start
-        while day < range_end:
+    if checkpoint_path.exists():
+        checkpoint = json.loads(checkpoint_path.read_text())
+        if checkpoint.get("contract") != contract:
+            raise RuntimeError("partial TWAP60 source cache contract changed")
+        partitions = checkpoint["partitions"]
+        for group in partitions.values():
+            for row in group:
+                target = paths.cache / row["path"]
+                if not target.is_file() or file_sha256(target) != row["sha256"]:
+                    raise RuntimeError(f"partial source partition changed: {target.name}")
+    completed_dates = {
+        Path(row["path"]).stem for row in partitions["labels"]
+    }
+    day = range_start
+    while day < range_end:
+        if day.date().isoformat() in completed_dates:
+            day = min(day + timedelta(days=1), range_end)
+            continue
+        connection = database_connection()
+        configure_read_only_connection(connection)
+        try:
             end = min(day + timedelta(days=1), range_end)
             parameters = {"batch_start": day, "batch_end": end}
             frames = {
@@ -225,11 +244,16 @@ def extract_tournament_sources(
                     }
                 )
                 print(f"twap60 extract: {name} {day.date()} {frame.height:,} rows", flush=True)
-            day = end
-    finally:
-        connection.close()
+            write_json_atomic(
+                checkpoint_path,
+                {"contract": contract, "partitions": partitions},
+            )
+        finally:
+            connection.close()
+        day = end
     manifest = {"contract": contract, "partitions": partitions}
     write_json_atomic(manifest_path, manifest)
+    checkpoint_path.unlink(missing_ok=True)
     return manifest
 
 
