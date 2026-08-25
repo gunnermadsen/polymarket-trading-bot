@@ -11,6 +11,7 @@ from btc_directional_model.twap60_challenger_tournament import (
     FEATURE_TREATMENTS,
     _matrix,
     _model_eligible,
+    _variable_features,
     feature_names,
     load_config,
     predetermined_hyperparameters,
@@ -74,3 +75,4 @@ def test_outcome_matrix_retains_early_rows_with_unavailable_long_lookbacks() -> 
 
     assert eligible.height == 2
     assert np.isnan(matrix[:, 1]).all()
+    assert _variable_features(eligible, features) == ("short_feature",)

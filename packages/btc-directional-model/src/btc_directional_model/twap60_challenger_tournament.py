@@ -996,6 +996,7 @@ def _fit_outcome_model(
     fit, calibration = _chronological_fit_calibration(eligible)
     if fit["market_id"].n_unique() < 100 or calibration["market_id"].n_unique() < 25:
         raise RuntimeError(f"{strategy} has insufficient chronological fit/calibration markets")
+    model_features = _variable_features(fit, features)
     estimator = HistGradientBoostingClassifier(
         learning_rate=spec.learning_rate,
         max_iter=spec.max_iter,
@@ -1005,15 +1006,15 @@ def _fit_outcome_model(
         random_state=seed,
     )
     estimator.fit(
-        _matrix(fit, features), fit["label_up"].to_numpy(),
+        _matrix(fit, model_features), fit["label_up"].to_numpy(),
         sample_weight=_training_weights(fit, spec, strategy, regime_cap),
     )
-    raw = estimator.predict_proba(_matrix(calibration, features))[:, 1]
+    raw = estimator.predict_proba(_matrix(calibration, model_features))[:, 1]
     calibrator = _fit_probability_calibration(
         calibration, raw, c=spec.calibration_c, seed=seed + 1
     )
     model = OutcomeModel(
-        features, estimator, calibrator, spec, strategy, treatment
+        model_features, estimator, calibrator, spec, strategy, treatment
     )
     return model, _score_outcome(calibration, model, None)
 
@@ -1438,6 +1439,20 @@ def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
     matrix = frame.select(*features).to_numpy().astype(np.float64, copy=False)
     matrix[~np.isfinite(matrix)] = np.nan
     return matrix
+
+
+def _variable_features(
+    frame: pl.DataFrame, features: tuple[str, ...]
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for name in features:
+        values = frame[name].cast(pl.Float64).drop_nulls()
+        values = values.filter(values.is_finite())
+        if values.n_unique() >= 2:
+            selected.append(name)
+    if not selected:
+        raise RuntimeError("outcome model has no variable finite features")
+    return tuple(selected)
 
 
 def _model_eligible(frame: pl.DataFrame, features: tuple[str, ...]) -> pl.DataFrame:
