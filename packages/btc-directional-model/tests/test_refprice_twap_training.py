@@ -8,22 +8,21 @@ from btc_directional_model.continuous_edge_training import VWAP_QUANTITIES
 from btc_directional_model.refprice_twap_training import (
     ARMS,
     FAMILIES,
+    TWAP_INPUT_FEATURES,
     _apply_frozen_policy,
     load_config,
 )
 
 PACKAGE_ROOT = Path(__file__).parents[1]
 CONFIG_PATH = (
-    PACKAGE_ROOT
-    / "configs"
-    / "btc-5m-refprice-twap-target-training-20260607-20260824.toml"
+    PACKAGE_ROOT / "configs" / "btc-5m-refprice-twap-target-training-20260607-20260824.toml"
 )
 
 
 def test_frozen_config_keeps_the_scope_and_watermark_contract() -> None:
     config = load_config(CONFIG_PATH)
 
-    assert ARMS == ("W", "R", "T")
+    assert ARMS == ("R", "T", "RT")
     assert len(ARMS) * len(FAMILIES) == 15
     assert config.windows.watermark.isoformat() == "2026-08-24"
     assert config.execution.quantities == VWAP_QUANTITIES
@@ -36,6 +35,7 @@ def test_sql_contract_is_pmdata_primary_causal_and_read_only() -> None:
     sql_root = PACKAGE_ROOT / "sql"
     refprice = (sql_root / "btc-refprice-twap-refprice-source.sql").read_text()
     label = (sql_root / "btc-refprice-twap-label-source.sql").read_text()
+    twap_input = (sql_root / "btc-refprice-twap-input-source.sql").read_text()
     capacity = (sql_root / "btc-refprice-twap-capacity-source.sql").read_text()
     all_sql = "\n".join(
         path.read_text() for path in sql_root.glob("btc-refprice-twap-*-source.sql")
@@ -48,6 +48,10 @@ def test_sql_contract_is_pmdata_primary_causal_and_read_only() -> None:
     assert "window_seconds = 60" in label
     assert "source_timestamp = market.window_start" in label
     assert "source_timestamp = market.window_end" in label
+    assert "market_data.pmdata_chainlink_btcusd_twap" in twap_input
+    assert "provider_received_at" in twap_input
+    assert "window_seconds IN (30, 60)" in twap_input
+    assert len(TWAP_INPUT_FEATURES) == 13
     assert "btc5m-capacity-book-1-240s-v2" in capacity
     assert "btc5m-capacity-local-orderbook-1-240s-v1" in capacity
     for quantity in VWAP_QUANTITIES:

@@ -11,8 +11,9 @@ import json
 import platform
 import subprocess
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -21,27 +22,24 @@ import numpy as np
 import polars as pl
 import psycopg
 import sklearn
-from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 
+from . import continuous_edge_training as q5_lineage
+from . import fair_value_challenger_tournament as specialist_lineage
+from . import middle_market_ablation_tournament as middle_lineage
 from .chainlink_oi_features import (
     BINANCE_OI_FEATURES,
-    CHAINLINK_CANDLE_FEATURES,
     CHAINLINK_REFPRICE_FEATURES,
-    _attach_candle_features,
     _attach_open_interest_features,
     _attach_refprice_features,
 )
 from .continuous_edge_training import (
     BOOK_RAW_FEATURES,
-    CHAINLINK_FEATURES,
     CORE_FEATURES,
     ORACLE_FEATURES,
     PRIMARY_FEATURES,
     VWAP_QUANTITIES,
     attach_book_features,
-    market_equal_weights,
 )
 from .core_extract import configure_read_only_connection, database_connection, file_sha256
 from .core_features import (
@@ -50,10 +48,10 @@ from .core_features import (
     derive_oracle_point_in_time_features,
 )
 
-SCHEMA_VERSION = "btc-refprice-twap-target-training-v1"
-DATASET_SCHEMA_VERSION = "btc-refprice-twap-target-dataset-v1"
-ARTIFACT_SCHEMA_VERSION = "btc-refprice-twap-target-model-v1"
-ARMS = ("W", "R", "T")
+SCHEMA_VERSION = "btc-refprice-twap-lineage-training-v2"
+DATASET_SCHEMA_VERSION = "btc-refprice-twap-lineage-dataset-v2"
+ARTIFACT_SCHEMA_VERSION = "btc-refprice-twap-lineage-model-v2"
+ARMS = ("R", "T", "RT")
 FAMILIES = (
     "q5",
     "stratified_payoff",
@@ -66,39 +64,12 @@ SQL_FILES = (
     "btc-refprice-twap-oracle-source.sql",
     "btc-refprice-twap-capacity-source.sql",
     "btc-refprice-twap-refprice-source.sql",
-    "btc-refprice-twap-candle-source.sql",
+    "btc-refprice-twap-input-source.sql",
     "btc-refprice-twap-open-interest-source.sql",
     "btc-refprice-twap-label-source.sql",
 )
 JOIN_KEYS = ("market_id", "window_start", "observed_at", "seconds_elapsed")
 PRICE_BUCKET_EDGES = (0.0, 0.65, 0.75, 0.85, 1.01)
-REGIME_FEATURES = (
-    "seconds_elapsed_scaled",
-    "btc_path_from_window_open_bps",
-    "btc_cross_venue_boundary_gap_bps",
-    "btc_path_terminal_volatility_z",
-    "btc_boundary_terminal_volatility_z",
-    "btc_volatility_shock_30_vs_120",
-    "hour_sin",
-    "hour_cos",
-)
-META_FEATURES = (
-    "model_probability_up",
-    "model_confidence",
-    "model_stress_edge",
-    "selected_cost_5",
-    "seconds_elapsed_scaled",
-    "btc_path_from_window_open_bps",
-    "btc_cross_venue_boundary_gap_bps",
-    "btc_path_terminal_volatility_z",
-    "btc_boundary_terminal_volatility_z",
-    "btc_volatility_shock_30_vs_120",
-    "pm_vwap5_overround",
-    "pm_vwap200_overround",
-    "pm_depth_imbalance",
-    "pm_up_book_age_seconds",
-    "pm_down_book_age_seconds",
-)
 TWAP_LABEL_COLUMNS = (
     "twap_start_source_timestamp",
     "twap_start_received_at",
@@ -111,6 +82,21 @@ TWAP_LABEL_COLUMNS = (
     "twap_end_expires_at",
     "twap_end_price",
     "twap_label_up",
+)
+TWAP_INPUT_FEATURES = (
+    "chainlink_twap30_return_5s_bps",
+    "chainlink_twap30_return_15s_bps",
+    "chainlink_twap30_return_30s_bps",
+    "chainlink_twap30_return_60s_bps",
+    "chainlink_twap60_return_5s_bps",
+    "chainlink_twap60_return_15s_bps",
+    "chainlink_twap60_return_30s_bps",
+    "chainlink_twap60_return_60s_bps",
+    "chainlink_twap30_binance_basis_bps",
+    "chainlink_twap60_binance_basis_bps",
+    "chainlink_twap30_boundary_gap_bps",
+    "chainlink_twap60_boundary_gap_bps",
+    "chainlink_twap30_60_spread_bps",
 )
 
 
@@ -194,9 +180,7 @@ def load_config(path: Path) -> FrozenTrainingConfig:
     for key in tuple(windows):
         if key != "watermark":
             windows[key] = _utc(windows[key])
-    paths = PathConfig(
-        **{key: _path(package_root, value) for key, value in raw["paths"].items()}
-    )
+    paths = PathConfig(**{key: _path(package_root, value) for key, value in raw["paths"].items()})
     config = FrozenTrainingConfig(
         source_path=source,
         package_root=package_root,
@@ -212,9 +196,7 @@ def load_config(path: Path) -> FrozenTrainingConfig:
         model=ModelConfig(**raw["model"]),
         policies=raw["policies"],
         paths=paths,
-        incumbents={
-            key: _path(package_root, value) for key, value in raw["incumbents"].items()
-        },
+        incumbents={key: _path(package_root, value) for key, value in raw["incumbents"].items()},
     )
     _validate_config(config)
     return config
@@ -280,8 +262,9 @@ def run_frozen_training(
                     "schema_version": ARTIFACT_SCHEMA_VERSION,
                     "arm": arm,
                     "family": family,
-                    "target": "twap_60" if arm == "T" else "official_outcome",
-                    "refprice_primary": arm in ("R", "T"),
+                    "target": "official_then_twap_60" if arm in ("T", "RT") else "official_outcome",
+                    "refprice_primary": True,
+                    "twap_inputs": arm == "RT",
                     "runtime_exported": False,
                     "production_qualified": False,
                     "model": model,
@@ -289,7 +272,9 @@ def run_frozen_training(
                 artifact_path,
                 compress=3,
             )
-            selected.write_parquet(arm_dir / f"{family}-evaluation-ledger.parquet", compression="zstd")
+            selected.write_parquet(
+                arm_dir / f"{family}-evaluation-ledger.parquet", compression="zstd"
+            )
             _write_json(
                 arm_dir / f"{family}-metrics.json",
                 {**metrics, "artifact_sha256": file_sha256(artifact_path)},
@@ -332,7 +317,7 @@ def run_frozen_training(
             "scikit_learn": sklearn.__version__,
         },
         "limitations": [
-            "W and R are diagnostic controls; T is the TWAP-60 target generation.",
+            "R is the RefPrice refresh; T and RT use TWAP-60 labels from August 1 onward and official outcomes as pre-August auxiliary learning.",
             "Evaluation is projected five-share execution against recorded ask VWAP and does not model queue position.",
             "Incomplete source rows are excluded individually and never block the complete training run.",
             "No runtime artifact or trading-process configuration was exported.",
@@ -464,9 +449,7 @@ def _build_daily_frame(
     if oracle.height:
         core = attach_causal_oracle_rounds(core, oracle)
         core = derive_oracle_point_in_time_features(core).with_columns(
-            pl.col("oracle_model_eligible")
-            .fill_null(False)
-            .alias("early_oracle_eligible")
+            pl.col("oracle_model_eligible").fill_null(False).alias("early_oracle_eligible")
         )
     else:
         core = core.with_columns(
@@ -540,22 +523,22 @@ def _build_daily_frame(
     )
     frame = frame.join(ref_features, on=list(JOIN_KEYS), how="left", validate="1:1")
 
-    candles = _query_frame(
+    twap_inputs = _query_frame(
         connection,
         (sql_root / SQL_FILES[4]).read_text(),
         {"range_start": start, "range_end": end},
-        f"ref_twap_candles_{start:%Y%m%d}",
+        f"ref_twap_inputs_{start:%Y%m%d}",
     )
-    candle_features = (
-        _attach_candle_features(
+    twap_features = (
+        _attach_twap_features(
             external_core,
-            candles,
-            max_age_seconds=60,
-        ).select(*JOIN_KEYS, *CHAINLINK_CANDLE_FEATURES)
-        if candles.height
-        else _empty_feature_frame(external_core, CHAINLINK_CANDLE_FEATURES)
+            twap_inputs,
+            max_age_seconds=config.execution.refprice_freshness_seconds,
+        ).select(*JOIN_KEYS, *TWAP_INPUT_FEATURES)
+        if twap_inputs.height
+        else _empty_feature_frame(external_core, TWAP_INPUT_FEATURES)
     )
-    frame = frame.join(candle_features, on=list(JOIN_KEYS), how="left", validate="1:1")
+    frame = frame.join(twap_features, on=list(JOIN_KEYS), how="left", validate="1:1")
 
     interest = _query_frame(
         connection,
@@ -581,9 +564,7 @@ def _build_daily_frame(
         f"ref_twap_labels_{start:%Y%m%d}",
     )
     if labels.height:
-        frame = frame.join(
-            labels, on=["market_id", "window_start"], how="left", validate="m:1"
-        )
+        frame = frame.join(labels, on=["market_id", "window_start"], how="left", validate="m:1")
     else:
         frame = frame.with_columns(
             *[
@@ -611,12 +592,103 @@ def _build_daily_frame(
         "refprice_source_rows": refprice.height,
         "incomplete_refprice_source_rows": refprice.height - complete_refprice.height,
         "refprice_eligible_rows": frame.drop_nulls(CHAINLINK_REFPRICE_FEATURES).height,
-        "candle_eligible_rows": frame.drop_nulls(CHAINLINK_CANDLE_FEATURES).height,
+        "twap_input_source_rows": twap_inputs.height,
+        "twap_input_eligible_rows": frame.drop_nulls(TWAP_INPUT_FEATURES).height,
         "oi_eligible_rows": frame.drop_nulls(BINANCE_OI_FEATURES).height,
         "twap_labeled_rows": frame.drop_nulls(["twap_label_up"]).height,
         "twap_labeled_markets": frame.drop_nulls(["twap_label_up"])["market_id"].n_unique(),
     }
     return frame, audit
+
+
+def _attach_twap_features(
+    core_frame: pl.DataFrame,
+    source: pl.DataFrame,
+    *,
+    max_age_seconds: int,
+) -> pl.DataFrame:
+    """Attach strict point-in-time PMData TWAP features to decision rows."""
+
+    required = (
+        "source_timestamp",
+        "provider_received_at",
+        "valid_from_timestamp",
+        "expires_at",
+        "window_seconds",
+        "twap_price",
+    )
+    prepared = (
+        source.drop_nulls(required)
+        .filter(
+            pl.col("window_seconds").is_in([30, 60])
+            & (pl.col("twap_price") > 0)
+            & (pl.col("valid_from_timestamp") <= pl.col("source_timestamp"))
+            & (pl.col("provider_received_at") >= pl.col("source_timestamp"))
+        )
+        .sort(["window_seconds", "source_timestamp", "provider_received_at"])
+        .unique(["window_seconds", "source_timestamp"], keep="first", maintain_order=True)
+    )
+    ordered = core_frame.with_row_index("_twap_row").sort("observed_at")
+    observed_us = ordered["observed_at"].cast(pl.Int64).to_numpy()
+    result: dict[str, np.ndarray] = {}
+    current_prices: dict[int, np.ndarray] = {}
+    eligibility = np.ones(ordered.height, dtype=bool)
+    for window in (30, 60):
+        reports = prepared.filter(pl.col("window_seconds") == window).sort("source_timestamp")
+        if reports.is_empty():
+            eligibility[:] = False
+            break
+        source_us = reports["source_timestamp"].cast(pl.Int64).to_numpy()
+        received_us = reports["provider_received_at"].cast(pl.Int64).to_numpy()
+        prices = reports["twap_price"].cast(pl.Float64).to_numpy()
+        indices = np.searchsorted(source_us, observed_us - 1, side="right") - 1
+        for row in range(len(indices)):
+            index = int(indices[row])
+            while index >= 0 and received_us[index] > observed_us[row]:
+                index -= 1
+            indices[row] = index
+        valid = indices >= 0
+        age = np.full(ordered.height, np.iinfo(np.int64).max, dtype=np.int64)
+        age[valid] = observed_us[valid] - source_us[indices[valid]]
+        valid &= (age > 0) & (age <= max_age_seconds * 1_000_000)
+        eligibility &= valid
+        safe = np.maximum(indices, 0)
+        current = prices[safe]
+        current_prices[window] = current
+        for seconds in (5, 15, 30, 60):
+            lag = np.searchsorted(source_us, observed_us - seconds * 1_000_000, side="right") - 1
+            for row in range(len(lag)):
+                index = int(lag[row])
+                while index >= 0 and received_us[index] > observed_us[row]:
+                    index -= 1
+                lag[row] = index
+            lag_valid = lag >= 0
+            target = observed_us - seconds * 1_000_000
+            lag_age = np.full(ordered.height, np.iinfo(np.int64).max, dtype=np.int64)
+            lag_age[lag_valid] = target[lag_valid] - source_us[lag[lag_valid]]
+            lag_valid &= (lag_age >= 0) & (lag_age <= max_age_seconds * 1_000_000)
+            eligibility &= lag_valid
+            result[f"chainlink_twap{window}_return_{seconds}s_bps"] = (
+                np.log(current / prices[np.maximum(lag, 0)]) * 10_000.0
+            )
+        result[f"chainlink_twap{window}_binance_basis_bps"] = (
+            np.log(current / ordered["btc_close"].to_numpy()) * 10_000.0
+        )
+        result[f"chainlink_twap{window}_boundary_gap_bps"] = (
+            np.log(current / ordered["opening_boundary"].to_numpy()) * 10_000.0
+        )
+    if not eligibility.any():
+        return _empty_feature_frame(core_frame, TWAP_INPUT_FEATURES)
+    result["chainlink_twap30_60_spread_bps"] = (
+        np.log(current_prices[30] / current_prices[60]) * 10_000.0
+    )
+    positions = np.flatnonzero(eligibility)
+    return (
+        ordered[positions]
+        .with_columns(*[pl.Series(name, values[positions]) for name, values in result.items()])
+        .sort("_twap_row")
+        .drop("_twap_row")
+    )
 
 
 def _strict_capacity_rows(frame: pl.DataFrame, config: FrozenTrainingConfig) -> pl.DataFrame:
@@ -654,11 +726,11 @@ def _strict_capacity_rows(frame: pl.DataFrame, config: FrozenTrainingConfig) -> 
     )
 
 
-def _empty_feature_frame(
-    frame: pl.DataFrame, feature_names: tuple[str, ...]
-) -> pl.DataFrame:
-    return frame.head(0).select(*JOIN_KEYS).with_columns(
-        *[pl.lit(None, dtype=pl.Float64).alias(name) for name in feature_names]
+def _empty_feature_frame(frame: pl.DataFrame, feature_names: tuple[str, ...]) -> pl.DataFrame:
+    return (
+        frame.head(0)
+        .select(*JOIN_KEYS)
+        .with_columns(*[pl.lit(None, dtype=pl.Float64).alias(name) for name in feature_names])
     )
 
 
@@ -705,9 +777,7 @@ def _load_dataset(config: FrozenTrainingConfig, manifest: dict[str, Any]) -> pl.
     return frame.sort(["window_start", "market_id", "seconds_elapsed"])
 
 
-def _common_evaluation_frame(
-    frame: pl.DataFrame, config: FrozenTrainingConfig
-) -> pl.DataFrame:
+def _common_evaluation_frame(frame: pl.DataFrame, config: FrozenTrainingConfig) -> pl.DataFrame:
     evaluation = frame.filter(
         (pl.col("window_start") >= config.windows.calibration_end)
         & (pl.col("window_start") < config.windows.evaluation_end)
@@ -715,7 +785,6 @@ def _common_evaluation_frame(
         [
             "twap_label_up",
             *CHAINLINK_REFPRICE_FEATURES,
-            *BINANCE_OI_FEATURES,
         ]
     )
     if evaluation.is_empty():
@@ -724,16 +793,49 @@ def _common_evaluation_frame(
 
 
 def _arm_frame(frame: pl.DataFrame, config: FrozenTrainingConfig, arm: str) -> pl.DataFrame:
-    start = config.windows.twap_fit_start if arm == "T" else config.windows.data_start
+    if arm not in ARMS:
+        raise ValueError(f"unknown descendant arm: {arm}")
     selected = frame.filter(
-        (pl.col("window_start") >= start)
+        (pl.col("window_start") >= config.windows.data_start)
         & (pl.col("window_start") < config.windows.evaluation_end)
+    ).drop_nulls(CHAINLINK_REFPRICE_FEATURES)
+    target = (
+        pl.col("label_up")
+        if arm == "R"
+        else pl.when(pl.col("window_start") < config.windows.twap_fit_start)
+        .then(pl.col("label_up"))
+        .otherwise(pl.col("twap_label_up"))
     )
-    if arm in ("R", "T"):
-        selected = selected.drop_nulls(CHAINLINK_REFPRICE_FEATURES)
-    label = "twap_label_up" if arm == "T" else "label_up"
-    selected = selected.drop_nulls([label]).with_columns(
-        pl.col(label).cast(pl.Int8).alias("target_label")
+    selected = selected.with_columns(target.cast(pl.Int8).alias("target_label")).drop_nulls(
+        "target_label"
+    )
+    selected = selected.with_columns(
+        pl.col("target_label").alias("label_up"),
+        pl.when(pl.col("seconds_elapsed") < 90)
+        .then(pl.lit("early"))
+        .when(pl.col("seconds_elapsed") < 180)
+        .then(pl.lit("mid"))
+        .otherwise(pl.lit("late"))
+        .alias("time_band"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("90-119"))
+        .when(pl.col("seconds_elapsed") < 150)
+        .then(pl.lit("120-149"))
+        .otherwise(pl.lit("150-179"))
+        .alias("middle_cell"),
+        pl.col("pm_yes_cost_per_share").alias("up_cost_5"),
+        pl.col("pm_no_cost_per_share").alias("down_cost_5"),
+    ).with_columns(
+        (
+            pl.col("label_up").cast(pl.Float64)
+            - pl.col("up_cost_5")
+            - config.execution.stress_slippage_per_share
+        ).alias("up_stress_reward"),
+        (
+            (1 - pl.col("label_up")).cast(pl.Float64)
+            - pl.col("down_cost_5")
+            - config.execution.stress_slippage_per_share
+        ).alias("down_stress_reward"),
     )
     if selected.is_empty():
         raise RuntimeError(f"arm {arm} has no eligible rows")
@@ -744,343 +846,291 @@ def _train_arm(
     frame: pl.DataFrame, config: FrozenTrainingConfig, arm: str, *, seed: int
 ) -> dict[str, Any]:
     arm_frame = _arm_frame(frame, config, arm)
-    fit = arm_frame.filter(pl.col("window_start") < config.windows.outcome_fit_end)
-    admission = arm_frame.filter(
-        (pl.col("window_start") >= config.windows.outcome_fit_end)
-        & (pl.col("window_start") < config.windows.admission_end)
+    descendant_features = (
+        *PRIMARY_FEATURES,
+        *CHAINLINK_REFPRICE_FEATURES,
+        *(TWAP_INPUT_FEATURES if arm == "RT" else ()),
     )
-    calibration = arm_frame.filter(
-        (pl.col("window_start") >= config.windows.admission_end)
-        & (pl.col("window_start") < config.windows.calibration_end)
-    )
-    if min(fit["market_id"].n_unique(), admission["market_id"].n_unique(), calibration["market_id"].n_unique()) == 0:
-        raise RuntimeError(f"arm {arm} contains an empty chronological training block")
-
-    ref_features = CHAINLINK_REFPRICE_FEATURES if arm in ("R", "T") else ()
-    direction_features = tuple(dict.fromkeys((*PRIMARY_FEATURES, *CHAINLINK_FEATURES, *ref_features)))
-    full_features = (*direction_features, *BINANCE_OI_FEATURES)
     exogenous_features = tuple(
-        dict.fromkeys((*CORE_FEATURES, *ORACLE_FEATURES, *CHAINLINK_FEATURES, *ref_features))
-    )
-
-    base_outcome = _fit_outcome(fit, direction_features, config, seed=seed)
-    full_fit = fit.drop_nulls(BINANCE_OI_FEATURES)
-    full_outcome = _fit_outcome(full_fit, full_features, config, seed=seed + 100)
-
-    q5 = _fit_family_model(
-        base_outcome, admission, calibration, "global", config, seed=seed + 200
-    )
-    stratified = _fit_family_model(
-        base_outcome, admission, calibration, "stratified", config, seed=seed + 300
-    )
-    regime = _fit_family_model(
-        base_outcome, admission, calibration, "regime", config, seed=seed + 400
-    )
-    full_admission = admission.drop_nulls(BINANCE_OI_FEATURES)
-    full_calibration = calibration.drop_nulls(BINANCE_OI_FEATURES)
-    full = _fit_family_model(
-        full_outcome,
-        full_admission,
-        full_calibration,
-        "regime",
-        config,
-        seed=seed + 500,
-        fit_loss=True,
-    )
-    models = {
-        "q5": q5,
-        "stratified_payoff": stratified,
-        "regime_calibrated": regime,
-        "full_combined": full,
-    }
-    models["specialist_distilled"] = _fit_specialist(
-        calibration,
-        models,
-        exogenous_features,
-        config,
-        seed=seed + 600,
-    )
-    for model in models.values():
-        model["arm"] = arm
-        model["training_rows"] = fit.height
-        model["training_markets"] = fit["market_id"].n_unique()
-        model["admission_rows"] = admission.height
-        model["calibration_rows"] = calibration.height
-    return models
-
-
-def _fit_outcome(
-    frame: pl.DataFrame,
-    features: tuple[str, ...],
-    config: FrozenTrainingConfig,
-    *,
-    seed: int,
-) -> dict[str, Any]:
-    medians = _feature_medians(frame, features)
-    estimator = HistGradientBoostingClassifier(
-        learning_rate=config.model.learning_rate,
-        max_iter=config.model.max_iter,
-        max_leaf_nodes=config.model.max_leaf_nodes,
-        min_samples_leaf=config.model.min_samples_leaf,
-        l2_regularization=config.model.l2_regularization,
-        random_state=seed,
-        early_stopping=False,
-    )
-    estimator.fit(
-        _matrix(frame, features, medians),
-        frame["target_label"].to_numpy(),
-        sample_weight=market_equal_weights(frame),
-    )
-    return {"estimator": estimator, "features": features, "medians": medians}
-
-
-def _fit_family_model(
-    outcome: dict[str, Any],
-    admission: pl.DataFrame,
-    calibration: pl.DataFrame,
-    calibration_kind: str,
-    config: FrozenTrainingConfig,
-    *,
-    seed: int,
-    fit_loss: bool = False,
-) -> dict[str, Any]:
-    raw_calibration = _raw_probability(outcome, calibration)
-    calibrator = _fit_probability_calibrator(
-        calibration, raw_calibration, calibration_kind, config, seed=seed
-    )
-    raw_admission = _raw_probability(outcome, admission)
-    admission_scored = _attach_action_columns(admission, raw_admission, config)
-    meta_medians = _feature_medians(admission_scored, META_FEATURES)
-    correctness = HistGradientBoostingClassifier(
-        learning_rate=config.model.learning_rate,
-        max_iter=config.model.loss_max_iter,
-        max_leaf_nodes=config.model.loss_max_leaf_nodes,
-        min_samples_leaf=config.model.loss_min_samples_leaf,
-        l2_regularization=config.model.loss_l2_regularization,
-        random_state=seed + 1,
-        early_stopping=False,
-    )
-    correctness.fit(
-        _matrix(admission_scored, META_FEATURES, meta_medians),
-        admission_scored["direction_correct"].to_numpy().astype(np.int8),
-        sample_weight=market_equal_weights(admission_scored),
-    )
-    payoff = HistGradientBoostingRegressor(
-        learning_rate=config.model.learning_rate,
-        max_iter=config.model.loss_max_iter,
-        max_leaf_nodes=config.model.loss_max_leaf_nodes,
-        min_samples_leaf=config.model.loss_min_samples_leaf,
-        l2_regularization=config.model.loss_l2_regularization,
-        random_state=seed + 2,
-        early_stopping=False,
-    )
-    payoff.fit(
-        _matrix(admission_scored, META_FEATURES, meta_medians),
-        admission_scored["stress_reward_per_share"].to_numpy(),
-        sample_weight=market_equal_weights(admission_scored),
-    )
-    loss_model = None
-    if fit_loss:
-        loss_model = HistGradientBoostingRegressor(
-            learning_rate=config.model.learning_rate,
-            max_iter=config.model.loss_max_iter,
-            max_leaf_nodes=config.model.loss_max_leaf_nodes,
-            min_samples_leaf=config.model.loss_min_samples_leaf,
-            l2_regularization=config.model.loss_l2_regularization,
-            random_state=seed + 3,
-            early_stopping=False,
+        dict.fromkeys(
+            (
+                *CORE_FEATURES,
+                *ORACLE_FEATURES,
+                *CHAINLINK_REFPRICE_FEATURES,
+                *(TWAP_INPUT_FEATURES if arm == "RT" else ()),
+            )
         )
-        loss_model.fit(
-            _matrix(admission_scored, META_FEATURES, meta_medians),
-            admission_scored["loss_severity"].to_numpy(),
-            sample_weight=market_equal_weights(admission_scored),
-        )
+    )
+    q5_model = _train_q5_lineage(arm_frame, config, descendant_features, seed=seed)
+    middle_models = _train_middle_lineage(arm_frame, config, descendant_features, seed=seed + 1_000)
+    specialist = _train_specialist_lineage(arm_frame, config, exogenous_features, seed=seed + 2_000)
     return {
-        "kind": calibration_kind,
-        "outcome": outcome,
-        "calibrator": calibrator,
-        "meta_features": META_FEATURES,
-        "meta_medians": meta_medians,
-        "correctness": correctness,
-        "payoff": payoff,
-        "loss": loss_model,
+        "q5": q5_model,
+        **middle_models,
+        "specialist_distilled": specialist,
     }
 
 
-def _fit_probability_calibrator(
+def _q5_config(config: FrozenTrainingConfig, *, seed: int) -> q5_lineage.TrainingConfig:
+    base = q5_lineage.load_config(
+        config.package_root
+        / "configs"
+        / "btc-5m-continuous-edge-payoff-aware-20260525-20260723.toml"
+    )
+    probability_fit_end = config.windows.outcome_fit_end - timedelta(days=2)
+    windows = q5_lineage.WindowConfig(
+        outcome_fit_start=config.windows.data_start,
+        outcome_fit_end=probability_fit_end,
+        calibration_end=config.windows.outcome_fit_end,
+        admission_end=config.windows.admission_end,
+        validation_start=config.windows.admission_end,
+        validation_end=config.windows.calibration_end,
+        test_end=config.windows.evaluation_end,
+    )
+    return replace(base, random_seed=seed, windows=windows)
+
+
+def _train_q5_lineage(
     frame: pl.DataFrame,
-    raw: np.ndarray,
-    kind: str,
     config: FrozenTrainingConfig,
+    feature_names: tuple[str, ...],
     *,
     seed: int,
 ) -> dict[str, Any]:
-    global_model = LogisticRegression(
-        C=config.model.calibration_c,
-        max_iter=config.model.calibration_max_iter,
-        random_state=seed,
+    lineage_config = _q5_config(config, seed=seed)
+    experts, expert_metrics = q5_lineage.fit_candidate(
+        lineage_config,
+        frame,
+        "refprice_twap_descendant",
+        feature_names,
     )
-    global_model.fit(
-        _logit(raw).reshape(-1, 1),
-        frame["target_label"].to_numpy(),
-        sample_weight=market_equal_weights(frame),
+    family_proxies, proxy_metrics = q5_lineage.fit_family_proxies(lineage_config, frame)
+    calibration_raw = q5_lineage.score_frame(
+        q5_lineage._block(
+            frame,
+            lineage_config.windows.outcome_fit_end,
+            lineage_config.windows.calibration_end,
+        ),
+        experts,
+        family_proxies,
+        lineage_config,
     )
-    result: dict[str, Any] = {"kind": kind, "global": global_model, "locals": {}}
-    if kind == "stratified":
-        for name, start, end in _entry_cells():
-            mask = (frame["seconds_elapsed"].to_numpy() >= start) & (
-                frame["seconds_elapsed"].to_numpy() < end
-            )
-            if mask.sum() < config.model.local_calibration_minimum_rows:
-                continue
-            subset = frame.filter(pl.Series(mask))
-            if subset["target_label"].n_unique() < 2:
-                continue
-            local = LogisticRegression(
-                C=config.model.calibration_c,
-                max_iter=config.model.calibration_max_iter,
-                random_state=seed + len(result["locals"]) + 1,
-            )
-            local.fit(
-                _logit(raw[mask]).reshape(-1, 1),
-                subset["target_label"].to_numpy(),
-                sample_weight=market_equal_weights(subset),
-            )
-            markets = subset["market_id"].n_unique()
-            result["locals"][name] = {
-                "model": local,
-                "weight": markets
-                / (markets + config.model.local_calibration_shrinkage_rows),
-            }
-    elif kind == "regime":
-        design, medians = _regime_matrix(frame, raw)
-        regime = LogisticRegression(
-            C=config.model.calibration_c,
-            max_iter=config.model.calibration_max_iter,
-            random_state=seed + 1,
-        )
-        regime.fit(
-            design,
-            frame["target_label"].to_numpy(),
-            sample_weight=market_equal_weights(frame),
-        )
-        result["regime"] = regime
-        result["regime_medians"] = medians
-    return result
+    price_time = q5_lineage.fit_price_time_calibration(calibration_raw, lineage_config)
+    calibrated = q5_lineage.attach_price_time_calibration(
+        calibration_raw, price_time, lineage_config
+    )
+    guard = q5_lineage.fit_calibration_guard(calibrated, lineage_config)
+    admission_frame = q5_lineage.prepare_scored_frame(
+        q5_lineage._block(
+            frame,
+            lineage_config.windows.calibration_end,
+            lineage_config.windows.admission_end,
+        ),
+        experts,
+        family_proxies,
+        price_time,
+        guard,
+        lineage_config,
+    )
+    admission_model = q5_lineage.fit_admission_model(admission_frame, lineage_config)
+    policy = config.policies["q5"]
+    thresholds = {
+        "early": {
+            "enabled": True,
+            "confidence": policy["early_confidence"],
+            "edge": policy["early_stress_edge"],
+            "admission": policy["early_admission"],
+            "payoff_lower_bound": policy["early_payoff_lower_bound"],
+        },
+        "mid": {"enabled": bool(policy["middle_enabled"])},
+        "late": {
+            "enabled": True,
+            "confidence": policy["late_confidence"],
+            "edge": policy["late_stress_edge"],
+            "admission": policy["late_admission"],
+            "payoff_lower_bound": policy["late_payoff_lower_bound"],
+        },
+    }
+    return {
+        "lineage": "continuous_edge_payoff_q5",
+        "lineage_schema_version": q5_lineage.MODEL_SCHEMA_VERSION,
+        "feature_names": feature_names,
+        "experts": experts,
+        "family_proxies": family_proxies,
+        "price_time_calibration": price_time,
+        "calibration_guard": guard,
+        "admission_model": admission_model,
+        "thresholds": thresholds,
+        "lineage_config": lineage_config,
+        "training_diagnostics": {
+            "experts": expert_metrics,
+            "family_proxies": proxy_metrics,
+            "admission_oof": admission_model.oof_diagnostics,
+        },
+    }
 
 
-def _fit_specialist(
-    calibration: pl.DataFrame,
-    teachers: dict[str, Any],
-    features: tuple[str, ...],
+def _middle_config(config: FrozenTrainingConfig, *, seed: int) -> middle_lineage.TournamentConfig:
+    base = middle_lineage.load_config(
+        config.package_root / "configs" / "btc-5m-middle-market-ablation-tournament-20260525.toml"
+    )
+    windows = middle_lineage.Windows(
+        fit_start=config.windows.data_start,
+        fit_end=config.windows.outcome_fit_end - timedelta(days=2),
+        calibration_end=config.windows.outcome_fit_end,
+        meta_end=config.windows.admission_end,
+        policy_end=config.windows.calibration_end,
+        holdout_end=config.windows.evaluation_end,
+    )
+    return replace(base, random_seed=seed, windows=windows)
+
+
+def _train_middle_lineage(
+    frame: pl.DataFrame,
     config: FrozenTrainingConfig,
+    feature_names: tuple[str, ...],
     *,
     seed: int,
 ) -> dict[str, Any]:
-    teacher_probabilities = np.column_stack(
-        [
-            _model_probability(teachers[name], calibration)
-            for name in ("q5", "stratified_payoff", "regime_calibrated", "full_combined")
-        ]
+    lineage_config = _middle_config(config, seed=seed)
+    middle_frame = frame.filter(
+        (pl.col("seconds_elapsed") >= 90) & (pl.col("seconds_elapsed") < 180)
     )
-    selector_features = np.column_stack(
+    fit = middle_lineage._block(
+        middle_frame, lineage_config.windows.fit_start, lineage_config.windows.fit_end
+    )
+    calibration = middle_lineage._block(
+        middle_frame,
+        lineage_config.windows.fit_end,
+        lineage_config.windows.calibration_end,
+    )
+    meta = middle_lineage._block(
+        middle_frame,
+        lineage_config.windows.calibration_end,
+        lineage_config.windows.meta_end,
+    )
+    outcome = middle_lineage._fit_shared_outcome(
+        fit, calibration, feature_names, lineage_config, seed=seed
+    )
+    oof = middle_lineage._oof_predictions(fit, feature_names, lineage_config)
+    base_calibration = middle_lineage._decision_frame(calibration, outcome, lineage_config, None)
+    base_meta = middle_lineage._decision_frame(meta, outcome, lineage_config, None)
+    stratified = middle_lineage._fit_correctness(
+        base_calibration,
+        lineage_config,
+        stratified=True,
+        regime=False,
+        seed=seed + 21,
+    )
+    regime = middle_lineage._fit_correctness(
+        base_calibration,
+        lineage_config,
+        stratified=True,
+        regime=True,
+        seed=seed + 22,
+    )
+    oi_oof = oof.drop_nulls(BINANCE_OI_FEATURES)
+    oi_calibration = calibration.drop_nulls(BINANCE_OI_FEATURES)
+    modifier = middle_lineage._fit_probability_modifier(oi_oof, lineage_config)
+    modified_calibration = middle_lineage._decision_frame(
+        oi_calibration, outcome, lineage_config, modifier
+    )
+    full_correctness = middle_lineage._fit_correctness(
+        modified_calibration,
+        lineage_config,
+        stratified=True,
+        regime=True,
+        seed=seed + 23,
+    )
+    loss_training = pl.concat(
         (
-            _logit(teacher_probabilities),
-            teacher_probabilities.std(axis=1),
-            teacher_probabilities.max(axis=1) - teacher_probabilities.min(axis=1),
-            calibration["seconds_elapsed_scaled"].to_numpy(),
-            calibration["btc_cross_venue_boundary_gap_bps"].to_numpy(),
-        )
+            middle_lineage._loss_training_frame(oof, lineage_config),
+            middle_lineage._loss_training_frame(base_meta, lineage_config),
+        ),
+        how="diagonal_relaxed",
     )
-    selector = LogisticRegression(C=0.5, max_iter=2000, random_state=seed)
-    selector.fit(
-        np.nan_to_num(selector_features),
-        calibration["target_label"].to_numpy(),
-        sample_weight=market_equal_weights(calibration),
+    loss_features = middle_lineage._variable_features(loss_training, middle_lineage.LOSS_FEATURES)
+    loss_model = middle_lineage._fit_regressor(
+        loss_training,
+        loss_features,
+        "loss_severity_target",
+        lineage_config,
+        seed=seed + 31,
     )
-    teacher = selector.predict_proba(np.nan_to_num(selector_features))[:, 1]
-    medians = _feature_medians(calibration, features)
-    distilled = HistGradientBoostingRegressor(
-        learning_rate=config.model.learning_rate,
-        max_iter=180,
-        max_leaf_nodes=23,
-        min_samples_leaf=120,
-        l2_regularization=5.0,
-        random_state=seed + 1,
-        early_stopping=False,
-    )
-    distilled.fit(
-        _matrix(calibration, features, medians),
-        teacher,
-        sample_weight=market_equal_weights(calibration),
-    )
-    raw = np.clip(distilled.predict(_matrix(calibration, features, medians)), 1e-6, 1 - 1e-6)
-    calibrator = LogisticRegression(C=0.5, max_iter=2000, random_state=seed + 2)
-    calibrator.fit(
-        _logit(raw).reshape(-1, 1),
-        calibration["target_label"].to_numpy(),
-        sample_weight=market_equal_weights(calibration),
-    )
-    return {
-        "kind": "specialist_distilled",
-        "features": features,
-        "medians": medians,
-        "selector": selector,
-        "distilled": distilled,
-        "calibrator": calibrator,
-        "teacher_families": (
-            "q5",
-            "stratified_payoff",
-            "regime_calibrated",
-            "full_combined",
+    common_eligibility = tuple(CHAINLINK_REFPRICE_FEATURES)
+    models = {
+        "stratified_payoff": middle_lineage.Candidate(
+            "refprice_stratified_payoff",
+            feature_names,
+            common_eligibility,
+            outcome,
+            stratified,
+        ),
+        "regime_calibrated": middle_lineage.Candidate(
+            "refprice_regime_calibrated",
+            feature_names,
+            common_eligibility,
+            outcome,
+            regime,
+        ),
+        "full_combined": middle_lineage.Candidate(
+            "refprice_full_combined",
+            feature_names,
+            (*common_eligibility, *BINANCE_OI_FEATURES),
+            outcome,
+            full_correctness,
+            probability_modifier=modifier,
+            loss_model=loss_model,
+            loss_feature_names=loss_features,
         ),
     }
+    return {
+        name: {
+            "lineage": "middle_market_ablation",
+            "lineage_schema_version": middle_lineage.MODEL_SCHEMA_VERSION,
+            "candidate": candidate,
+            "lineage_config": lineage_config,
+            "oof_rows": oof.height,
+            "oof_markets": oof["market_id"].n_unique(),
+        }
+        for name, candidate in models.items()
+    }
 
 
-def _raw_probability(model: dict[str, Any], frame: pl.DataFrame) -> np.ndarray:
-    outcome = model
-    return np.clip(
-        outcome["estimator"].predict_proba(
-            _matrix(frame, outcome["features"], outcome["medians"])
-        )[:, 1],
-        1e-6,
-        1 - 1e-6,
+def _specialist_config(config: FrozenTrainingConfig) -> specialist_lineage.TournamentConfig:
+    return specialist_lineage.load_config(
+        config.package_root
+        / "configs"
+        / "btc-5m-fair-value-challenger-tournament-20260525-20260802.toml"
     )
 
 
-def _model_probability(model: dict[str, Any], frame: pl.DataFrame) -> np.ndarray:
-    if model["kind"] == "specialist_distilled":
-        raw = np.clip(
-            model["distilled"].predict(
-                _matrix(frame, model["features"], model["medians"])
-            ),
-            1e-6,
-            1 - 1e-6,
-        )
-        return model["calibrator"].predict_proba(_logit(raw).reshape(-1, 1))[:, 1]
-    raw = _raw_probability(model["outcome"], frame)
-    calibration = model["calibrator"]
-    global_probability = calibration["global"].predict_proba(_logit(raw).reshape(-1, 1))[:, 1]
-    if calibration["kind"] == "stratified":
-        probability = global_probability.copy()
-        seconds = frame["seconds_elapsed"].to_numpy()
-        for name, start, end in _entry_cells():
-            local = calibration["locals"].get(name)
-            if local is None:
-                continue
-            mask = (seconds >= start) & (seconds < end)
-            local_probability = local["model"].predict_proba(
-                _logit(raw[mask]).reshape(-1, 1)
-            )[:, 1]
-            probability[mask] = (
-                local["weight"] * local_probability
-                + (1.0 - local["weight"]) * global_probability[mask]
-            )
-        return np.clip(probability, 1e-6, 1 - 1e-6)
-    if calibration["kind"] == "regime":
-        design, _ = _regime_matrix(frame, raw, calibration["regime_medians"])
-        return np.clip(calibration["regime"].predict_proba(design)[:, 1], 1e-6, 1 - 1e-6)
-    return np.clip(global_probability, 1e-6, 1 - 1e-6)
+def _train_specialist_lineage(
+    frame: pl.DataFrame,
+    config: FrozenTrainingConfig,
+    feature_names: tuple[str, ...],
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    lineage_config = _specialist_config(config)
+    fit = frame.filter(pl.col("window_start") < config.windows.outcome_fit_end)
+    calibration = frame.filter(
+        (pl.col("window_start") >= config.windows.outcome_fit_end)
+        & (pl.col("window_start") < config.windows.calibration_end)
+    )
+    fair = specialist_lineage._fit_fair_models(
+        fit,
+        calibration,
+        lineage_config,
+        seed=seed,
+        feature_names=feature_names,
+    )
+    return {
+        "lineage": "specialist_distilled_fair_value",
+        "lineage_schema_version": specialist_lineage.ARTIFACT_SCHEMA_VERSION,
+        "fair_models": fair,
+        "lineage_config": lineage_config,
+    }
 
 
 def _score_family(
@@ -1089,23 +1139,111 @@ def _score_family(
     family: str,
     config: FrozenTrainingConfig,
 ) -> pl.DataFrame:
-    probability = _model_probability(model, frame)
-    scored = _attach_action_columns(frame, probability, config)
-    if family == "specialist_distilled":
-        return scored
-    matrix = _matrix(scored, model["meta_features"], model["meta_medians"])
-    scored = scored.with_columns(
-        pl.Series(
-            "admission_probability",
-            model["correctness"].predict_proba(matrix)[:, 1],
-        ),
-        pl.Series("payoff_expected_stress_edge", model["payoff"].predict(matrix)),
-    )
-    if model["loss"] is not None:
-        scored = scored.with_columns(
-            pl.Series("predicted_loss_severity", model["loss"].predict(matrix))
+    prepared = _with_lineage_columns(frame, config)
+    if family == "q5":
+        lineage_config = model["lineage_config"]
+        lineage_scored = q5_lineage.attach_admission_probability(
+            q5_lineage.prepare_scored_frame(
+                prepared,
+                model["experts"],
+                model["family_proxies"],
+                model["price_time_calibration"],
+                model["calibration_guard"],
+                lineage_config,
+            ),
+            model["admission_model"],
         )
-    return scored
+        scored = _attach_action_columns(
+            prepared, lineage_scored["probability_up"].to_numpy(), config
+        )
+        return scored.with_columns(
+            pl.Series(
+                "model_confidence",
+                lineage_scored["conservative_probability_selected"].to_numpy(),
+            ),
+            pl.Series("model_stress_edge", lineage_scored["conservative_edge_5"].to_numpy()),
+            pl.Series(
+                "admission_probability",
+                lineage_scored["admission_probability"].to_numpy(),
+            ),
+            pl.Series(
+                "payoff_expected_stress_edge",
+                lineage_scored["payoff_stress_edge_lower_bound"].to_numpy(),
+            ),
+            pl.Series(
+                "price_bucket_minimum_edge",
+                lineage_scored["price_bucket_minimum_edge"].to_numpy(),
+            ),
+        )
+    if family in ("stratified_payoff", "regime_calibrated", "full_combined"):
+        candidate = model["candidate"]
+        lineage_scored = middle_lineage._score_candidate(
+            prepared, candidate, model["lineage_config"]
+        )
+        scored = _attach_action_columns(
+            lineage_scored,
+            lineage_scored["probability_up"].to_numpy(),
+            config,
+        ).with_columns(
+            pl.Series(
+                "admission_probability",
+                lineage_scored["lower_correctness_probability"].to_numpy(),
+            ),
+            pl.Series(
+                "model_stress_edge",
+                lineage_scored["stress_edge_lower_bound"].to_numpy(),
+            ),
+            pl.Series(
+                "payoff_expected_stress_edge",
+                lineage_scored["stress_edge_lower_bound"].to_numpy(),
+            ),
+        )
+        if family == "full_combined":
+            scored = scored.with_columns(
+                pl.Series(
+                    "predicted_loss_severity",
+                    lineage_scored["loss_severity_prediction"].to_numpy(),
+                )
+            )
+        return scored
+    fair = model["fair_models"]
+    probability = np.clip(
+        fair["distilled"].predict(q5_lineage._matrix(prepared, fair["feature_names"])),
+        1e-6,
+        1 - 1e-6,
+    )
+    return _attach_action_columns(prepared, probability, config)
+
+
+def _with_lineage_columns(frame: pl.DataFrame, config: FrozenTrainingConfig) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.col("target_label").cast(pl.Int8).alias("label_up"),
+        pl.when(pl.col("seconds_elapsed") < 90)
+        .then(pl.lit("early"))
+        .when(pl.col("seconds_elapsed") < 180)
+        .then(pl.lit("mid"))
+        .otherwise(pl.lit("late"))
+        .alias("time_band"),
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("90-119"))
+        .when(pl.col("seconds_elapsed") < 150)
+        .then(pl.lit("120-149"))
+        .otherwise(pl.lit("150-179"))
+        .alias("middle_cell"),
+        pl.col("pm_yes_cost_per_share").alias("up_cost_5"),
+        pl.col("pm_no_cost_per_share").alias("down_cost_5"),
+    ).with_columns(
+        (
+            pl.col("label_up").cast(pl.Float64)
+            - pl.col("up_cost_5")
+            - config.execution.stress_slippage_per_share
+        ).alias("up_stress_reward"),
+        (
+            (1 - pl.col("label_up")).cast(pl.Float64)
+            - pl.col("down_cost_5")
+            - config.execution.stress_slippage_per_share
+        ).alias("down_stress_reward"),
+    )
 
 
 def _attach_action_columns(
@@ -1117,9 +1255,7 @@ def _attach_action_columns(
     down_price = frame["down_ask_vwap_5"].to_numpy()
     fee = frame["fee_rate"].to_numpy()
     up_cost = (
-        up_price
-        + fee * up_price * (1.0 - up_price)
-        + config.execution.execution_reserve_per_share
+        up_price + fee * up_price * (1.0 - up_price) + config.execution.execution_reserve_per_share
     )
     down_cost = (
         down_price
@@ -1157,6 +1293,7 @@ def _apply_frozen_policy(
             & (pl.col("model_stress_edge") >= policy["early_stress_edge"])
             & (pl.col("admission_probability") >= policy["early_admission"])
             & (pl.col("payoff_expected_stress_edge") >= policy["early_payoff_lower_bound"])
+            & (pl.col("model_stress_edge") >= pl.col("price_bucket_minimum_edge"))
         )
         late = (
             (pl.col("seconds_elapsed") >= 180)
@@ -1164,6 +1301,7 @@ def _apply_frozen_policy(
             & (pl.col("model_stress_edge") >= policy["late_stress_edge"])
             & (pl.col("admission_probability") >= policy["late_admission"])
             & (pl.col("payoff_expected_stress_edge") >= policy["late_payoff_lower_bound"])
+            & (pl.col("model_stress_edge") >= pl.col("price_bucket_minimum_edge"))
         )
         eligible = early | late
     elif family in ("stratified_payoff", "regime_calibrated", "full_combined"):
@@ -1219,14 +1357,67 @@ def _evaluation_metrics(
             else 0,
             "net_pnl": subset["reward_per_share"].sum() * quantity if subset.height else 0.0,
         }
+    capacity: dict[str, Any] = {}
+    for capacity_quantity in config.execution.quantities:
+        if trades:
+            selected_price = np.where(
+                selected["predicted_up"].to_numpy(),
+                selected[f"up_ask_vwap_{capacity_quantity}"].to_numpy(),
+                selected[f"down_ask_vwap_{capacity_quantity}"].to_numpy(),
+            )
+            fee = selected["fee_rate"].to_numpy() * selected_price * (1.0 - selected_price)
+            cost = selected_price + fee + config.execution.execution_reserve_per_share
+            realized = selected["direction_correct"].to_numpy().astype(float) - cost
+            capacity[str(capacity_quantity)] = {
+                "trades": trades,
+                "net_pnl": float(realized.sum() * capacity_quantity),
+                "stress_net_pnl": float(
+                    (realized - config.execution.stress_slippage_per_share).sum()
+                    * capacity_quantity
+                ),
+                "expectancy_per_trade": float(realized.mean() * capacity_quantity),
+            }
+        else:
+            capacity[str(capacity_quantity)] = {
+                "trades": 0,
+                "net_pnl": 0.0,
+                "stress_net_pnl": 0.0,
+                "expectancy_per_trade": None,
+            }
+    entry_cells = {}
+    for name, start, end in _entry_cells():
+        subset = selected.filter(
+            (pl.col("seconds_elapsed") >= start) & (pl.col("seconds_elapsed") < end)
+        )
+        entry_cells[name] = {
+            "trades": subset.height,
+            "wins": int(subset["direction_correct"].sum()) if subset.height else 0,
+            "net_pnl": float(subset["reward_per_share"].sum() * quantity) if subset.height else 0.0,
+        }
+    price_buckets = {}
+    for lower, upper in pairwise(PRICE_BUCKET_EDGES):
+        subset = selected.filter(
+            (pl.col("selected_cost_5") >= lower) & (pl.col("selected_cost_5") < upper)
+        )
+        price_buckets[f"{lower:.2f}-{upper:.2f}"] = {
+            "trades": subset.height,
+            "wins": int(subset["direction_correct"].sum()) if subset.height else 0,
+            "net_pnl": float(subset["reward_per_share"].sum() * quantity) if subset.height else 0.0,
+        }
+    evaluation_markets = evaluation["market_id"].n_unique()
+    prediction_markets = scored["market_id"].n_unique()
+    traded_markets = selected["market_id"].n_unique() if trades else 0
     return {
         "evaluation_rows": scored.height,
-        "evaluation_markets": evaluation["market_id"].n_unique(),
+        "evaluation_markets": evaluation_markets,
+        "prediction_markets": prediction_markets,
+        "prediction_market_coverage": prediction_markets / evaluation_markets,
         "settled": trades,
         "wins": wins,
         "losses": trades - wins,
         "accuracy": wins / trades if trades else None,
-        "market_coverage": trades / evaluation["market_id"].n_unique(),
+        "market_coverage": traded_markets / evaluation_markets,
+        "no_trade_markets": evaluation_markets - traded_markets,
         "net_pnl": float(pnl),
         "stress_net_pnl": float(stress_pnl),
         "expectancy_per_trade": float(pnl / trades) if trades else None,
@@ -1235,52 +1426,10 @@ def _evaluation_metrics(
         "ece_10": _ece(label, probability, 10),
         "average_probability_up": float(probability.mean()),
         "directions": directions,
+        "entry_cells": entry_cells,
+        "entry_price_buckets": price_buckets,
+        "vwap_capacity": capacity,
     }
-
-
-def _feature_medians(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
-    values = frame.select(features).to_numpy().astype(float, copy=False)
-    values[~np.isfinite(values)] = np.nan
-    medians = np.nanmedian(values, axis=0)
-    medians[~np.isfinite(medians)] = 0.0
-    return medians
-
-
-def _matrix(
-    frame: pl.DataFrame, features: tuple[str, ...], medians: np.ndarray
-) -> np.ndarray:
-    values = frame.select(features).to_numpy().astype(float, copy=False)
-    invalid = ~np.isfinite(values)
-    if invalid.any():
-        values = values.copy()
-        rows, columns = np.nonzero(invalid)
-        values[rows, columns] = medians[columns]
-    return values
-
-
-def _regime_matrix(
-    frame: pl.DataFrame,
-    raw: np.ndarray,
-    medians: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    base = frame.select(REGIME_FEATURES).to_numpy().astype(float, copy=False)
-    predicted = (raw >= 0.5).astype(float)[:, None]
-    cost = np.where(
-        predicted[:, 0].astype(bool),
-        frame["up_ask_vwap_5"].to_numpy(),
-        frame["down_ask_vwap_5"].to_numpy(),
-    )
-    buckets = np.clip(np.digitize(cost, PRICE_BUCKET_EDGES) - 1, 0, 3)
-    bucket_hot = np.column_stack([(buckets == index).astype(float) for index in range(4)])
-    values = np.column_stack((_logit(raw), predicted, base, bucket_hot))
-    values[~np.isfinite(values)] = np.nan
-    if medians is None:
-        medians = np.nanmedian(values, axis=0)
-        medians[~np.isfinite(medians)] = 0.0
-    rows, columns = np.nonzero(~np.isfinite(values))
-    if len(rows):
-        values[rows, columns] = medians[columns]
-    return values, medians
 
 
 def _entry_cells() -> tuple[tuple[str, int, int], ...]:
@@ -1291,11 +1440,6 @@ def _entry_cells() -> tuple[tuple[str, int, int], ...]:
         ("middle_150_179", 150, 180),
         ("late_180_240", 180, 241),
     )
-
-
-def _logit(values: np.ndarray) -> np.ndarray:
-    clipped = np.clip(values, 1e-6, 1 - 1e-6)
-    return np.log(clipped / (1.0 - clipped))
 
 
 def _ece(labels: np.ndarray, probabilities: np.ndarray, bins: int) -> float:
@@ -1355,21 +1499,22 @@ def _render_report(metrics: dict[str, Any]) -> str:
             f"{metrics['common_evaluation']['rows']:,} decision rows."
         ),
         "",
-        "| Arm | Family | Settled | W-L | Net P&L | Stress P&L | Brier | ECE |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+        "| Arm | Family | Predicted markets | Traded markets | W-L | Net P&L | Stress P&L | Brier | ECE |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for arm in ARMS:
         for family in FAMILIES:
             row = metrics["results"][arm][family]
             lines.append(
-                f"| {arm} | {family} | {row['settled']} | {row['wins']}-{row['losses']} | "
+                f"| {arm} | {family} | {row['prediction_markets']} | {row['settled']} | "
+                f"{row['wins']}-{row['losses']} | "
                 f"{row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | "
                 f"{row['brier']:.4f} | {row['ece_10']:.4f} |"
             )
     lines.extend(
         [
             "",
-            "W is the watermark refresh, R adds causal PMData RefPrice, and T changes the target to PMData TWAP-60.",
+            "R is the RefPrice-primary legacy-label refresh. T changes post-August-1 labels to PMData TWAP-60. RT adds causal PMData TWAP-30/60 inputs to T.",
             "All incumbent artifacts, trading processes, runtime bundles, and deployed images remained unchanged.",
             "",
         ]
