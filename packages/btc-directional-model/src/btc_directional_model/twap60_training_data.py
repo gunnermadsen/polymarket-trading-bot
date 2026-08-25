@@ -137,6 +137,7 @@ def extract_tournament_sources(
         },
         "read_only": True,
         "database_mutations": False,
+        "completed_artifacts_only": True,
     }
     manifest_path = paths.cache / "source-manifest.json"
     checkpoint_path = paths.cache / "source-manifest.partial.json"
@@ -210,7 +211,7 @@ def extract_tournament_sources(
                 },
                 cursor_name=f"btc_twap60_oracle_{day:%Y%m%d}",
             ),
-            "candles": _isolated_query_frame(
+            "candles": _query_completed_candles(
                 sql["candles"],
                 {
                     "history_start": day - timedelta(minutes=121),
@@ -297,6 +298,39 @@ def _isolated_query_frame(
         return _query_frame(connection, query, parameters, cursor_name=cursor_name)
     finally:
         connection.close()
+
+
+def _query_completed_candles(
+    query: str,
+    parameters: dict[str, Any],
+    *,
+    cursor_name: str,
+) -> pl.DataFrame:
+    candles = _isolated_query_frame(
+        query, parameters, cursor_name=cursor_name
+    )
+    if candles.is_empty():
+        return candles
+    artifact_ids = candles["artifact_id"].unique().to_list()
+    connection = database_connection()
+    configure_read_only_connection(connection)
+    try:
+        rows = connection.execute(
+            """
+            SELECT artifact_id::text
+            FROM polymarket.backfill_artifacts
+            WHERE artifact_id = ANY(%s::uuid[])
+              AND status = 'completed'
+            """,
+            (artifact_ids,),
+        ).fetchall()
+    finally:
+        connection.close()
+    completed = [row[0] for row in rows]
+    filtered = candles.filter(pl.col("artifact_id").is_in(completed))
+    if filtered.height != candles.height:
+        raise RuntimeError("candle source includes a non-completed artifact")
+    return filtered
 
 
 def build_current_core_features(
