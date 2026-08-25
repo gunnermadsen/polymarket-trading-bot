@@ -3,9 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
+import polars as pl
+
 from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 from btc_directional_model.twap60_challenger_tournament import (
     FEATURE_TREATMENTS,
+    _matrix,
+    _model_eligible,
     feature_names,
     load_config,
     predetermined_hyperparameters,
@@ -52,3 +57,20 @@ def test_bakeoff_treatments_keep_historical_share_prices_out_of_outcome_fit() ->
     assert set(REFPRICE_RUNTIME_FEATURES).issubset(
         feature_names("refprice_oracle_candle_combined")
     )
+
+
+def test_outcome_matrix_retains_early_rows_with_unavailable_long_lookbacks() -> None:
+    frame = pl.DataFrame(
+        {
+            "short_feature": [1.0, 2.0],
+            "long_lookback_feature": [None, None],
+            "refprice_causal_eligible": [True, True],
+        }
+    )
+    features = ("short_feature", "long_lookback_feature")
+
+    eligible = _model_eligible(frame, features)
+    matrix = _matrix(eligible, features)
+
+    assert eligible.height == 2
+    assert np.isnan(matrix[:, 1]).all()

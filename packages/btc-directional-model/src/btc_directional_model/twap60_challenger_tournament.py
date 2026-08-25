@@ -1435,11 +1435,16 @@ def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
     missing = sorted(set(features) - set(frame.columns))
     if missing:
         raise ValueError("training frame is missing features: " + ", ".join(missing))
-    return frame.select(*features).to_numpy().astype(np.float64, copy=False)
+    matrix = frame.select(*features).to_numpy().astype(np.float64, copy=False)
+    matrix[~np.isfinite(matrix)] = np.nan
+    return matrix
 
 
 def _model_eligible(frame: pl.DataFrame, features: tuple[str, ...]) -> pl.DataFrame:
-    eligible = frame.drop_nulls(features)
+    missing = sorted(set(features) - set(frame.columns))
+    if missing:
+        raise ValueError("training frame is missing features: " + ", ".join(missing))
+    eligible = frame
     if any(name in REFPRICE_RUNTIME_FEATURES for name in features):
         eligible = eligible.filter(pl.col("refprice_causal_eligible"))
     return eligible
