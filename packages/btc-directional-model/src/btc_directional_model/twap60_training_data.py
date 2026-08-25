@@ -180,75 +180,68 @@ def extract_tournament_sources(
         if day.date().isoformat() in completed_dates:
             day = min(day + timedelta(days=1), range_end)
             continue
-        connection = database_connection()
-        configure_read_only_connection(connection)
-        try:
-            end = min(day + timedelta(days=1), range_end)
-            parameters = {"batch_start": day, "batch_end": end}
-            frames = {
-                "labels": _query_frame(
-                    connection, sql["labels"], parameters,
-                    cursor_name=f"btc_twap60_labels_{day:%Y%m%d}",
-                ),
-                "refprice": _query_frame(
-                    connection, sql["refprice"], parameters,
-                    cursor_name=f"btc_twap60_refprice_{day:%Y%m%d}",
-                ),
-                "core_current": _query_frame(
-                    connection,
-                    sql["core_current"],
-                    {
-                        "batch_start": day,
-                        "batch_end": end,
-                        "current_start": current_start,
-                    },
-                    cursor_name=f"btc_twap60_core_{day:%Y%m%d}",
-                ),
-                "oracle": _query_frame(
-                    connection,
-                    sql["oracle"],
-                    {
-                        "batch_start": day,
-                        "batch_end": end,
-                        "oracle_feed_proxy_address": POLYGON_CHAINLINK_BTCUSD_PROXY,
-                        "oracle_max_publication_delay_seconds": 300,
-                    },
-                    cursor_name=f"btc_twap60_oracle_{day:%Y%m%d}",
-                ),
-                "candles": _query_frame(
-                    connection,
-                    sql["candles"],
-                    {
-                        "history_start": day - timedelta(minutes=121),
-                        "range_end": end,
-                        "candle_symbol": "BTCUSD",
-                    },
-                    cursor_name=f"btc_twap60_candles_{day:%Y%m%d}",
-                ),
-                "execution": _query_capacity_frame(
-                    connection, sql["execution"], parameters,
-                    cursor_name=f"btc_twap60_execution_{day:%Y%m%d}",
-                ),
-            }
-            for name, frame in frames.items():
-                directory = paths.cache / name
-                directory.mkdir(parents=True, exist_ok=True)
-                destination = directory / f"{day.date().isoformat()}.parquet"
-                frame.write_parquet(destination, compression="zstd", statistics=True)
-                partitions[name].append(
-                    {
-                        "path": str(destination.relative_to(paths.cache)),
-                        "rows": frame.height,
-                        "sha256": file_sha256(destination),
-                    }
-                )
-                print(f"twap60 extract: {name} {day.date()} {frame.height:,} rows", flush=True)
-            write_json_atomic(
-                checkpoint_path,
-                {"contract": contract, "partitions": partitions},
+        end = min(day + timedelta(days=1), range_end)
+        parameters = {"batch_start": day, "batch_end": end}
+        frames = {
+            "labels": _isolated_query_frame(
+                sql["labels"], parameters,
+                cursor_name=f"btc_twap60_labels_{day:%Y%m%d}",
+            ),
+            "refprice": _isolated_query_frame(
+                sql["refprice"], parameters,
+                cursor_name=f"btc_twap60_refprice_{day:%Y%m%d}",
+            ),
+            "core_current": _isolated_query_frame(
+                sql["core_current"],
+                {
+                    "batch_start": day,
+                    "batch_end": end,
+                    "current_start": current_start,
+                },
+                cursor_name=f"btc_twap60_core_{day:%Y%m%d}",
+            ),
+            "oracle": _isolated_query_frame(
+                sql["oracle"],
+                {
+                    "batch_start": day,
+                    "batch_end": end,
+                    "oracle_feed_proxy_address": POLYGON_CHAINLINK_BTCUSD_PROXY,
+                    "oracle_max_publication_delay_seconds": 300,
+                },
+                cursor_name=f"btc_twap60_oracle_{day:%Y%m%d}",
+            ),
+            "candles": _isolated_query_frame(
+                sql["candles"],
+                {
+                    "history_start": day - timedelta(minutes=121),
+                    "range_end": end,
+                    "candle_symbol": "BTCUSD",
+                },
+                cursor_name=f"btc_twap60_candles_{day:%Y%m%d}",
+            ),
+            "execution": _isolated_query_frame(
+                sql["execution"], parameters,
+                cursor_name=f"btc_twap60_execution_{day:%Y%m%d}",
+                capacity=True,
+            ),
+        }
+        for name, frame in frames.items():
+            directory = paths.cache / name
+            directory.mkdir(parents=True, exist_ok=True)
+            destination = directory / f"{day.date().isoformat()}.parquet"
+            frame.write_parquet(destination, compression="zstd", statistics=True)
+            partitions[name].append(
+                {
+                    "path": str(destination.relative_to(paths.cache)),
+                    "rows": frame.height,
+                    "sha256": file_sha256(destination),
+                }
             )
-        finally:
-            connection.close()
+            print(f"twap60 extract: {name} {day.date()} {frame.height:,} rows", flush=True)
+        write_json_atomic(
+            checkpoint_path,
+            {"contract": contract, "partitions": partitions},
+        )
         day = end
     manifest = {"contract": contract, "partitions": partitions}
     write_json_atomic(manifest_path, manifest)
@@ -285,6 +278,25 @@ def _query_capacity_frame(
     if not chunks:
         return pl.from_arrow(pa.Table.from_pylist([], schema=CAPACITY_SCHEMA))
     return pl.concat(chunks, how="vertical", rechunk=True)
+
+
+def _isolated_query_frame(
+    query: str,
+    parameters: dict[str, Any],
+    *,
+    cursor_name: str,
+    capacity: bool = False,
+) -> pl.DataFrame:
+    connection = database_connection()
+    configure_read_only_connection(connection)
+    try:
+        if capacity:
+            return _query_capacity_frame(
+                connection, query, parameters, cursor_name=cursor_name
+            )
+        return _query_frame(connection, query, parameters, cursor_name=cursor_name)
+    finally:
+        connection.close()
 
 
 def build_current_core_features(
