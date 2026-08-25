@@ -74,13 +74,15 @@ def test_tournament_source_queries_are_bounded_read_only_selects() -> None:
         "btc-twap60-label-source.sql",
         "btc-twap60-refprice-source.sql",
         "btc-twap60-core-current-source.sql",
+        "btc-twap60-candle-source.sql",
         "btc-capacity-execution-evidence.sql",
     )
     forbidden = ("insert ", "update ", "delete ", "create table", "alter table", "drop table")
     for name in names:
         sql = (root / name).read_text().lower()
         assert "% (" not in sql
-        assert "batch_start" in sql and "batch_end" in sql
+        assert ("batch_start" in sql or "history_start" in sql)
+        assert ("batch_end" in sql or "range_end" in sql)
         assert not any(token in sql for token in forbidden)
 
 

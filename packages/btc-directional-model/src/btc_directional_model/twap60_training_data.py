@@ -219,9 +219,8 @@ def extract_tournament_sources(
                     connection,
                     sql["candles"],
                     {
-                        "range_start": day,
+                        "history_start": day - timedelta(minutes=121),
                         "range_end": end,
-                        "history_minutes": 121,
                         "candle_symbol": "BTCUSD",
                     },
                     cursor_name=f"btc_twap60_candles_{day:%Y%m%d}",

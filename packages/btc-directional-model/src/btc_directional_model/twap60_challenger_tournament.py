@@ -225,7 +225,7 @@ def load_config(path: Path) -> TournamentConfig:
             oracle_sql=root / "sql/btc-core-oracle-source.sql",
             label_sql=root / paths["label_source_sql"],
             refprice_sql=root / paths["refprice_source_sql"],
-            candle_sql=root / "sql/btc-chainlink-one-minute-candles-source.sql",
+            candle_sql=root / paths["candle_source_sql"],
             execution_sql=root / paths["execution_source_sql"],
         ),
         runs=root / paths["runs"],
