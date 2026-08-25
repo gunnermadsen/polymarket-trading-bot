@@ -1,0 +1,114 @@
+[training]
+profile = "btc_5m_refprice_twap_target_training"
+paper_only = true
+live_capital_allowed = false
+runtime_exported = false
+random_seed = 20260825
+
+[windows]
+data_start = "2026-06-07T00:00:00Z"
+twap_fit_start = "2026-08-01T00:00:00Z"
+outcome_fit_end = "2026-08-19T00:00:00Z"
+admission_end = "2026-08-21T00:00:00Z"
+calibration_end = "2026-08-23T00:00:00Z"
+evaluation_end = "2026-08-25T00:00:00Z"
+watermark = "2026-08-24"
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+minimum_seconds_after_open = 15
+maximum_seconds_after_open = 240
+training_cadence_seconds = 5
+freshness_seconds = 10
+refprice_freshness_seconds = 5
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+evaluation_quantity = 5
+
+[model]
+learning_rate = 0.04
+max_iter = 240
+max_leaf_nodes = 31
+min_samples_leaf = 140
+l2_regularization = 4.0
+calibration_c = 0.25
+calibration_max_iter = 2000
+local_calibration_minimum_rows = 50
+local_calibration_shrinkage_rows = 200
+loss_max_iter = 180
+loss_max_leaf_nodes = 15
+loss_min_samples_leaf = 100
+loss_l2_regularization = 5.0
+
+[policies.q5]
+early_confidence = 0.75
+early_stress_edge = 0.00
+early_admission = 0.80
+early_payoff_lower_bound = 0.02
+middle_enabled = false
+late_confidence = 0.85
+late_stress_edge = 0.00
+late_admission = 0.75
+late_payoff_lower_bound = -0.02
+
+[policies.stratified_payoff]
+minimum_second = 90
+maximum_second = 179
+confidence = 0.65
+stress_edge = 0.02
+
+[policies.regime_calibrated]
+minimum_second = 90
+maximum_second = 179
+confidence = 0.70
+stress_edge = 0.03
+
+[policies.full_combined]
+minimum_second = 90
+maximum_second = 179
+confidence = 0.65
+stress_edge = 0.03
+maximum_loss_severity = 0.50
+
+[policies.specialist_distilled.cells.early_15_89]
+minimum_second = 15
+maximum_second = 89
+confidence = 0.85
+stress_edge = 0.00
+
+[policies.specialist_distilled.cells.middle_90_119]
+minimum_second = 90
+maximum_second = 119
+confidence = 0.85
+stress_edge = 0.00
+
+[policies.specialist_distilled.cells.middle_120_149]
+minimum_second = 120
+maximum_second = 149
+confidence = 0.85
+stress_edge = 0.03
+
+[policies.specialist_distilled.cells.middle_150_179]
+minimum_second = 150
+maximum_second = 179
+confidence = 0.80
+stress_edge = 0.05
+
+[policies.specialist_distilled.cells.late_180_240]
+minimum_second = 180
+maximum_second = 240
+confidence = 0.85
+stress_edge = 0.005
+
+[paths]
+data = "data/btc-refprice-twap-target-training-20260607-20260824"
+runs = "runs/btc-refprice-twap-target-training-20260607-20260824"
+committed_results = "training-results/btc-5m-refprice-twap-target-training-20260607-20260824"
+
+[incumbents]
+q5 = "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json"
+stratified_payoff = "runtime-models/btc-5m-chainlink-stratified-payoff-paper-20260820/manifest.json"
+regime_calibrated = "runtime-models/btc-5m-chainlink-regime-calibrated-paper-20260820/manifest.json"
+full_combined = "runtime-models/btc-5m-chainlink-full-combined-paper-20260820/manifest.json"
+specialist_distilled = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json"

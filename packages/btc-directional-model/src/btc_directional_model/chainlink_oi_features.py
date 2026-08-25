@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import polars as pl
 import psycopg
 
@@ -252,87 +253,92 @@ def _attach_refprice_features(
     refprice = _prepare_refprice(source).with_columns(
         ((pl.col("ask") - pl.col("bid")) / pl.col("price") * 10_000.0).alias("_ref_spread_bps")
     )
-    current = refprice.select(
-        pl.col("source_timestamp").alias("_ref_source_timestamp"),
-        pl.col("price").alias("_ref_price"),
-        pl.col("_ref_spread_bps"),
+    ordered = core_frame.with_row_index("_external_source_row").sort("observed_at")
+    observed_us = ordered["observed_at"].cast(pl.Int64).to_numpy()
+    source_us = refprice["source_timestamp"].cast(pl.Int64).to_numpy()
+    received_us = refprice["received_at"].cast(pl.Int64).to_numpy()
+    prices = refprice["price"].to_numpy()
+    spreads = refprice["_ref_spread_bps"].to_numpy()
+
+    current_indices = _causal_refprice_indices(
+        source_us,
+        received_us,
+        observed_us,
+        observed_us - 1,
     )
-    joined = (
-        core_frame.with_row_index("_external_source_row")
-        .sort("observed_at")
-        .join_asof(
-            current,
-            left_on="observed_at",
-            right_on="_ref_source_timestamp",
-            strategy="backward",
-            allow_exact_matches=False,
+    horizon_indices = {
+        seconds: _causal_refprice_indices(
+            source_us,
+            received_us,
+            observed_us,
+            observed_us - seconds * 1_000_000,
         )
-    )
-    for seconds in _REFPRICE_HORIZONS_SECONDS:
-        target = f"_ref_target_{seconds}s"
-        timestamp = f"_ref_source_timestamp_{seconds}s"
-        joined = (
-            joined.with_columns(
-                (pl.col("observed_at") - pl.duration(seconds=seconds)).alias(target)
-            )
-            .sort(target)
-            .join_asof(
-                refprice.select(
-                    pl.col("source_timestamp").alias(timestamp),
-                    pl.col("price").alias(f"_ref_price_{seconds}s"),
-                    pl.col("_ref_spread_bps").alias(f"_ref_spread_bps_{seconds}s"),
-                ),
-                left_on=target,
-                right_on=timestamp,
-                strategy="backward",
-            )
+        for seconds in _REFPRICE_HORIZONS_SECONDS
+    }
+    eligible = current_indices >= 0
+    current_age = np.full(len(observed_us), np.iinfo(np.int64).max, dtype=np.int64)
+    current_age[eligible] = observed_us[eligible] - source_us[current_indices[eligible]]
+    eligible &= (current_age > 0) & (current_age <= max_age_seconds * 1_000_000)
+    for seconds, indices in horizon_indices.items():
+        valid = indices >= 0
+        target_us = observed_us - seconds * 1_000_000
+        age = np.full(len(observed_us), np.iinfo(np.int64).max, dtype=np.int64)
+        age[valid] = target_us[valid] - source_us[indices[valid]]
+        eligible &= valid & (age >= 0) & (age <= max_age_seconds * 1_000_000)
+    positions = np.flatnonzero(eligible)
+    if not len(positions):
+        return ordered.head(0).drop("_external_source_row").with_columns(
+            *[pl.lit(None, dtype=pl.Float64).alias(name) for name in CHAINLINK_REFPRICE_FEATURES]
         )
-    current_age = (pl.col("observed_at") - pl.col("_ref_source_timestamp")).dt.total_microseconds()
-    eligible = (
-        pl.col("_ref_source_timestamp").is_not_null()
-        & (pl.col("_ref_source_timestamp") < pl.col("observed_at"))
-        & (current_age > 0)
-        & (current_age <= max_age_seconds * 1_000_000)
-    )
-    for seconds in _REFPRICE_HORIZONS_SECONDS:
-        target = pl.col(f"_ref_target_{seconds}s")
-        timestamp = pl.col(f"_ref_source_timestamp_{seconds}s")
-        age = (target - timestamp).dt.total_microseconds()
-        eligible &= (
-            timestamp.is_not_null()
-            & (timestamp <= target)
-            & (age >= 0)
-            & (age <= max_age_seconds * 1_000_000)
-        )
-    joined = joined.filter(eligible).with_columns(
+
+    current = current_indices[positions]
+    current_price = prices[current]
+    horizon_price = {seconds: prices[indices[positions]] for seconds, indices in horizon_indices.items()}
+    selected = ordered[positions].with_columns(
         *[
-            (pl.col("_ref_price") / pl.col(f"_ref_price_{seconds}s"))
-            .log()
-            .mul(10_000.0)
-            .alias(f"chainlink_ref_return_{seconds}s_bps")
+            pl.Series(
+                f"chainlink_ref_return_{seconds}s_bps",
+                np.log(current_price / horizon_price[seconds]) * 10_000.0,
+            )
             for seconds in _REFPRICE_HORIZONS_SECONDS
         ],
-        (pl.col("_ref_price") / pl.col("btc_close"))
-        .log()
-        .mul(10_000.0)
-        .alias("chainlink_ref_binance_basis_bps"),
-        (pl.col("_ref_price") / pl.col("opening_boundary"))
-        .log()
-        .mul(10_000.0)
-        .alias("chainlink_ref_boundary_gap_bps"),
-        pl.col("_ref_spread_bps").alias("chainlink_ref_spread_bps"),
-        (pl.col("_ref_spread_bps") - pl.col("_ref_spread_bps_30s")).alias(
-            "chainlink_ref_spread_change_30s_bps"
+        pl.Series(
+            "chainlink_ref_binance_basis_bps",
+            np.log(current_price / ordered["btc_close"].to_numpy()[positions]) * 10_000.0,
         ),
-        (
-            pl.col("btc_return_30s_bps").sign()
-            * (pl.col("_ref_price") / pl.col("_ref_price_30s")).log().sign()
-        ).alias("chainlink_ref_binance_direction_agreement_30s"),
+        pl.Series(
+            "chainlink_ref_boundary_gap_bps",
+            np.log(current_price / ordered["opening_boundary"].to_numpy()[positions]) * 10_000.0,
+        ),
+        pl.Series("chainlink_ref_spread_bps", spreads[current]),
+        pl.Series(
+            "chainlink_ref_spread_change_30s_bps",
+            spreads[current] - spreads[horizon_indices[30][positions]],
+        ),
+        pl.Series(
+            "chainlink_ref_binance_direction_agreement_30s",
+            np.sign(ordered["btc_return_30s_bps"].to_numpy()[positions])
+            * np.sign(np.log(current_price / horizon_price[30])),
+        ),
     )
-    return joined.sort("_external_source_row").drop(
-        *[column for column in joined.columns if column.startswith("_ref_")],
-        "_external_source_row",
-    )
+    return selected.sort("_external_source_row").drop("_external_source_row")
+
+
+def _causal_refprice_indices(
+    source_us: np.ndarray,
+    received_us: np.ndarray,
+    observed_us: np.ndarray,
+    target_source_us: np.ndarray,
+) -> np.ndarray:
+    """Find the newest source-time anchor that was received by each decision."""
+
+    indices = np.searchsorted(source_us, target_source_us, side="right") - 1
+    for row in range(len(indices)):
+        index = int(indices[row])
+        while index >= 0 and received_us[index] > observed_us[row]:
+            index -= 1
+        indices[row] = index
+    return indices
 
 
 def _attach_candle_features(
@@ -346,20 +352,24 @@ def _attach_candle_features(
         frame.with_row_index("_external_source_row")
         .sort("observed_at")
         .join_asof(
-            candles.select("close_timestamp", *CHAINLINK_CANDLE_FEATURES),
+            candles.select("available_at", "close_timestamp", *CHAINLINK_CANDLE_FEATURES),
             left_on="observed_at",
-            right_on="close_timestamp",
+            right_on="available_at",
             strategy="backward",
         )
     )
     age = (pl.col("observed_at") - pl.col("close_timestamp")).dt.total_microseconds()
     joined = joined.filter(
-        pl.col("close_timestamp").is_not_null()
+        pl.col("available_at").is_not_null()
+        & (pl.col("available_at") <= pl.col("observed_at"))
+        & pl.col("close_timestamp").is_not_null()
         & (pl.col("close_timestamp") <= pl.col("observed_at"))
         & (age >= 0)
         & (age < max_age_seconds * 1_000_000)
     )
-    return joined.sort("_external_source_row").drop("_external_source_row", "close_timestamp")
+    return joined.sort("_external_source_row").drop(
+        "_external_source_row", "available_at", "close_timestamp"
+    )
 
 
 def _attach_open_interest_features(
@@ -378,16 +388,18 @@ def _attach_open_interest_features(
         frame.with_row_index("_external_source_row")
         .sort("observed_at")
         .join_asof(
-            interest.select("source_timestamp", *source_features),
+            interest.select("available_at", "source_timestamp", *source_features),
             left_on="observed_at",
-            right_on="source_timestamp",
+            right_on="available_at",
             strategy="backward",
             allow_exact_matches=False,
         )
     )
     age = (pl.col("observed_at") - pl.col("source_timestamp")).dt.total_microseconds()
     joined = joined.filter(
-        pl.col("source_timestamp").is_not_null()
+        pl.col("available_at").is_not_null()
+        & (pl.col("available_at") <= pl.col("observed_at"))
+        & pl.col("source_timestamp").is_not_null()
         & (pl.col("source_timestamp") < pl.col("observed_at"))
         & (age > 0)
         & (age <= max_age_seconds * 1_000_000)
@@ -401,13 +413,17 @@ def _attach_open_interest_features(
             * pl.col("btc_path_from_window_open_bps").sign()
         ).alias("binance_oi_path_agreement_60m"),
     )
-    return joined.sort("_external_source_row").drop("_external_source_row", "source_timestamp")
+    return joined.sort("_external_source_row").drop(
+        "_external_source_row", "available_at", "source_timestamp"
+    )
 
 
 def _prepare_refprice(frame: pl.DataFrame) -> pl.DataFrame:
     required = {
         "source_timestamp",
+        "received_at",
         "valid_from_timestamp",
+        "expires_at",
         "price",
         "bid",
         "ask",
@@ -415,12 +431,14 @@ def _prepare_refprice(frame: pl.DataFrame) -> pl.DataFrame:
     _require_columns(frame, required, "RefPrice")
     prepared = frame.select(
         "source_timestamp",
+        "received_at",
         "valid_from_timestamp",
+        "expires_at",
         pl.col("price").cast(pl.Float64),
         pl.col("bid").cast(pl.Float64),
         pl.col("ask").cast(pl.Float64),
     )
-    invalid = prepared.filter(
+    invalid = (
         pl.any_horizontal(pl.col(column).is_null() for column in required)
         | pl.any_horizontal(~pl.col(column).is_finite() for column in ("price", "bid", "ask"))
         | (pl.col("price") <= 0)
@@ -429,9 +447,16 @@ def _prepare_refprice(frame: pl.DataFrame) -> pl.DataFrame:
         | (pl.col("bid") > pl.col("price"))
         | (pl.col("price") > pl.col("ask"))
         | (pl.col("valid_from_timestamp") > pl.col("source_timestamp"))
+        | (pl.col("received_at") < pl.col("source_timestamp"))
+        | (pl.col("expires_at") < pl.col("valid_from_timestamp"))
     )
-    if invalid.height:
-        raise RuntimeError("RefPrice source contains invalid rows")
+    prepared = (
+        prepared.filter(~invalid)
+        .sort(["source_timestamp", "received_at"])
+        .unique(subset=["source_timestamp"], keep="first", maintain_order=True)
+    )
+    if prepared.is_empty():
+        raise RuntimeError("RefPrice source contains no complete causal rows")
     _validate_unique_timestamp(prepared, "source_timestamp", "RefPrice")
     return prepared.sort("source_timestamp")
 
@@ -446,9 +471,13 @@ def _prepare_candles(frame: pl.DataFrame) -> pl.DataFrame:
         "close_price",
     }
     _require_columns(frame, required, "Chainlink candle")
+    available = (
+        pl.col("available_at") if "available_at" in frame.columns else pl.col("close_timestamp")
+    )
     prepared = frame.select(
         "open_timestamp",
         "close_timestamp",
+        available.alias("available_at"),
         *[
             pl.col(column).cast(pl.Float64)
             for column in (
@@ -471,6 +500,7 @@ def _prepare_candles(frame: pl.DataFrame) -> pl.DataFrame:
             )
         )
         | (pl.col("close_timestamp") != pl.col("open_timestamp") + pl.duration(minutes=1))
+        | (pl.col("available_at") < pl.col("close_timestamp"))
         | (pl.col("low_price") <= 0)
         | (pl.col("high_price") < pl.col("open_price"))
         | (pl.col("high_price") < pl.col("close_price"))
@@ -492,8 +522,14 @@ def _prepare_open_interest(frame: pl.DataFrame) -> pl.DataFrame:
         "sum_open_interest_value",
     }
     _require_columns(frame, required, "Binance open interest")
+    available = (
+        pl.col("available_at")
+        if "available_at" in frame.columns
+        else pl.col("source_timestamp")
+    )
     prepared = frame.select(
         "source_timestamp",
+        available.alias("available_at"),
         pl.col("period_seconds").cast(pl.Int32),
         pl.col("sum_open_interest").cast(pl.Float64),
         pl.col("sum_open_interest_value").cast(pl.Float64),
@@ -505,6 +541,7 @@ def _prepare_open_interest(frame: pl.DataFrame) -> pl.DataFrame:
             for column in ("sum_open_interest", "sum_open_interest_value")
         )
         | (pl.col("period_seconds") != 300)
+        | (pl.col("available_at") < pl.col("source_timestamp"))
         | (pl.col("sum_open_interest") <= 0)
         | (pl.col("sum_open_interest_value") <= 0)
     )
@@ -570,7 +607,7 @@ def _derive_candle_source_features(frame: pl.DataFrame) -> pl.DataFrame:
             for minutes in (15, 60)
         ],
     )
-    return enriched.select("close_timestamp", *CHAINLINK_CANDLE_FEATURES)
+    return enriched.select("available_at", "close_timestamp", *CHAINLINK_CANDLE_FEATURES)
 
 
 def _derive_open_interest_source_features(frame: pl.DataFrame) -> pl.DataFrame:
@@ -617,6 +654,7 @@ def _derive_open_interest_source_features(frame: pl.DataFrame) -> pl.DataFrame:
         )
     )
     return enriched.select(
+        "available_at",
         "source_timestamp",
         *[
             feature
