@@ -64,6 +64,10 @@ const MAX_SOURCE_BODY_BYTES: usize = 4 * 1024 * 1024;
 const SOURCE_CHUNK_TIMEOUT_SECS: u64 = 30;
 const MAX_UNCOMPRESSED_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 const MAX_CONSECUTIVE_UNHEALTHY_PMXT_HOURS: u64 = 6;
+const LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_SCHEMA_VERSION: &str =
+    "btc5m-capacity-local-orderbook-1-240s-v1";
+const LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_PROVIDER: &str =
+    "polymarket_local_orderbook_capacity_execution_snapshots_v1";
 
 #[derive(Debug, Clone)]
 pub struct IngestionExecutorConfig {
@@ -270,14 +274,32 @@ impl IngestionExecutor {
                     .await
             }
             IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots => {
-                self.ingest_pmxt_execution_snapshots(
-                    claim,
-                    range_start,
-                    range_end,
-                    progress,
-                    cancellation,
-                )
-                .await
+                if claim
+                    .job
+                    .request
+                    .get("parameters")
+                    .and_then(|parameters| parameters.get("source"))
+                    .and_then(Value::as_str)
+                    == Some("local_orderbook")
+                {
+                    self.ingest_local_orderbook_execution_snapshots(
+                        claim,
+                        range_start,
+                        range_end,
+                        progress,
+                        cancellation,
+                    )
+                    .await
+                } else {
+                    self.ingest_pmxt_execution_snapshots(
+                        claim,
+                        range_start,
+                        range_end,
+                        progress,
+                        cancellation,
+                    )
+                    .await
+                }
             }
             IngesterKey::ChainlinkBtcusdReferenceTicks => {
                 self.ingest_chainlink(claim, range_start, range_end, progress, &cancellation)
@@ -1803,6 +1825,158 @@ impl IngestionExecutor {
         Ok(summary)
     }
 
+    async fn ingest_local_orderbook_execution_snapshots(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let mut hour = checkpoint_window_start(claim, range_start, 3_600);
+        while hour < range_end {
+            self.ensure_continue(claim, &cancellation).await?;
+            let next_hour = hour + ChronoDuration::hours(1);
+            let scope = self
+                .repository
+                .execution_snapshot_market_scope(hour, next_hour)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if scope.len() != 12 {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "expected 12 valid BTC five-minute markets for local orderbook hour {hour}, found {}",
+                    scope.len()
+                )));
+            }
+            let market_ids = scope
+                .iter()
+                .map(|market| market.market_id.clone())
+                .collect::<Vec<_>>();
+            let events = self
+                .repository
+                .local_orderbook_snapshot_events(hour, next_hour, &market_ids)
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if events.is_empty() {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "no local canonical orderbook snapshots exist for {hour}"
+                )));
+            }
+            let stamp = hour.format("%Y-%m-%dT%H");
+            let logical_key =
+                format!("polymarket:local:btc5m_capacity_execution_snapshots:v1:1-240s:{stamp}");
+            progress.current_logical_key = Some(logical_key.clone());
+            let prepared = self
+                .repository
+                .prepare_artifact(
+                    claim,
+                    &ArtifactSpec {
+                        job_id: claim.job.job_id,
+                        ingester: IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
+                        logical_key,
+                        provider: LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_PROVIDER.to_string(),
+                        source_uri: format!(
+                            "postgresql://market_data.polymarket_btc_five_minute_orderbook_snapshots/{stamp}"
+                        ),
+                        source_date: Some(hour.date_naive()),
+                        expected_checksum: None,
+                        metadata: serde_json::json!({
+                            "schema_version": LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                            "source_mode": "local_canonical_orderbook_snapshots",
+                            "source_table": "market_data.polymarket_btc_five_minute_orderbook_snapshots",
+                            "vwap_share_quantities": EXECUTION_SNAPSHOT_VWAP_QUANTITIES,
+                            "sample_window_start_milliseconds": EXECUTION_SNAPSHOT_START_MILLIS,
+                            "sample_window_end_milliseconds": EXECUTION_SNAPSHOT_END_MILLIS,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                hour = next_hour;
+                self.finish_work_unit(claim, &mut progress, hour, None)
+                    .await?;
+                continue;
+            }
+            self.set_artifact_status(
+                claim,
+                prepared.artifact.artifact_id,
+                BackfillArtifactStatus::Ingesting,
+            )
+            .await?;
+            let mut reconstructor = ExecutionSnapshotReconstructor::new(scope)
+                .map_err(IngestionExecutionError::permanent)?;
+            let mut output = Vec::with_capacity(12 * EXECUTION_SNAPSHOTS_PER_MARKET);
+            for event in &events {
+                reconstructor
+                    .apply(event, &mut output)
+                    .map_err(IngestionExecutionError::permanent)?;
+            }
+            reconstructor.finish_before(next_hour, &mut output);
+            output.retain(|record| {
+                record.up_source_timestamp.is_some() || record.down_source_timestamp.is_some()
+            });
+            if output.is_empty() {
+                return Err(IngestionExecutionError::permanent(format!(
+                    "local canonical orderbooks produced no causal snapshots for {hour}"
+                )));
+            }
+            let superseded_rows = self
+                .repository
+                .supersede_empty_pmxt_execution_snapshots(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    hour,
+                    next_hour,
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            let mut digest = Sha256::new();
+            let mut reconstructed_records = 0u64;
+            self.persist_execution_snapshot_output(
+                claim,
+                prepared.artifact.artifact_id,
+                LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                &mut output,
+                &mut digest,
+                &mut reconstructed_records,
+                &mut progress,
+                &mut summary,
+            )
+            .await?;
+            let actual_checksum = format!("{:x}", digest.finalize());
+            self.repository
+                .complete_artifact(
+                    claim,
+                    prepared.artifact.artifact_id,
+                    &ArtifactCompletion {
+                        actual_checksum,
+                        compressed_bytes: 0,
+                        record_count: reconstructed_records,
+                        minimum_source_timestamp: Some(hour),
+                        maximum_source_timestamp: Some(next_hour - ChronoDuration::milliseconds(1)),
+                        metadata: serde_json::json!({
+                            "schema_version": LOCAL_ORDERBOOK_EXECUTION_SNAPSHOT_SCHEMA_VERSION,
+                            "source_mode": "local_canonical_orderbook_snapshots",
+                            "source_events_consumed": events.len(),
+                            "superseded_empty_pmxt_rows": superseded_rows,
+                            "quality_flags_are_observations": true,
+                        }),
+                    },
+                )
+                .await
+                .map_err(IngestionExecutionError::transient)?;
+            summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+            hour = next_hour;
+            self.finish_work_unit(claim, &mut progress, hour, None)
+                .await?;
+        }
+        summary.completed_work_units = progress.completed_work_units;
+        Ok(summary)
+    }
+
     fn start_pmxt_execution_prefetch(
         &self,
         range_start: DateTime<Utc>,
@@ -2024,6 +2198,7 @@ impl IngestionExecutor {
                         self.persist_execution_snapshot_output(
                             claim,
                             prepared.artifact.artifact_id,
+                            EXECUTION_SNAPSHOT_SCHEMA_VERSION,
                             &mut output,
                             &mut digest,
                             &mut reconstructed_records,
@@ -2118,6 +2293,7 @@ impl IngestionExecutor {
                         self.persist_execution_snapshot_output(
                             claim,
                             prepared.artifact.artifact_id,
+                            EXECUTION_SNAPSHOT_SCHEMA_VERSION,
                             &mut output,
                             &mut digest,
                             &mut reconstructed_records,
@@ -2237,6 +2413,7 @@ impl IngestionExecutor {
             self.persist_execution_snapshot_output(
                 claim,
                 prepared.artifact.artifact_id,
+                EXECUTION_SNAPSHOT_SCHEMA_VERSION,
                 &mut output,
                 &mut digest,
                 &mut reconstructed_records,
@@ -2304,6 +2481,7 @@ impl IngestionExecutor {
         &self,
         claim: &ClaimedJob,
         artifact_id: uuid::Uuid,
+        schema_version: &str,
         output: &mut Vec<BtcExecutionSnapshot>,
         digest: &mut Sha256,
         reconstructed_records: &mut u64,
@@ -2325,12 +2503,7 @@ impl IngestionExecutor {
         for batch in output.chunks(self.config.batch_rows) {
             let result = self
                 .repository
-                .insert_execution_snapshot_batch(
-                    claim,
-                    artifact_id,
-                    EXECUTION_SNAPSHOT_SCHEMA_VERSION,
-                    batch,
-                )
+                .insert_execution_snapshot_batch(claim, artifact_id, schema_version, batch)
                 .await
                 .map_err(IngestionExecutionError::transient)?;
             *reconstructed_records = reconstructed_records.saturating_add(result.input_records);

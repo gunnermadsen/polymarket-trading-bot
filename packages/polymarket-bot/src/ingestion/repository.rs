@@ -1268,6 +1268,97 @@ impl IngestionRepository {
         .map(|rows| rows.into_iter().map(Into::into).collect())
     }
 
+    pub async fn local_orderbook_snapshot_events(
+        &self,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+        market_ids: &[String],
+    ) -> Result<Vec<BtcOrderbookArchiveEvent>> {
+        if window_end <= window_start || market_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, LocalOrderbookSnapshotEventRow>(
+            r#"
+            SELECT ingest_sequence AS source_row_number,
+              provider_available_at AS provider_received_at, source_timestamp,
+              condition_id, token_id AS asset_id, bids, asks
+            FROM market_data.polymarket_btc_five_minute_orderbook_snapshots
+            WHERE window_start >= $1 AND window_start < $2
+              AND market_id = ANY($3)
+              AND provider_available_at < $2
+            ORDER BY provider_available_at, ingest_sequence, market_id, token_id
+            "#,
+        )
+        .bind(window_start)
+        .bind(window_end)
+        .bind(market_ids)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load local orderbook snapshots for capacity reconstruction")
+        .map(|rows| rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn supersede_empty_pmxt_execution_snapshots(
+        &self,
+        claim: &ClaimedJob,
+        replacement_artifact_id: Uuid,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        require_active_lease(&mut tx, claim).await?;
+        require_writable_artifact(&mut tx, claim, replacement_artifact_id).await?;
+        let superseded = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT DISTINCT a.artifact_id
+            FROM polymarket.backfill_artifacts a
+            JOIN polymarket.btc_market_capacity_execution_snapshots s
+              ON s.artifact_id = a.artifact_id
+            WHERE a.provider = 'pmxt_v2_capacity_execution_snapshots_v2'
+              AND COALESCE((a.metadata->>'source_events_consumed')::bigint, 0) = 0
+              AND s.sampled_at >= $1 AND s.sampled_at < $2
+            "#,
+        )
+        .bind(window_start)
+        .bind(window_end)
+        .fetch_all(&mut *tx)
+        .await
+        .context("failed to identify empty PMXT capacity artifacts")?;
+        let deleted = sqlx::query(
+            r#"
+            DELETE FROM polymarket.btc_market_capacity_execution_snapshots
+            WHERE artifact_id = ANY($1) AND sampled_at >= $2 AND sampled_at < $3
+            "#,
+        )
+        .bind(&superseded)
+        .bind(window_start)
+        .bind(window_end)
+        .execute(&mut *tx)
+        .await
+        .context("failed to remove empty PMXT capacity placeholders")?
+        .rows_affected();
+        if !superseded.is_empty() {
+            sqlx::query(
+                r#"
+                UPDATE polymarket.backfill_artifacts
+                SET record_count = 0,
+                    metadata = metadata || jsonb_build_object(
+                      'superseded_by_artifact_id', $2::uuid,
+                      'superseded_reason', 'reconstructed_from_local_canonical_orderbooks'
+                    ), updated_at = now()
+                WHERE artifact_id = ANY($1)
+                "#,
+            )
+            .bind(&superseded)
+            .bind(replacement_artifact_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to record superseded empty PMXT capacity artifacts")?;
+        }
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
     pub async fn completed_raw_orderbook_artifacts(
         &self,
         logical_keys: &[String],
@@ -3918,6 +4009,41 @@ impl From<ExistingOrderbookEventRow> for BtcOrderbookArchiveEvent {
             transaction_hash: row.transaction_hash,
             old_tick_size: row.old_tick_size,
             new_tick_size: row.new_tick_size,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct LocalOrderbookSnapshotEventRow {
+    source_row_number: i64,
+    provider_received_at: DateTime<Utc>,
+    source_timestamp: DateTime<Utc>,
+    condition_id: String,
+    asset_id: String,
+    bids: Value,
+    asks: Value,
+}
+
+impl From<LocalOrderbookSnapshotEventRow> for BtcOrderbookArchiveEvent {
+    fn from(row: LocalOrderbookSnapshotEventRow) -> Self {
+        Self {
+            source_row_number: row.source_row_number,
+            provider_received_at: row.provider_received_at,
+            source_timestamp: row.source_timestamp,
+            condition_id: row.condition_id,
+            asset_id: row.asset_id,
+            event_type: "book".to_string(),
+            bids: Some(row.bids),
+            asks: Some(row.asks),
+            price: None,
+            size: None,
+            side: None,
+            best_bid: None,
+            best_ask: None,
+            fee_rate_bps: None,
+            transaction_hash: None,
+            old_tick_size: None,
+            new_tick_size: None,
         }
     }
 }
