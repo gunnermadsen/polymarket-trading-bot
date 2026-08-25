@@ -119,3 +119,46 @@ def test_runtime_refprice_golden_vectors_match_existing_formula_contract() -> No
     assert result["passed"] is True
     assert result["compared_rows"] == 1
     assert result["maximum_absolute_error"] <= 1e-9
+
+
+def test_causal_refprice_features_ignore_late_regressive_source_reports() -> None:
+    start = datetime(2026, 8, 24, tzinfo=UTC)
+    source_seconds = [*range(130), 60.5]
+    refprice = pl.DataFrame(
+        {
+            "source_timestamp": [
+                start + timedelta(seconds=second) for second in source_seconds
+            ],
+            "valid_from_timestamp": [
+                start + timedelta(seconds=second) for second in source_seconds
+            ],
+            "provider_available_at": [
+                start + timedelta(seconds=second, milliseconds=100)
+                for second in range(130)
+            ] + [start + timedelta(seconds=130)],
+            "received_at": [
+                start + timedelta(seconds=second, milliseconds=200)
+                for second in range(130)
+            ] + [start + timedelta(seconds=130, milliseconds=100)],
+            "price": [100_000.0 + second for second in range(130)] + [90_000.0],
+            "bid": [99_999.5 + second for second in range(130)] + [89_999.5],
+            "ask": [100_000.5 + second for second in range(130)] + [90_000.5],
+            "archive_row_number": list(range(131)),
+            "report_sha256": [f"row-{second}" for second in range(131)],
+        }
+    )
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m"],
+            "observed_at": [start + timedelta(seconds=130, milliseconds=500)],
+            "opening_boundary": [100_000.0],
+            "btc_close": [100_129.0],
+            "btc_return_5s_bps": [1.0],
+            "btc_return_30s_bps": [2.0],
+        }
+    )
+
+    featured = attach_causal_refprice_features(frame, refprice)
+
+    assert featured.height == 1
+    assert abs(featured["chainlink_ref_binance_basis_bps"][0]) <= 1e-12

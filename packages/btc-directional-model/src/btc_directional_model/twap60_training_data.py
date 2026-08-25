@@ -704,7 +704,14 @@ def attach_causal_refprice_features(
 
     if additional_delay_seconds < 0:
         raise ValueError("additional causal delay cannot be negative")
-    path = canonical_refprice_path(refprice).sort("provider_available_at")
+    path = (
+        canonical_refprice_path(refprice)
+        .sort(["provider_available_at", "source_timestamp", "archive_row_number"])
+        .filter(
+            pl.col("source_timestamp")
+            == pl.col("source_timestamp").cum_max()
+        )
+    )
     available = path["provider_available_at"].to_numpy().astype("datetime64[us]").astype(np.int64)
     source = path["source_timestamp"].to_numpy().astype("datetime64[us]").astype(np.int64)
     valid = path["valid_from_timestamp"].to_numpy().astype("datetime64[us]").astype(np.int64)
