@@ -719,15 +719,23 @@ def _hard_negative_weights(
         )
         if not score_mask.any():
             continue
+        train = frame.filter(pl.Series(train_mask))
+        score = frame.filter(pl.Series(score_mask))
+        fold_features_list: list[str] = []
+        for name in features:
+            values = train[name].cast(pl.Float64).drop_nulls()
+            if values.filter(values.is_finite()).n_unique() >= 2:
+                fold_features_list.append(name)
+        fold_features = tuple(fold_features_list)
+        if not fold_features:
+            raise RuntimeError("hard-negative fold has no variable finite features")
         model = _new_classifier(config, seed + index)
         model.fit(
-            _matrix(frame.filter(pl.Series(train_mask)), features),
-            frame.filter(pl.Series(train_mask))["label_up"].to_numpy(),
-            sample_weight=market_equal_weights(frame.filter(pl.Series(train_mask))),
+            _matrix(train, fold_features),
+            train["label_up"].to_numpy(),
+            sample_weight=market_equal_weights(train),
         )
-        probability[score_mask] = model.predict_proba(
-            _matrix(frame.filter(pl.Series(score_mask)), features)
-        )[:, 1]
+        probability[score_mask] = model.predict_proba(_matrix(score, fold_features))[:, 1]
     weights = market_equal_weights(frame)
     available = np.isfinite(probability)
     predicted = probability >= 0.5
