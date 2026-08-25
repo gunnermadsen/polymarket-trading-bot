@@ -1348,8 +1348,8 @@ def _render_report(metrics: dict[str, Any]) -> str:
     lines = [
         "# RefPrice-primary / TWAP-60 target training",
         "",
-        f"Run: `{metrics['run_id']}`  ",
-        f"Source commit: `{metrics['source_commit']}`  ",
+        f"Run: `{metrics['run_id']}`",
+        f"Source commit: `{metrics['source_commit']}`",
         (
             f"Common evaluation: {metrics['common_evaluation']['markets']:,} markets, "
             f"{metrics['common_evaluation']['rows']:,} decision rows."
