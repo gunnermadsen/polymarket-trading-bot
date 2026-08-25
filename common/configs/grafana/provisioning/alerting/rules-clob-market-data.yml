@@ -197,7 +197,7 @@ groups:
           service: polymarket-bot
           severity: warning
         isPaused: false
-      - uid: binance_reference_feed_unavailable_sustained
+      - uid: binance_reference_unavailable
         title: Binance required reference feed unavailable for trading
         condition: C
         data:
