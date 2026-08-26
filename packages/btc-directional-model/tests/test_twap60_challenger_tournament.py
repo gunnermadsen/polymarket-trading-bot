@@ -9,6 +9,7 @@ import polars as pl
 from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 from btc_directional_model.twap60_challenger_tournament import (
     FEATURE_TREATMENTS,
+    _complete_variable_features,
     _matrix,
     _model_eligible,
     _variable_features,
@@ -76,3 +77,4 @@ def test_outcome_matrix_retains_early_rows_with_unavailable_long_lookbacks() -> 
     assert eligible.height == 2
     assert np.isnan(matrix[:, 1]).all()
     assert _variable_features(eligible, features) == ("short_feature",)
+    assert _complete_variable_features(eligible, features) == ("short_feature",)

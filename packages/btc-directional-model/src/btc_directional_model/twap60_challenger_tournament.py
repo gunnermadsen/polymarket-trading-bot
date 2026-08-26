@@ -1040,7 +1040,9 @@ def _fit_correctness(frame: pl.DataFrame, spec: Hyperparameters) -> CorrectnessC
     price_stratified = economic["market_id"].n_unique() >= 25
     if price_stratified:
         frame = economic
-    names = tuple(name for name in ADMISSION_FEATURES if name in frame.columns)
+    names = _complete_variable_features(
+        frame, tuple(name for name in ADMISSION_FEATURES if name in frame.columns)
+    )
     matrix = _matrix(frame, names)
     scaler = StandardScaler().fit(matrix)
     estimator = LogisticRegression(C=spec.calibration_c, max_iter=2000, random_state=20260825)
@@ -1452,6 +1454,23 @@ def _variable_features(
             selected.append(name)
     if not selected:
         raise RuntimeError("outcome model has no variable finite features")
+    return tuple(selected)
+
+
+def _complete_variable_features(
+    frame: pl.DataFrame, features: tuple[str, ...]
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for name in features:
+        values = frame[name].cast(pl.Float64)
+        if (
+            values.null_count() == 0
+            and values.is_finite().all()
+            and values.n_unique() >= 2
+        ):
+            selected.append(name)
+    if not selected:
+        raise RuntimeError("calibration model has no complete variable finite features")
     return tuple(selected)
 
 
