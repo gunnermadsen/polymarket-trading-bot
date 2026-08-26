@@ -1,5 +1,11 @@
 apiVersion: 1
 
+deleteRules:
+  - orgId: 1
+    uid: market_data_ingester_critical_error_log
+  - orgId: 1
+    uid: market_data_ingester_warning_storm
+
 groups:
   - orgId: 1
     name: market-data-ingester-health-20s
@@ -890,7 +896,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                absent(up{job="market-data-ingester"}) or (max(up{job="market-data-ingester"}) < 1) or absent(up{job="alloy"}) or (max(up{job="alloy"}) < 1) or absent(up{job="loki"}) or (max(up{job="loki"}) < 1) or absent(market_data_ingester_liveness) or (max(market_data_ingester_liveness) < 1) or absent(market_data_ingester_readiness) or (max(market_data_ingester_readiness) < 1) or (sum(increase(loki_process_dropped_lines_total{component_id="loki.process.market_data_ingester"}[5m])) > 0)
+                absent(up{job="market-data-ingester"}) or (max(up{job="market-data-ingester"}) < 1) or absent(up{job="alloy"}) or (max(up{job="alloy"}) < 1) or absent(up{job="loki"}) or (max(up{job="loki"}) < 1) or absent(market_data_ingester_liveness) or (max(market_data_ingester_liveness) < 1) or absent(market_data_ingester_readiness) or (max(market_data_ingester_readiness) < 1) or (sum(increase(loki_process_dropped_lines_total{component_id="loki.process.market_data_ingester"}[5m])) > 0) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
