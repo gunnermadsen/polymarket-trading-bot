@@ -33,6 +33,11 @@ loki.source.docker "market_data_ingester" {
 }
 
 loki.process "market_data_ingester" {
+  stage.drop {
+    older_than          = "1h"
+    drop_counter_reason = "stale_container_history"
+  }
+
   stage.json {
     expressions = {
       level      = "level",
