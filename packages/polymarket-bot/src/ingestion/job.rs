@@ -248,6 +248,12 @@ impl BackfillRequest {
                     && parameters.get("strategy").and_then(Value::as_str)
                         == Some("huggingface_goooddy")
             });
+        let is_local_orderbook_capacity = self.ingester
+            == IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots
+            && self.parameters.as_object().is_some_and(|parameters| {
+                parameters.len() == 1
+                    && parameters.get("source").and_then(Value::as_str) == Some("local_orderbook")
+            });
         if !self.ingester.accepts_new_requests() {
             return Err(BackfillRequestValidationError::new(
                 "raw PMXT orderbook ingestion is deprecated; use polymarket_btc_five_minute_execution_snapshots",
@@ -282,6 +288,7 @@ impl BackfillRequest {
             .as_object()
             .is_some_and(|parameters| !parameters.is_empty())
             && !is_huggingface_goooddy
+            && !is_local_orderbook_capacity
         {
             return Err(BackfillRequestValidationError::new(format!(
                 "ingester {} request_version {} does not accept parameters",
@@ -1099,6 +1106,25 @@ mod tests {
         .unwrap();
         assert_eq!(request.idempotency_key, "test-key");
         assert_eq!(request.expected_work_units, 2);
+    }
+
+    #[test]
+    fn execution_snapshots_accept_only_the_explicit_local_orderbook_source() {
+        let mut local = request(
+            IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
+            1_787_011_200,
+            1_787_014_800,
+        );
+        local.parameters = serde_json::json!({"source": "local_orderbook"});
+        assert!(local.validate().is_ok());
+
+        let mut unsupported = request(
+            IngesterKey::PolymarketBtcFiveMinuteExecutionSnapshots,
+            1_787_011_200,
+            1_787_014_800,
+        );
+        unsupported.parameters = serde_json::json!({"source": "other"});
+        assert!(unsupported.validate().is_err());
     }
 
     #[test]
