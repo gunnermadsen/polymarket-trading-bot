@@ -180,3 +180,119 @@ groups:
           service: polymarket-bot
           severity: warning
         isPaused: false
+      - uid: clob_abrupt_upstream_disconnect
+        title: CLOB abrupt upstream disconnect observed
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: increase(polymarket_btc_clob_transport_disconnects_total{reason=~"remote_close_1013|reset_without_close|websocket_eof"}[10m])
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: sum
+              refId: B
+              settings: {mode: dropNN}
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              conditions:
+                - evaluator: {params: [1], type: gte}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: The CLOB connection ended through a 1013 remote close, reset without a closing handshake, or WebSocket EOF during the last 10 minutes.
+          summary: An abrupt CLOB upstream transport disconnect was observed
+        labels:
+          condition: clob_abrupt_upstream_disconnect
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: clob_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false
+      - uid: clob_silent_connection_watchdog_disconnect
+        title: CLOB silent connection watchdog disconnect observed
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: increase(polymarket_btc_clob_transport_disconnects_total{reason="heartbeat_ack_timeout"}[10m])
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings: {mode: dropNN}
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              conditions:
+                - evaluator: {params: [1], type: gte}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: The CLOB watchdog disconnected a connection after its heartbeat acknowledgement timed out during the last 10 minutes.
+          summary: A silent CLOB connection required watchdog recovery
+        labels:
+          condition: clob_silent_connection_watchdog_disconnect
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: clob_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false

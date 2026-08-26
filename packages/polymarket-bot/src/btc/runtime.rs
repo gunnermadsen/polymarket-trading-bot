@@ -113,6 +113,7 @@ struct ClobIngressFrame {
     received_instant: Instant,
     sequence: u64,
     payload_bytes: usize,
+    socket_read_repoll_delay_max: StdDuration,
     _byte_permit: Option<OwnedSemaphorePermit>,
 }
 
@@ -460,6 +461,18 @@ pub struct BtcRuntimeMetrics {
     pub clob_connections_established: u64,
     pub clob_subscription_updates: u64,
     pub clob_transport_disconnects: u64,
+    #[serde(default)]
+    pub clob_transport_disconnects_remote_close_1013: u64,
+    #[serde(default)]
+    pub clob_transport_disconnects_reset_without_close: u64,
+    #[serde(default)]
+    pub clob_transport_disconnects_heartbeat_ack_timeout: u64,
+    #[serde(default)]
+    pub clob_transport_disconnects_websocket_eof: u64,
+    #[serde(default)]
+    pub clob_transport_disconnects_other: u64,
+    #[serde(default)]
+    pub clob_transport_recovery_duration_milliseconds: Option<u64>,
     pub clob_connection_failures: u64,
     pub clob_subscription_failures: u64,
     pub clob_bootstrap_failures: u64,
@@ -517,6 +530,12 @@ pub struct BtcRuntimeMetrics {
     pub clob_active_edge_server: Option<String>,
     pub clob_active_handshake_date: Option<String>,
     pub clob_active_last_data_or_heartbeat_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_active_last_socket_frame_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub clob_socket_inbound_silence_milliseconds: Option<u64>,
+    #[serde(default)]
+    pub clob_socket_read_repoll_delay_max_milliseconds: u64,
     #[serde(default)]
     pub clob_active_last_inbound_frame_age_milliseconds: Option<u64>,
     #[serde(default)]
@@ -637,6 +656,12 @@ fn runtime_metrics_snapshot(
         .map(|received_at| {
             u64::try_from((checked_at - received_at).num_milliseconds()).unwrap_or(u64::MAX)
         });
+    metrics.clob_socket_inbound_silence_milliseconds = metrics
+        .clob_active_last_socket_frame_at
+        .filter(|received_at| *received_at <= checked_at)
+        .map(|received_at| {
+            u64::try_from((checked_at - received_at).num_milliseconds()).unwrap_or(u64::MAX)
+        });
     metrics.clob_last_remote_close_1013_age_milliseconds = metrics
         .clob_last_remote_close_1013_at
         .filter(|closed_at| *closed_at <= checked_at)
@@ -657,6 +682,7 @@ struct ClobRecoveryWindow {
     since: Option<DateTime<Utc>>,
     started_at: Option<Instant>,
     diagnostic: Option<ClobReadinessDiagnostic>,
+    transport_started_at: Option<Instant>,
 }
 
 impl ClobRecoveryWindow {
@@ -665,6 +691,7 @@ impl ClobRecoveryWindow {
             since: Some(since),
             started_at: Some(started_at),
             diagnostic: None,
+            transport_started_at: None,
         }
     }
 
@@ -682,6 +709,18 @@ impl ClobRecoveryWindow {
             .take()
             .map(|started_at| duration_milliseconds(ended_at.duration_since(started_at)))
             .unwrap_or(0)
+    }
+
+    fn open_transport(&mut self, started_at: Instant) {
+        if self.transport_started_at.is_none() {
+            self.transport_started_at = Some(started_at);
+        }
+    }
+
+    fn close_transport(&mut self, ended_at: Instant) -> Option<u64> {
+        self.transport_started_at
+            .take()
+            .map(|started_at| duration_milliseconds(ended_at.saturating_duration_since(started_at)))
     }
 
     fn update_diagnostic(&mut self, diagnostic: ClobReadinessDiagnostic) -> bool {
@@ -981,6 +1020,7 @@ struct ClobSocketTelemetry {
     ingress_queue_depth: usize,
     last_ingress_queue_dwell: StdDuration,
     max_ingress_queue_dwell: StdDuration,
+    socket_read_repoll_delay_max: StdDuration,
     ingress_overflows: u64,
     last_frame_processing: StdDuration,
     max_frame_processing: StdDuration,
@@ -1015,6 +1055,7 @@ impl ClobSocketTelemetry {
             ingress_queue_depth: 0,
             last_ingress_queue_dwell: StdDuration::ZERO,
             max_ingress_queue_dwell: StdDuration::ZERO,
+            socket_read_repoll_delay_max: StdDuration::ZERO,
             ingress_overflows: 0,
             last_frame_processing: StdDuration::ZERO,
             max_frame_processing: StdDuration::ZERO,
@@ -1042,6 +1083,9 @@ impl ClobSocketTelemetry {
         self.last_ingress_sequence = frame.sequence;
         self.last_ingress_queue_dwell = queue_dwell;
         self.max_ingress_queue_dwell = self.max_ingress_queue_dwell.max(queue_dwell);
+        self.socket_read_repoll_delay_max = self
+            .socket_read_repoll_delay_max
+            .max(frame.socket_read_repoll_delay_max);
     }
 
     fn record_ingress_overflow(&mut self) {
@@ -1348,7 +1392,14 @@ async fn run_clob_ingress_reader(
     latest_receipt_elapsed_nanoseconds: Arc<AtomicU64>,
 ) {
     let mut sequence = 0u64;
+    let mut last_handoff_completed_at = None;
+    let mut socket_read_repoll_delay_max = StdDuration::ZERO;
     loop {
+        let poll_started_at = Instant::now();
+        if let Some(handoff_completed_at) = last_handoff_completed_at.take() {
+            socket_read_repoll_delay_max = socket_read_repoll_delay_max
+                .max(poll_started_at.saturating_duration_since(handoff_completed_at));
+        }
         match stream.next().await {
             Some(Ok(message)) => {
                 let received_instant = Instant::now();
@@ -1384,10 +1435,11 @@ async fn run_clob_ingress_reader(
                     received_at,
                     received_instant,
                     sequence,
+                    socket_read_repoll_delay_max,
                     _byte_permit: Some(byte_permit),
                 });
                 match sender.try_send(frame) {
-                    Ok(()) => {}
+                    Ok(()) => last_handoff_completed_at = Some(Instant::now()),
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         overflowed.store(true, Ordering::Release);
                         return;
@@ -1461,6 +1513,9 @@ fn publish_active_clob_socket_metrics(
     metrics.clob_active_edge_server = telemetry.provenance.edge_server.clone();
     metrics.clob_active_handshake_date = telemetry.provenance.handshake_date.clone();
     metrics.clob_active_last_data_or_heartbeat_at = telemetry.last_data_or_heartbeat_at;
+    metrics.clob_active_last_socket_frame_at = telemetry.last_frame_at;
+    metrics.clob_socket_read_repoll_delay_max_milliseconds =
+        duration_milliseconds(telemetry.socket_read_repoll_delay_max);
     metrics.clob_active_heartbeat_probes = telemetry.heartbeat_probes;
     metrics.clob_active_heartbeat_acknowledgements = telemetry.heartbeat_acknowledgements;
     metrics.clob_active_last_heartbeat_sent_at = telemetry.last_heartbeat_sent_at;
@@ -4361,6 +4416,12 @@ async fn run_clob_supervisor(
             {
                 let mut runtime_metrics = metrics.write().await;
                 clob_disconnect_metrics(&mut runtime_metrics, cause, retry_action);
+                if cause == ClobDisconnectCause::TransportFailure {
+                    record_clob_transport_disconnect_reason(
+                        &mut runtime_metrics,
+                        clob_transport_disconnect_reason(&reason, &failed.telemetry),
+                    );
+                }
                 runtime_metrics.clob_last_disconnect_at = Some(unavailable_at);
                 runtime_metrics.clob_last_disconnect_reason = Some(reason.clone());
                 record_clob_remote_close_1013(
@@ -4370,6 +4431,9 @@ async fn run_clob_supervisor(
                 );
             }
             let unavailable_instant = Instant::now();
+            if cause == ClobDisconnectCause::TransportFailure {
+                recovery_window.open_transport(unavailable_instant);
+            }
             quarantine_clob_books_on_disconnect(&mut failed.registry, &shared_books).await;
             record_clob_epoch_unavailable(
                 &metrics,
@@ -4445,6 +4509,66 @@ enum ClobDisconnectCause {
     BootstrapFailure,
     TransportFailure,
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClobTransportDisconnectReason {
+    RemoteClose1013,
+    ResetWithoutClose,
+    HeartbeatAckTimeout,
+    WebsocketEof,
+    Other,
+}
+
+fn clob_transport_disconnect_reason(
+    reason: &str,
+    telemetry: &ClobSocketTelemetry,
+) -> ClobTransportDisconnectReason {
+    if telemetry.remote_close_observed && telemetry.remote_close_code == Some(1013) {
+        ClobTransportDisconnectReason::RemoteClose1013
+    } else if telemetry
+        .last_transport_error
+        .as_ref()
+        .is_some_and(|detail| {
+            detail.class == "reset_without_closing_handshake"
+                || (detail.class == "io" && detail.io_kind.as_deref() == Some("ConnectionReset"))
+        })
+    {
+        ClobTransportDisconnectReason::ResetWithoutClose
+    } else if reason == "heartbeat_ack_timeout" {
+        ClobTransportDisconnectReason::HeartbeatAckTimeout
+    } else if reason == "websocket_eof"
+        || telemetry
+            .last_transport_error
+            .as_ref()
+            .is_some_and(|detail| detail.class == "websocket_eof")
+    {
+        ClobTransportDisconnectReason::WebsocketEof
+    } else {
+        ClobTransportDisconnectReason::Other
+    }
+}
+
+fn record_clob_transport_disconnect_reason(
+    metrics: &mut BtcRuntimeMetrics,
+    reason: ClobTransportDisconnectReason,
+) {
+    let counter = match reason {
+        ClobTransportDisconnectReason::RemoteClose1013 => {
+            &mut metrics.clob_transport_disconnects_remote_close_1013
+        }
+        ClobTransportDisconnectReason::ResetWithoutClose => {
+            &mut metrics.clob_transport_disconnects_reset_without_close
+        }
+        ClobTransportDisconnectReason::HeartbeatAckTimeout => {
+            &mut metrics.clob_transport_disconnects_heartbeat_ack_timeout
+        }
+        ClobTransportDisconnectReason::WebsocketEof => {
+            &mut metrics.clob_transport_disconnects_websocket_eof
+        }
+        ClobTransportDisconnectReason::Other => &mut metrics.clob_transport_disconnects_other,
+    };
+    *counter = counter.saturating_add(1);
 }
 
 impl ClobDisconnectCause {
@@ -4664,6 +4788,7 @@ async fn record_clob_epoch_healthy(
 ) {
     *consecutive_failures = 0;
     let unavailable_milliseconds = recovery_window.close(ready_instant);
+    let transport_recovery_milliseconds = recovery_window.close_transport(ready_instant);
     {
         let mut runtime_metrics = metrics.write().await;
         if first_healthy_transition {
@@ -4678,6 +4803,9 @@ async fn record_clob_epoch_healthy(
         runtime_metrics.clob_active_connection_id = Some(connection_id);
         runtime_metrics.clob_last_healthy_at = Some(ready_at);
         runtime_metrics.clob_recovery_unavailable_since = None;
+        if let Some(duration) = transport_recovery_milliseconds {
+            runtime_metrics.clob_transport_recovery_duration_milliseconds = Some(duration);
+        }
         clear_clob_book_unavailable_metrics(&mut runtime_metrics);
     }
     tracing::info!(
@@ -4826,6 +4954,9 @@ fn clear_clob_connection_metrics(
     metrics.clob_active_edge_server = None;
     metrics.clob_active_handshake_date = None;
     metrics.clob_active_last_data_or_heartbeat_at = None;
+    metrics.clob_active_last_socket_frame_at = None;
+    metrics.clob_socket_inbound_silence_milliseconds = None;
+    metrics.clob_socket_read_repoll_delay_max_milliseconds = 0;
     metrics.clob_active_last_source_to_receive_lag_milliseconds = None;
     metrics.clob_active_ingress_frames = 0;
     metrics.clob_active_ingress_bytes = 0;
@@ -9362,6 +9493,7 @@ mod tests {
                 received_at,
                 received_instant,
                 sequence: 1,
+                socket_read_repoll_delay_max: StdDuration::from_millis(3),
                 _byte_permit: None,
             },
             &shared_books,
@@ -9410,6 +9542,7 @@ mod tests {
                 received_at,
                 received_instant,
                 sequence: 2,
+                socket_read_repoll_delay_max: StdDuration::from_millis(5),
                 _byte_permit: None,
             },
             &shared_books,
@@ -9542,6 +9675,49 @@ mod tests {
             metrics.clob_last_remote_close_1013_reason.as_deref(),
             Some("service overloaded")
         );
+    }
+
+    #[test]
+    fn clob_transport_disconnect_reasons_are_bounded_and_counted() {
+        let mut metrics = BtcRuntimeMetrics::default();
+        let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        telemetry.record_remote_close(Some(&CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again,
+            reason: "overloaded".into(),
+        }));
+        let reason = clob_transport_disconnect_reason("remote_close", &telemetry);
+        assert_eq!(reason, ClobTransportDisconnectReason::RemoteClose1013);
+        record_clob_transport_disconnect_reason(&mut metrics, reason);
+
+        let mut telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        telemetry.last_transport_error = Some(ClobTransportErrorDetail {
+            class: "reset_without_closing_handshake",
+            io_kind: None,
+            os_error_code: None,
+        });
+        let reason = clob_transport_disconnect_reason("transport_read_failed", &telemetry);
+        assert_eq!(reason, ClobTransportDisconnectReason::ResetWithoutClose);
+        record_clob_transport_disconnect_reason(&mut metrics, reason);
+
+        let telemetry = ClobSocketTelemetry::new(std::slice::from_ref(&market()));
+        for (raw, expected) in [
+            (
+                "heartbeat_ack_timeout",
+                ClobTransportDisconnectReason::HeartbeatAckTimeout,
+            ),
+            ("websocket_eof", ClobTransportDisconnectReason::WebsocketEof),
+            ("read_idle_timeout", ClobTransportDisconnectReason::Other),
+        ] {
+            let reason = clob_transport_disconnect_reason(raw, &telemetry);
+            assert_eq!(reason, expected);
+            record_clob_transport_disconnect_reason(&mut metrics, reason);
+        }
+
+        assert_eq!(metrics.clob_transport_disconnects_remote_close_1013, 1);
+        assert_eq!(metrics.clob_transport_disconnects_reset_without_close, 1);
+        assert_eq!(metrics.clob_transport_disconnects_heartbeat_ack_timeout, 1);
+        assert_eq!(metrics.clob_transport_disconnects_websocket_eof, 1);
+        assert_eq!(metrics.clob_transport_disconnects_other, 1);
     }
 
     #[test]
@@ -11651,6 +11827,7 @@ mod tests {
         let mut failures = 6;
         let mut recovery_window =
             ClobRecoveryWindow::open(ready_at - Duration::milliseconds(750), recovery_started_at);
+        recovery_window.open_transport(recovery_started_at + StdDuration::from_millis(100));
 
         record_clob_epoch_healthy(
             &metrics,
@@ -11669,6 +11846,10 @@ mod tests {
         let healthy_metrics = metrics.read().await;
         assert_eq!(healthy_metrics.clob_healthy_connections, 1);
         assert_eq!(healthy_metrics.clob_recovery_unavailable_milliseconds, 750);
+        assert_eq!(
+            healthy_metrics.clob_transport_recovery_duration_milliseconds,
+            Some(650)
+        );
         assert_eq!(healthy_metrics.clob_consecutive_failures, 0);
         assert_eq!(healthy_metrics.clob_active_connection_epoch, Some(9));
         assert!(healthy_metrics.clob_active_connection_id.is_some());
