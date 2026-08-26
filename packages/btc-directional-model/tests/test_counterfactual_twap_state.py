@@ -18,6 +18,7 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     feature_names,
     load_config,
     predetermined_hyperparameters,
+    score_model,
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -115,3 +116,25 @@ def test_rolling_twap_rejects_unsorted_evidence_before_modeling() -> None:
         assert "unique increasing timestamps" in str(error)
     else:
         raise AssertionError("unsorted completed evidence must fail closed")
+
+
+def test_scoring_empty_chronological_window_preserves_scored_schema() -> None:
+    result = score_model(
+        pl.DataFrame(
+            schema={
+                "market_id": pl.String,
+                "label_up": pl.Int8,
+            }
+        ),
+        object(),  # type: ignore[arg-type]
+    )
+
+    assert result.is_empty()
+    assert result.schema == {
+        "market_id": pl.String,
+        "label_up": pl.Int8,
+        "probability_up": pl.Float64,
+        "predicted_margin_lower_bps": pl.Float64,
+        "predicted_margin_bps": pl.Float64,
+        "predicted_margin_upper_bps": pl.Float64,
+    }

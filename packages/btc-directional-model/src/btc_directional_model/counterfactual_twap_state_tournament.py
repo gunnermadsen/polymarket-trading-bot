@@ -347,6 +347,13 @@ def fit_model(
 
 
 def score_model(frame: pl.DataFrame, model: ModelBundle) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame.with_columns(
+            pl.Series("probability_up", [], dtype=pl.Float64),
+            pl.Series("predicted_margin_lower_bps", [], dtype=pl.Float64),
+            pl.Series("predicted_margin_bps", [], dtype=pl.Float64),
+            pl.Series("predicted_margin_upper_bps", [], dtype=pl.Float64),
+        )
     x = _matrix(frame, model.feature_names)
     raw = np.clip(model.classifier.predict_proba(x)[:, 1], 1e-6, 1 - 1e-6)
     lower = model.lower_margin.predict(x)
