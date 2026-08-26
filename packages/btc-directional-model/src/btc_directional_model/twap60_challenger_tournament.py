@@ -1086,6 +1086,7 @@ def _fit_residual_adapter(
     if authentic["market_id"].n_unique() < 100:
         return model
     enriched = authentic.with_columns(_logit_expr("probability_up").alias("base_logit"))
+    adapter_features = _complete_variable_features(enriched, adapter_features)
     matrix = _matrix(enriched, adapter_features)
     scaler = StandardScaler().fit(matrix)
     adapter = LogisticRegression(C=min(spec.calibration_c, 0.25), max_iter=2000, random_state=1)
@@ -1348,7 +1349,7 @@ def _score_champion(frame: pl.DataFrame, config: TournamentConfig) -> tuple[dict
 
 def _similarity_weights(frame: pl.DataFrame, config: TournamentConfig) -> pl.DataFrame:
     market = frame.sort("seconds_elapsed").group_by("market_id", maintain_order=True).first()
-    features = tuple(
+    feature_candidates = tuple(
         name for name in (
             "btc_realized_volatility_60s_bps", "btc_boundary_cross_count",
             "btc_path_efficiency_60s", "btc_cross_venue_boundary_gap_bps",
@@ -1364,6 +1365,7 @@ def _similarity_weights(frame: pl.DataFrame, config: TournamentConfig) -> pl.Dat
         ),
         how="diagonal_relaxed",
     )
+    features = _complete_variable_features(market, feature_candidates)
     scaler = StandardScaler().fit(_matrix(sample, features))
     model = LogisticRegression(C=0.25, max_iter=2000, random_state=config.random_seed)
     model.fit(scaler.transform(_matrix(sample, features)), sample["_current"].to_numpy())
