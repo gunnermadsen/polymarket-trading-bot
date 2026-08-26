@@ -512,7 +512,11 @@ def attach_causal_twap_features(
         part = binance_by_market.get(market_id)
         if part is None or part.is_empty():
             continue
-        part = part.sort("available_at").unique(subset=["open_timestamp"], keep="last")
+        part = (
+            part.sort(["open_timestamp", "available_at", "artifact_id"])
+            .unique(subset=["open_timestamp"], keep="last", maintain_order=True)
+            .sort("available_at")
+        )
         t = part["available_at"].to_numpy()
         v = part["close_price"].to_numpy()
         rows = indices["_row"].to_numpy()

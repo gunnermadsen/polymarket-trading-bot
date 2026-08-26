@@ -8,6 +8,7 @@ import polars as pl
 
 from btc_directional_model.counterfactual_twap_state_data import (
     CHAINLINK_UNCERTAINTY_BPS,
+    _rolling_mean_at,
     construct_binance_labels,
 )
 from btc_directional_model.counterfactual_twap_state_tournament import (
@@ -101,3 +102,16 @@ def test_source_queries_are_bounded_select_only_and_add_no_schema() -> None:
 
 def test_chainlink_uncertainty_exclusion_boundary_is_not_lowered() -> None:
     assert CHAINLINK_UNCERTAINTY_BPS == 0.526
+
+
+def test_rolling_twap_rejects_unsorted_evidence_before_modeling() -> None:
+    start = np.datetime64("2026-03-21T00:00:00", "us")
+    times = start + np.array([0, 2, 1], dtype="timedelta64[s]")
+    points = start + np.array([30], dtype="timedelta64[s]")
+
+    try:
+        _rolling_mean_at(times, np.array([100.0, 102.0, 101.0]), points, 30)
+    except ValueError as error:
+        assert "unique increasing timestamps" in str(error)
+    else:
+        raise AssertionError("unsorted completed evidence must fail closed")
