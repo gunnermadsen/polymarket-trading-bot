@@ -363,6 +363,7 @@ services:
       GRAFANA_POSTGRES_PORT: "6432"
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
+      GRAFANA_ALERT_ENVIRONMENT: "production"
       GRAFANA_PROMETHEUS_URL: "http://prometheus:9090"
       GRAFANA_LOKI_URL: "http://loki:3100"
       PROMETHEUS_ENVIRONMENT: "production"

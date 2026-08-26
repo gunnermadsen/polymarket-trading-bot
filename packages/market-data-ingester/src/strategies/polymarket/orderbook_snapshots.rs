@@ -2846,6 +2846,9 @@ impl CaptureWriter {
                 format!("failed to commit Polymarket gap: {error}"),
             )
         })?;
+        if detection.inserted {
+            warn!(strategy = %STRATEGY_KEY, error_code = gap.code, gap_id = %detection.gap.gap_id, gap_kind = gap.kind, "new unrecoverable Polymarket orderbook continuity gap detected");
+        }
         Ok(())
     }
 
@@ -3556,6 +3559,7 @@ impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                         }
                     }
                     warn!(
+                        strategy = %STRATEGY_KEY,
                         connection_epoch = %connection_epoch,
                         error_code = error.code,
                         error = %error,

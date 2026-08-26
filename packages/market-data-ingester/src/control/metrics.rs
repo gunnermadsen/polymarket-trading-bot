@@ -138,4 +138,60 @@ mod tests {
         assert!(!rendered.contains("not_exported_as_a_label"));
         assert!(!rendered.contains("also not exported"));
     }
+
+    #[test]
+    fn renders_exactly_one_bounded_state_and_persistence_series_for_every_strategy() {
+        let timestamp = Utc.timestamp_opt(1_787_600_000, 0).single().unwrap();
+        let profiles = IngesterStrategyKey::ALL
+            .into_iter()
+            .map(|strategy_key| IngesterProfile {
+                strategy_key,
+                config_schema_version: 1,
+                config: json!({}),
+                desired_state: DesiredState::Stopped,
+                desired_generation: 1,
+                observed_state: ObservedState::Stopped,
+                health_status: HealthStatus::Unknown,
+                applied_generation: None,
+                checkpoint_schema_version: 1,
+                checkpoint: json!({}),
+                lease_owner: None,
+                lease_token: None,
+                lease_expires_at: None,
+                heartbeat_at: None,
+                started_at: None,
+                stopped_at: Some(timestamp),
+                last_source_event_at: None,
+                last_provider_available_at: None,
+                last_persisted_at: None,
+                source_watermark: None,
+                availability_watermark: None,
+                consecutive_failures: 0,
+                restart_count: 0,
+                last_error_code: None,
+                last_error_message: None,
+                last_error_at: None,
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+            .collect::<Vec<_>>();
+
+        let rendered = render(&profiles, true).expect("metrics render");
+        assert_eq!(
+            rendered
+                .matches("market_data_ingester_strategy_state{")
+                .count(),
+            11
+        );
+        assert_eq!(
+            rendered
+                .matches("market_data_ingester_strategy_last_persistence_timestamp_seconds{")
+                .count(),
+            11
+        );
+        for key in IngesterStrategyKey::ALL {
+            assert!(rendered.contains(&format!("strategy=\"{}\"", key.as_str())));
+        }
+        assert!(!rendered.contains("error_code="));
+    }
 }

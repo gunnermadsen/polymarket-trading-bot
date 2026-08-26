@@ -2,13 +2,434 @@ apiVersion: 1
 
 groups:
   - orgId: 1
-    name: market-data-ingester-loki-20s
+    name: market-data-ingester-health-20s
     folder: Market Data Ingestion
     interval: 20s
     rules:
-      - uid: market_data_ingester_critical_error_log
-        title: Market-data ingester critical error
-        condition: A
+      - uid: mdi_health_1
+        title: Binance aggregate trades health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - &reduce
+            refId: B
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              reducer: last
+              type: reduce
+              refId: B
+          - &threshold
+            refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions:
+                - evaluator: {params: [0], type: gt}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Binance aggregate trades health is impaired'
+          description: 'binance_spot_btcusdt_aggregate_trades is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'binance_spot_btcusdt_aggregate_trades'
+        labels:
+          strategy: binance_spot_btcusdt_aggregate_trades
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_2
+        title: Binance 1-second OHLCV health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Binance 1-second OHLCV health is impaired'
+          description: 'binance_spot_btcusdt_one_second_ohlcv is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'binance_spot_btcusdt_one_second_ohlcv'
+        labels:
+          strategy: binance_spot_btcusdt_one_second_ohlcv
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_3
+        title: Binance spot L2 health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Binance spot L2 health is impaired'
+          description: 'binance_spot_btcusdt_l2_snapshots is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'binance_spot_btcusdt_l2_snapshots'
+        labels:
+          strategy: binance_spot_btcusdt_l2_snapshots
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_4
+        title: Binance futures OI health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) or absent(market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Binance futures OI health is impaired'
+          description: 'binance_futures_btcusdt_open_interest is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'binance_futures_btcusdt_open_interest'
+        labels:
+          strategy: binance_futures_btcusdt_open_interest
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_5
+        title: Chainlink reference price health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Chainlink reference price health is impaired'
+          description: 'chainlink_btcusd_reference_price is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'chainlink_btcusd_reference_price'
+        labels:
+          strategy: chainlink_btcusd_reference_price
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_6
+        title: Chainlink one-minute candles health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Chainlink one-minute candles health is impaired'
+          description: 'chainlink_btcusd_one_minute_ohlc is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'chainlink_btcusd_one_minute_ohlc'
+        labels:
+          strategy: chainlink_btcusd_one_minute_ohlc
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_7
+        title: Polygon Chainlink oracle health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) or absent(market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polygon Chainlink oracle health is impaired'
+          description: 'polygon_chainlink_btcusd_oracle is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'polygon_chainlink_btcusd_oracle'
+        labels:
+          strategy: polygon_chainlink_btcusd_oracle
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_8
+        title: Polymarket contracts health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket contracts health is impaired'
+          description: 'polymarket_btc_five_minute_market_contracts is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'polymarket_btc_five_minute_market_contracts'
+        labels:
+          strategy: polymarket_btc_five_minute_market_contracts
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_9
+        title: Polymarket orderbooks health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket orderbooks health is impaired'
+          description: 'polymarket_btc_five_minute_orderbooks is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'polymarket_btc_five_minute_orderbooks'
+        labels:
+          strategy: polymarket_btc_five_minute_orderbooks
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_10
+        title: Polymarket resolutions health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket resolutions health is impaired'
+          description: 'polymarket_btc_five_minute_resolutions is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'polymarket_btc_five_minute_resolutions'
+        labels:
+          strategy: polymarket_btc_five_minute_resolutions
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+      - uid: mdi_health_11
+        title: Polymarket Chainlink TWAP health impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) and on () (max(up{job="market-data-ingester"}) == 1)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket Chainlink TWAP health is impaired'
+          description: 'polymarket_chainlink_btcusd_twap is desired running but not running/healthy, or its profile series is missing while the ingester target is up. Value: {{ printf "%.0f" $values.B.Value }}.'
+          strategy: 'polymarket_chainlink_btcusd_twap'
+        labels:
+          strategy: polymarket_chainlink_btcusd_twap
+          condition: strategy_health_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 3
+        isPaused: false
+  - orgId: 1
+    name: market-data-ingester-critical-20s
+    folder: Market Data Ingestion
+    interval: 20s
+    rules:
+      - uid: mdi_critical_1
+        title: Binance aggregate trades critical failure
+        condition: C
         data:
           - refId: A
             queryType: instant
@@ -18,57 +439,477 @@ groups:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                sum by (ingester) (count_over_time({service_name="market-data-ingester", level="ERROR"} | label_format ingester="{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}" [5m])) > 0
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_aggregate_trades",error_code=~"^(binance_aggregate_trade_id_jump|binance_aggregate_trade_gap_unrecoverable)$"}[5m])) >= 1
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
-              queryType: instant
               refId: A
+          - *reduce
+          - *threshold
         noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
-          description: '{{ $labels.ingester }} emitted {{ printf "%.0f" $values.A.Value }} error-level log entries during the last five minutes. Inspect the linked dashboard before restarting or changing the strategy.'
-          summary: 'Critical market-data ingester error: {{ $labels.ingester }}'
+          summary: 'Binance aggregate trades critical failure evidence'
+          description: 'binance_spot_btcusdt_aggregate_trades emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'binance_spot_btcusdt_aggregate_trades'
+          failure_condition: 'binance_aggregate_trades_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
         labels:
-          condition: critical_error_log
-          environment: $GRAFANA_ALERT_ENVIRONMENT
-          family: market_data_ingestion
+          strategy: binance_spot_btcusdt_aggregate_trades
+          condition: strategy_critical_failure
+          failure_condition: binance_aggregate_trades_critical_failure
           service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
         dashboardUid: market-data-ingester-health
         panelId: 6
         isPaused: false
-      - uid: market_data_ingester_warning_storm
-        title: Market-data ingester recovery warning storm
-        condition: A
+      - uid: mdi_critical_2
+        title: Binance 1-second OHLCV critical failure
+        condition: C
         data:
           - refId: A
             queryType: instant
-            relativeTimeRange: {from: 600, to: 0}
+            relativeTimeRange: {from: 300, to: 0}
             datasourceUid: loki
             model:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                sum by (ingester, error_code) (count_over_time({service_name="market-data-ingester", level="WARN", error_code!=""} | label_format ingester="{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}" [10m])) >= 5
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_one_second_ohlcv",error_code=~"^(binance_one_second_kline_gap|binance_ohlcv_gap_unrecoverable)$"}[5m])) >= 1
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
-              queryType: instant
               refId: A
+          - *reduce
+          - *threshold
         noDataState: OK
         execErrState: Error
-        for: 2m
+        for: 0s
         annotations:
-          description: '{{ $labels.ingester }} emitted {{ printf "%.0f" $values.A.Value }} warnings with error code {{ $labels.error_code }} during ten minutes and remained above threshold for two minutes.'
-          summary: 'Repeated market-data recovery warnings: {{ $labels.ingester }}'
+          summary: 'Binance 1-second OHLCV critical failure evidence'
+          description: 'binance_spot_btcusdt_one_second_ohlcv emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'binance_spot_btcusdt_one_second_ohlcv'
+          failure_condition: 'binance_1_second_ohlcv_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
         labels:
-          condition: recovery_warning_storm
-          environment: $GRAFANA_ALERT_ENVIRONMENT
-          family: market_data_ingestion
+          strategy: binance_spot_btcusdt_one_second_ohlcv
+          condition: strategy_critical_failure
+          failure_condition: binance_1_second_ohlcv_critical_failure
           service: market-data-ingester
-          severity: warning
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
         dashboardUid: market-data-ingester-health
-        panelId: 7
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_3
+        title: Binance spot L2 critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_l2_snapshots",error_code=~"^(binance_l2_sequence_gap|binance_l2_invalid_sequence|binance_l2_invalid_snapshot_sequence|binance_l2_crossed_book|binance_l2_invalid_level|binance_l2_consumer_backpressure)$"}[5m])) >= 1) or (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_l2_snapshots",error_code=~"^(binance_l2_websocket_closed|binance_l2_websocket_connect_failed|binance_l2_websocket_connect_timeout|binance_l2_websocket_eof|binance_l2_websocket_read_failed|binance_l2_websocket_read_timeout|binance_l2_websocket_write_failed|binance_l2_websocket_write_timeout|binance_l2_io_worker_stopped)$"}[5m])) >= 3)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Binance spot L2 critical failure evidence'
+          description: 'binance_spot_btcusdt_l2_snapshots emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'binance_spot_btcusdt_l2_snapshots'
+          failure_condition: 'binance_spot_l2_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: binance_spot_btcusdt_l2_snapshots
+          condition: strategy_critical_failure
+          failure_condition: binance_spot_l2_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_4
+        title: Binance futures OI critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_futures_btcusdt_open_interest",error_code=~"^(binance_open_interest_interval_missing)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Binance futures OI critical failure evidence'
+          description: 'binance_futures_btcusdt_open_interest emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'binance_futures_btcusdt_open_interest'
+          failure_condition: 'binance_futures_oi_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: binance_futures_btcusdt_open_interest
+          condition: strategy_critical_failure
+          failure_condition: binance_futures_oi_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_5
+        title: Chainlink reference price critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="chainlink_btcusd_reference_price",error_code=~"^(chainlink_reference_http_request|chainlink_reference_http_retryable_status|chainlink_reference_read_response|chainlink_reference_pagination_budget_exhausted|chainlink_reference_response_too_large|chainlink_reference_decode_response|chainlink_reference_response_limit_exceeded|chainlink_reference_page_regressed|chainlink_reference_boundary_overlap_missing|chainlink_reference_boundary_saturated|chainlink_reference_invalid_page|chainlink_reference_nonmonotonic_page|chainlink_reference_duplicate_report|chainlink_reference_feed_mismatch|chainlink_reference_envelope_timestamp_mismatch|chainlink_reference_invalid_prices)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Chainlink reference price critical failure evidence'
+          description: 'chainlink_btcusd_reference_price emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'chainlink_btcusd_reference_price'
+          failure_condition: 'chainlink_reference_price_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: chainlink_btcusd_reference_price
+          condition: strategy_critical_failure
+          failure_condition: chainlink_reference_price_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_6
+        title: Chainlink one-minute candles critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="chainlink_btcusd_one_minute_ohlc",error_code=~"^(chainlink_one_minute_candle_gap)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Chainlink one-minute candles critical failure evidence'
+          description: 'chainlink_btcusd_one_minute_ohlc emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'chainlink_btcusd_one_minute_ohlc'
+          failure_condition: 'chainlink_one_minute_candles_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: chainlink_btcusd_one_minute_ohlc
+          condition: strategy_critical_failure
+          failure_condition: chainlink_one_minute_candles_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_7
+        title: Polygon Chainlink oracle critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polygon_chainlink_btcusd_oracle",error_code=~"^(polygon_finalized_head_regressed|polygon_finalized_checkpoint_reorg|polygon_removed_oracle_log|polygon_oracle_log_block_hash_mismatch|polygon_durable_log_missing_from_canonical_overlap|polygon_canonical_log_changed|chainlink_aggregator_round_gap)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polygon Chainlink oracle critical failure evidence'
+          description: 'polygon_chainlink_btcusd_oracle emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'polygon_chainlink_btcusd_oracle'
+          failure_condition: 'polygon_chainlink_oracle_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: polygon_chainlink_btcusd_oracle
+          condition: strategy_critical_failure
+          failure_condition: polygon_chainlink_oracle_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_8
+        title: Polymarket contracts critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_btc_five_minute_market_contracts",error_code=~"^(polymarket_gamma_contract_window_unavailable|polymarket_gamma_contract_permanently_absent)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket contracts critical failure evidence'
+          description: 'polymarket_btc_five_minute_market_contracts emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'polymarket_btc_five_minute_market_contracts'
+          failure_condition: 'polymarket_contracts_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: polymarket_btc_five_minute_market_contracts
+          condition: strategy_critical_failure
+          failure_condition: polymarket_contracts_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_9
+        title: Polymarket orderbooks critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_btc_five_minute_orderbooks",error_code=~"^(polymarket_sampling_bucket_gap|polymarket_clob_bootstrap_timeout|polymarket_sampling_persistence_backpressure|polymarket_clob_consumer_backpressure)$"}[5m])) >= 1) or (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_btc_five_minute_orderbooks",error_code=~"^(polymarket_clob_closed|polymarket_clob_connect_failed|polymarket_clob_connect_timeout|polymarket_clob_eof|polymarket_clob_read_failed|polymarket_clob_read_timeout|polymarket_clob_write_failed|polymarket_clob_write_timeout|polymarket_clob_pong_timeout|polymarket_clob_io_worker_stopped)$"}[5m])) >= 3)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket orderbooks critical failure evidence'
+          description: 'polymarket_btc_five_minute_orderbooks emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'polymarket_btc_five_minute_orderbooks'
+          failure_condition: 'polymarket_orderbooks_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: polymarket_btc_five_minute_orderbooks
+          condition: strategy_critical_failure
+          failure_condition: polymarket_orderbooks_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_10
+        title: Polymarket resolutions critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_btc_five_minute_resolutions",error_code=~"^(polymarket_resolution_unavailable|polymarket_resolution_terminal_evidence_absent)$"}[5m])) >= 1) or (sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_btc_five_minute_resolutions",error_code=~"^(polymarket_resolution_websocket_closed|polymarket_resolution_websocket_connect_failed|polymarket_resolution_websocket_connect_timeout|polymarket_resolution_websocket_eof|polymarket_resolution_websocket_read_failed|polymarket_resolution_websocket_read_timeout|polymarket_resolution_websocket_pong_timeout|polymarket_resolution_websocket_worker_stopped|polymarket_resolution_clob_request_failed|polymarket_resolution_gamma_request_failed)$"}[5m])) >= 3)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket resolutions critical failure evidence'
+          description: 'polymarket_btc_five_minute_resolutions emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'polymarket_btc_five_minute_resolutions'
+          failure_condition: 'polymarket_resolutions_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: polymarket_btc_five_minute_resolutions
+          condition: strategy_critical_failure
+          failure_condition: polymarket_resolutions_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_critical_11
+        title: Polymarket Chainlink TWAP critical failure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="polymarket_chainlink_btcusd_twap",error_code=~"^(polymarket_twap_transport_gap|polymarket_rtds_thirty_stale|polymarket_rtds_sixty_stale)$"}[5m])) >= 1
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket Chainlink TWAP critical failure evidence'
+          description: 'polymarket_chainlink_btcusd_twap emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'polymarket_chainlink_btcusd_twap'
+          failure_condition: 'polymarket_chainlink_twap_critical_failure'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '5m'
+        labels:
+          strategy: polymarket_chainlink_btcusd_twap
+          condition: strategy_critical_failure
+          failure_condition: polymarket_chainlink_twap_critical_failure
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: mdi_observability_path
+        title: Market-data observability path impaired
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                absent(up{job="market-data-ingester"}) or (max(up{job="market-data-ingester"}) < 1) or absent(up{job="alloy"}) or (max(up{job="alloy"}) < 1) or absent(up{job="loki"}) or (max(up{job="loki"}) < 1) or absent(market_data_ingester_liveness) or (max(market_data_ingester_liveness) < 1) or absent(market_data_ingester_readiness) or (max(market_data_ingester_readiness) < 1) or (sum(increase(loki_process_dropped_lines_total{component_id="loki.process.market_data_ingester"}[5m])) > 0)
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 60s
+        annotations:
+          summary: 'Market-data service or observability path is impaired'
+          description: 'The ingester, Alloy, or Loki target; ingester liveness/readiness; or newly dropped Alloy entries is impaired. Value: {{ printf "%.0f" $values.B.Value }}.'
+          evaluation_window: '5m'
+        labels:
+          condition: market_data_observability_path_impaired
+          service: market-data-ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 1
         isPaused: false

@@ -79,6 +79,14 @@ scrape_configs:
     static_configs:
       - targets:
           - market-data-ingester:8098
+  - job_name: alloy
+    static_configs:
+      - targets:
+          - alloy:12345
+  - job_name: loki
+    static_configs:
+      - targets:
+          - loki:3100
 EOF
 
 exec /bin/prometheus \

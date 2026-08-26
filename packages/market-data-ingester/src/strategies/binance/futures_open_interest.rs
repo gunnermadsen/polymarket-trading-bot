@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
@@ -288,8 +289,10 @@ impl BinanceFuturesOpenInterestStrategy {
             .persist_observations(&mut transaction, artifact.artifact_id, &observations)
             .await?;
 
+        let mut new_gap_count = 0_usize;
         for gap in gaps {
-            self.gaps
+            let detection = self
+                .gaps
                 .detect_in(
                     &mut transaction,
                     &NewDataGap {
@@ -309,6 +312,7 @@ impl BinanceFuturesOpenInterestStrategy {
                 )
                 .await
                 .map_err(integrity_error("open_interest_record_gap"))?;
+            new_gap_count += usize::from(detection.inserted);
             let marked = self
                 .profiles
                 .mark_degraded_in(
@@ -391,6 +395,14 @@ impl BinanceFuturesOpenInterestStrategy {
             .commit()
             .await
             .map_err(database_error("open_interest_commit_transaction"))?;
+        if new_gap_count > 0 {
+            warn!(
+                strategy = %STRATEGY_KEY,
+                error_code = "binance_open_interest_interval_missing",
+                gap_count = new_gap_count,
+                "new Binance open-interest interval gap detected"
+            );
+        }
         *checkpoint = next_checkpoint;
         self.reconcile_gaps(checkpoint).await?;
         Ok(())

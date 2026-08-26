@@ -15,7 +15,7 @@ use sha3::Keccak256;
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
@@ -2560,7 +2560,7 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         artifact_id: Option<Uuid>,
         gap: &GapSignal,
     ) -> Result<(), StrategyError> {
-        GapRepository::new(self.pool.clone())
+        let detection = GapRepository::new(self.pool.clone())
             .detect_in(
                 transaction,
                 &NewDataGap {
@@ -2577,6 +2577,15 @@ impl PolygonChainlinkBtcusdOracleStrategy {
             )
             .await
             .map_err(|error| integrity_error("polygon_oracle_gap_record_failed", error))?;
+        if detection.inserted {
+            warn!(
+                strategy = %STRATEGY_KEY,
+                error_code = gap.reason_code,
+                gap_id = %detection.gap.gap_id,
+                gap_kind = gap.gap_kind,
+                "new Polygon Chainlink oracle integrity gap detected"
+            );
+        }
         let marked = ProfileRepository::new(self.pool.clone())
             .mark_degraded_in(
                 transaction,
