@@ -10255,7 +10255,11 @@ mod tests {
     fn runtime_metrics_snapshot_reports_expired_1013_age_when_never_observed() {
         let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
 
-        let snapshot = runtime_metrics_snapshot(BtcRuntimeMetrics::default(), checked_at);
+        let snapshot = runtime_metrics_snapshot(
+            BtcRuntimeMetrics::default(),
+            &RealtimeState::default(),
+            checked_at,
+        );
 
         assert_eq!(
             snapshot.clob_last_remote_close_1013_age_milliseconds,
@@ -10271,7 +10275,7 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         };
 
-        let snapshot = runtime_metrics_snapshot(metrics, checked_at);
+        let snapshot = runtime_metrics_snapshot(metrics, &RealtimeState::default(), checked_at);
 
         assert_eq!(
             snapshot.clob_last_remote_close_1013_age_milliseconds,
@@ -10296,7 +10300,11 @@ mod tests {
     fn runtime_metrics_snapshot_reports_zero_clob_unavailable_age_when_healthy() {
         let checked_at = Utc.timestamp_opt(1_784_736_010, 0).unwrap();
 
-        let snapshot = runtime_metrics_snapshot(BtcRuntimeMetrics::default(), checked_at);
+        let snapshot = runtime_metrics_snapshot(
+            BtcRuntimeMetrics::default(),
+            &RealtimeState::default(),
+            checked_at,
+        );
 
         assert_eq!(snapshot.clob_recovery_unavailable_age_milliseconds, 0);
     }
