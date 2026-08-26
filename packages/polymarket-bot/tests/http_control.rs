@@ -915,6 +915,24 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                     "request_version": 1,
                     "range_alignment_seconds": 86400,
                     "accepts_new_requests": true
+                },
+                {
+                    "key": "pmdata_chainlink_btcusd_refprice",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
+                    "key": "pmdata_chainlink_btcusd_twap_30s",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
+                },
+                {
+                    "key": "pmdata_chainlink_btcusd_twap_60s",
+                    "request_version": 1,
+                    "range_alignment_seconds": 86400,
+                    "accepts_new_requests": true
                 }
             ]
         })
