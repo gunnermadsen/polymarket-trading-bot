@@ -1,0 +1,10 @@
+{
+  "artifact_path": "tournament.joblib",
+  "deployment_status": "not_deployed_paper_only",
+  "model_artifact_sha256": "91bbfe0f59e65f2db870f6f5b204c2f083ea0be0e98904fed55ca8d11fef30fa",
+  "producing_commit": "79713a7d9eecb3d87a9171cfc1bfebe785291bc6",
+  "qualification_status": "no_deployable_challenger_qualified",
+  "schema_version": "btc-model-provenance-v1",
+  "source_identity": "4502b779ce3578a2fc7af4763fd61aa2e9b0f06027ec997eff64e07b59013550",
+  "training_run_id": "20260826T021146Z"
+}
