@@ -1,0 +1,74 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: market-data-ingester-loki-20s
+    folder: Market Data Ingestion
+    interval: 20s
+    rules:
+      - uid: market_data_ingester_critical_error_log
+        title: Market-data ingester critical error
+        condition: A
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (ingester) (count_over_time({service_name="market-data-ingester", level="ERROR"} | label_format ingester="{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}" [5m])) > 0
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: instant
+              refId: A
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          description: '{{ $labels.ingester }} emitted {{ printf "%.0f" $values.A.Value }} error-level log entries during the last five minutes. Inspect the linked dashboard before restarting or changing the strategy.'
+          summary: 'Critical market-data ingester error: {{ $labels.ingester }}'
+        labels:
+          condition: critical_error_log
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: market_data_ingestion
+          service: market-data-ingester
+          severity: critical
+        dashboardUid: market-data-ingester-health
+        panelId: 6
+        isPaused: false
+      - uid: market_data_ingester_warning_storm
+        title: Market-data ingester recovery warning storm
+        condition: A
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (ingester, error_code) (count_over_time({service_name="market-data-ingester", level="WARN", error_code!=""} | label_format ingester="{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}" [10m])) >= 5
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              queryType: instant
+              refId: A
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          description: '{{ $labels.ingester }} emitted {{ printf "%.0f" $values.A.Value }} warnings with error code {{ $labels.error_code }} during ten minutes and remained above threshold for two minutes.'
+          summary: 'Repeated market-data recovery warnings: {{ $labels.ingester }}'
+        labels:
+          condition: recovery_warning_storm
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: market_data_ingestion
+          service: market-data-ingester
+          severity: warning
+        dashboardUid: market-data-ingester-health
+        panelId: 7
+        isPaused: false

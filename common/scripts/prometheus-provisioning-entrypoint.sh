@@ -74,6 +74,11 @@ scrape_configs:
     static_configs:
       - targets:
           - polymarket-bot:8097
+  - job_name: market-data-ingester
+    metrics_path: /prometheus/metrics
+    static_configs:
+      - targets:
+          - market-data-ingester:8098
 EOF
 
 exec /bin/prometheus \

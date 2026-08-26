@@ -1,0 +1,90 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "Down"}, "1": {"color": "green", "text": "Live"}}, "type": "value"}], "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"editorMode": "code", "expr": "market_data_ingester_liveness", "instant": true, "legendFormat": "Service", "range": false, "refId": "A"}],
+      "title": "Service Liveness",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "Not ready"}, "1": {"color": "green", "text": "Ready"}}, "type": "value"}], "min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true},
+      "targets": [{"editorMode": "code", "expr": "market_data_ingester_readiness", "instant": true, "legendFormat": "Supervisor", "range": false, "refId": "A"}],
+      "title": "Supervisor Readiness",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"-1": {"color": "gray", "text": "Unknown"}, "0": {"color": "red", "text": "Unhealthy"}, "1": {"color": "orange", "text": "Degraded"}, "2": {"color": "green", "text": "Healthy"}}, "type": "value"}], "min": -1, "max": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}, {"color": "red", "value": 0}, {"color": "orange", "value": 1}, {"color": "green", "value": 2}]}}, "overrides": []},
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name", "wideLayout": true},
+      "targets": [{"editorMode": "code", "expr": "2 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"healthy\"}) or 1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"degraded\"}) or 0 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unhealthy\"}) or -1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unknown\"})", "instant": true, "legendFormat": "{{strategy}}", "range": false, "refId": "A"}],
+      "title": "Current Strategy Health",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "Unavailable"}, "1": {"color": "green", "text": "Available"}}, "type": "value"}], "min": 0, "max": 1, "custom": {"fillOpacity": 70, "lineWidth": 0, "spanNulls": false}}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 6},
+      "id": 4,
+      "options": {"alignValue": "left", "legend": {"displayMode": "table", "placement": "right", "showLegend": true}, "mergeValues": true, "rowHeight": 0.8, "showValue": "never", "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",observed_state=~\"running|degraded\"}) or on (strategy) (0 * max by (strategy) (market_data_ingester_strategy_state))", "instant": false, "legendFormat": "{{strategy}}", "range": true, "refId": "A"}],
+      "title": "Strategy Availability History",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 120}, {"color": "red", "value": 300}]}}, "overrides": []},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 15},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "clamp_min(time() - market_data_ingester_strategy_last_persistence_timestamp_seconds, 0)", "instant": false, "legendFormat": "{{strategy}}", "range": true, "refId": "A"}],
+      "title": "Seconds Since Last Durable Persistence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "editorMode": "code", "expr": "sum by (ingester) (count_over_time({service_name=\"market-data-ingester\", level=\"ERROR\"} | label_format ingester=\"{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}\" [5m]))", "legendFormat": "{{ingester}}", "queryType": "range", "refId": "A"}],
+      "title": "Critical Error Logs (5m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "id": 7,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "editorMode": "code", "expr": "sum by (ingester, error_code) (count_over_time({service_name=\"market-data-ingester\", level=\"WARN\", error_code!=\"\"} | label_format ingester=\"{{ if .strategy }}{{ .strategy }}{{ else }}{{ .target }}{{ end }}\" [10m]))", "legendFormat": "{{ingester}} · {{error_code}}", "queryType": "range", "refId": "A"}],
+      "title": "Recovery Warning Volume (10m)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "20s",
+  "schemaVersion": 41,
+  "tags": ["market-data-ingester", "prometheus", "loki", "health"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Market Data Ingester Health",
+  "uid": "market-data-ingester-health",
+  "version": 1
+}
