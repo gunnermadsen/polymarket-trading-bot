@@ -12,6 +12,7 @@ from btc_directional_model.twap60_challenger_tournament import (
     _complete_variable_features,
     _matrix,
     _model_eligible,
+    _score_correctness,
     _variable_features,
     feature_names,
     load_config,
@@ -78,3 +79,18 @@ def test_outcome_matrix_retains_early_rows_with_unavailable_long_lookbacks() -> 
     assert np.isnan(matrix[:, 1]).all()
     assert _variable_features(eligible, features) == ("short_feature",)
     assert _complete_variable_features(eligible, features) == ("short_feature",)
+
+
+def test_cold_start_correctness_scoring_preserves_empty_evidence() -> None:
+    frame = pl.DataFrame(
+        {
+            "probability_up": pl.Series([], dtype=pl.Float64),
+            "label_up": pl.Series([], dtype=pl.Int8),
+        }
+    )
+
+    scored = _score_correctness(frame, None)  # type: ignore[arg-type]
+
+    assert scored.is_empty()
+    assert "correctness_probability" in scored.columns
+    assert "lower_correctness_probability" in scored.columns

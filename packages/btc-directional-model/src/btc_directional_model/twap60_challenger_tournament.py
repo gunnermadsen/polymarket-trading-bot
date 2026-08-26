@@ -1209,6 +1209,11 @@ def _decision_columns(frame: pl.DataFrame, config: TournamentConfig | None) -> p
 def _score_correctness(frame: pl.DataFrame, model: CorrectnessCalibration) -> pl.DataFrame:
     if "predicted_up" not in frame.columns:
         frame = _prediction_columns(frame)
+    if frame.is_empty():
+        return frame.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("correctness_probability"),
+            pl.lit(None, dtype=pl.Float64).alias("lower_correctness_probability"),
+        )
     probability = model.estimator.predict_proba(
         model.scaler.transform(_matrix(frame, model.feature_names))
     )[:, 1]
