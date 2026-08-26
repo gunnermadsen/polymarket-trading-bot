@@ -49,7 +49,9 @@ def _refprice_frame() -> pl.DataFrame:
         rows.append(
             {
                 "source_timestamp": timestamp,
+                "received_at": timestamp + timedelta(milliseconds=500),
                 "valid_from_timestamp": timestamp - timedelta(milliseconds=100),
+                "expires_at": timestamp + timedelta(days=30),
                 "price": price,
                 "bid": price - 0.5,
                 "ask": price + 0.5,
@@ -235,6 +237,34 @@ def test_refprice_freshness_is_configurable_and_never_filled() -> None:
     assert accepted.height == 1
 
 
+def test_refprice_report_received_after_decision_is_not_used() -> None:
+    core = _core_frame(include_second_point=False)
+    original = _refprice_frame()
+    delayed = original.with_columns(
+        pl.when(pl.col("source_timestamp") == DECISION - timedelta(seconds=1))
+        .then(pl.lit(DECISION + timedelta(milliseconds=1)))
+        .otherwise(pl.col("received_at"))
+        .alias("received_at"),
+        pl.when(pl.col("source_timestamp") == DECISION - timedelta(seconds=1))
+        .then(pl.col("price") * 2.0)
+        .otherwise(pl.col("price"))
+        .alias("price"),
+        pl.when(pl.col("source_timestamp") == DECISION - timedelta(seconds=1))
+        .then(pl.col("bid") * 2.0)
+        .otherwise(pl.col("bid"))
+        .alias("bid"),
+        pl.when(pl.col("source_timestamp") == DECISION - timedelta(seconds=1))
+        .then(pl.col("ask") * 2.0)
+        .otherwise(pl.col("ask"))
+        .alias("ask"),
+    )
+
+    rows, _ = _derive(core, delayed, _candle_frame(), _open_interest_frame())
+
+    assert rows.height == 1
+    assert rows["chainlink_ref_return_1s_bps"].item() == 0.0
+
+
 def test_oi_qualification_applies_to_both_candidates() -> None:
     interest_without_exact_point = _open_interest_frame().filter(
         pl.col("source_timestamp") < DECISION
@@ -278,7 +308,7 @@ def test_external_source_sql_is_completed_bounded_and_read_only() -> None:
     candles = _sql("btc-chainlink-one-minute-candles-source.sql")
     interest = _sql("btc-binance-five-minute-open-interest-source.sql")
 
-    for sql in (refprice, candles, interest):
+    for sql in (candles, interest):
         assert sql.lstrip().startswith("select")
         assert "artifact.status = 'completed'" in sql
         assert "%(range_start)s" in sql
@@ -288,8 +318,15 @@ def test_external_source_sql_is_completed_bounded_and_read_only() -> None:
         assert "delete " not in sql
         assert "experiment" not in sql
 
-    assert "chainlink_btcusd_archive_ticks" in refprice
-    assert "tick.source_timestamp < %(range_end)s" in refprice
+    assert refprice.lstrip().startswith("select")
+    assert "market_data.chainlink_btcusd_reference_prices" in refprice
+    assert "report.source = 'pmdata_chainlink_streams'" in refprice
+    assert "report.received_at" in refprice
+    assert "report.expires_at" in refprice
+    assert "report.source_timestamp < %(range_end)s" in refprice
+    assert "insert " not in refprice
+    assert "update " not in refprice
+    assert "delete " not in refprice
     assert "chainlink_btcusd_one_minute_candles" in candles
     assert "candle.close_timestamp" in candles
     assert "volume" not in candles

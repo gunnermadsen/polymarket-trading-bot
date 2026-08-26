@@ -1,0 +1,31 @@
+{
+  "accuracy": 0.7850467289719626,
+  "artifact_sha256": "a1b5cdef04715e4afa8a51762c4e97efb97bd36e6cdb8197713098c21d03d275",
+  "average_probability_up": 0.4948425610493411,
+  "brier": 0.1514968413395919,
+  "directions": {
+    "DOWN": {
+      "losses": 10,
+      "net_pnl": 5.206534999999997,
+      "trades": 57,
+      "wins": 47
+    },
+    "UP": {
+      "losses": 13,
+      "net_pnl": -18.338478345620004,
+      "trades": 50,
+      "wins": 37
+    }
+  },
+  "ece_10": 0.041237157642182005,
+  "evaluation_markets": 409,
+  "evaluation_rows": 6468,
+  "expectancy_per_trade": -0.12272844248243003,
+  "log_loss": 0.4665192827067787,
+  "losses": 23,
+  "market_coverage": 0.2616136919315403,
+  "net_pnl": -13.131943345620014,
+  "settled": 107,
+  "stress_net_pnl": -18.48194334562001,
+  "wins": 84
+}

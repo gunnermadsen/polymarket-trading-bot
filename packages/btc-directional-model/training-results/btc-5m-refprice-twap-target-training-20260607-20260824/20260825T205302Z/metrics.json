@@ -1,0 +1,4477 @@
+{
+  "attribution": {
+    "full_combined": {
+      "R_to_RT": {
+        "brier": 0.002376501647951862,
+        "ece_10": -0.011996646514478935,
+        "log_loss": 0.0045967077884291885,
+        "net_pnl": 20.567409749860005,
+        "stress_net_pnl": 21.01740974986
+      },
+      "R_to_T": {
+        "brier": -0.00029860158978989304,
+        "ece_10": -0.002263291148748025,
+        "log_loss": -0.003912394280915943,
+        "net_pnl": 10.841121233860001,
+        "stress_net_pnl": 11.091121233860001
+      },
+      "T_to_RT": {
+        "brier": 0.002675103237741755,
+        "ece_10": -0.00973335536573091,
+        "log_loss": 0.008509102069345131,
+        "net_pnl": 9.726288516000004,
+        "stress_net_pnl": 9.926288516
+      },
+      "incumbent_to_R": "incumbent remains fixed external benchmark"
+    },
+    "q5": {
+      "R_to_RT": {
+        "brier": -9.640646380609796e-05,
+        "ece_10": -0.01408859467422198,
+        "log_loss": -0.0026721239865942215,
+        "net_pnl": 0.0,
+        "stress_net_pnl": 0.0
+      },
+      "R_to_T": {
+        "brier": -0.0023692118439723464,
+        "ece_10": -0.010141048164991687,
+        "log_loss": -0.008912503885974088,
+        "net_pnl": 0.0,
+        "stress_net_pnl": 0.0
+      },
+      "T_to_RT": {
+        "brier": 0.0022728053801662484,
+        "ece_10": -0.003947546509230293,
+        "log_loss": 0.0062403798993798665,
+        "net_pnl": 0.0,
+        "stress_net_pnl": 0.0
+      },
+      "incumbent_to_R": "incumbent remains fixed external benchmark"
+    },
+    "regime_calibrated": {
+      "R_to_RT": {
+        "brier": 0.0014463777100654218,
+        "ece_10": -0.010481251145026474,
+        "log_loss": 0.0026973230107979473,
+        "net_pnl": 17.01837109552001,
+        "stress_net_pnl": 17.768371095519996
+      },
+      "R_to_T": {
+        "brier": 0.0002001209267791515,
+        "ece_10": -0.01009401398798282,
+        "log_loss": -0.0021097506164891033,
+        "net_pnl": 3.628117305600007,
+        "stress_net_pnl": 4.378117305599995
+      },
+      "T_to_RT": {
+        "brier": 0.0012462567832862703,
+        "ece_10": -0.00038723715704365447,
+        "log_loss": 0.004807073627287051,
+        "net_pnl": 13.390253789920003,
+        "stress_net_pnl": 13.390253789920001
+      },
+      "incumbent_to_R": "incumbent remains fixed external benchmark"
+    },
+    "specialist_distilled": {
+      "R_to_RT": {
+        "brier": 0.0006680965475980016,
+        "ece_10": -0.00011479767725304166,
+        "log_loss": 0.0032180485711321705,
+        "net_pnl": -18.71350447264,
+        "stress_net_pnl": -20.513504472640005
+      },
+      "R_to_T": {
+        "brier": 0.0012668447611482725,
+        "ece_10": 0.00023431782321991362,
+        "log_loss": 0.0037414905303368995,
+        "net_pnl": -13.39365716650002,
+        "stress_net_pnl": -14.093657166499998
+      },
+      "T_to_RT": {
+        "brier": -0.0005987482135502709,
+        "ece_10": -0.0003491155004729553,
+        "log_loss": -0.000523441959204729,
+        "net_pnl": -5.319847306139982,
+        "stress_net_pnl": -6.4198473061400065
+      },
+      "incumbent_to_R": "incumbent remains fixed external benchmark"
+    },
+    "stratified_payoff": {
+      "R_to_RT": {
+        "brier": 0.0014463777100654218,
+        "ece_10": -0.010481251145026474,
+        "log_loss": 0.0026973230107979473,
+        "net_pnl": 15.768061095519997,
+        "stress_net_pnl": 15.768061095519988
+      },
+      "R_to_T": {
+        "brier": 0.0002001209267791515,
+        "ece_10": -0.01009401398798282,
+        "log_loss": -0.0021097506164891033,
+        "net_pnl": 5.094437758159993,
+        "stress_net_pnl": 5.644437758159988
+      },
+      "T_to_RT": {
+        "brier": 0.0012462567832862703,
+        "ece_10": -0.00038723715704365447,
+        "log_loss": 0.004807073627287051,
+        "net_pnl": 10.673623337360004,
+        "stress_net_pnl": 10.12362333736
+      },
+      "incumbent_to_R": "incumbent remains fixed external benchmark"
+    }
+  },
+  "common_evaluation": {
+    "end": "2026-08-25T00:00:00+00:00",
+    "markets": 487,
+    "rows": 17314,
+    "start": "2026-08-23T00:00:00+00:00",
+    "target": "pmdata_twap_60"
+  },
+  "configuration": {
+    "execution": {
+      "evaluation_quantity": 5,
+      "execution_reserve_per_share": 0.005,
+      "freshness_seconds": 10,
+      "maximum_depth_participation": 0.25,
+      "maximum_seconds_after_open": 240,
+      "minimum_seconds_after_open": 15,
+      "quantities": [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        40,
+        50,
+        75,
+        100,
+        125,
+        150,
+        175,
+        200
+      ],
+      "refprice_freshness_seconds": 5,
+      "stress_slippage_per_share": 0.01,
+      "training_cadence_seconds": 5
+    },
+    "model": {
+      "calibration_c": 0.25,
+      "calibration_max_iter": 2000,
+      "l2_regularization": 4.0,
+      "learning_rate": 0.04,
+      "local_calibration_minimum_rows": 50,
+      "local_calibration_shrinkage_rows": 200,
+      "loss_l2_regularization": 5.0,
+      "loss_max_iter": 180,
+      "loss_max_leaf_nodes": 15,
+      "loss_min_samples_leaf": 100,
+      "max_iter": 240,
+      "max_leaf_nodes": 31,
+      "min_samples_leaf": 140
+    },
+    "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-refprice-twap-target-training/packages/btc-directional-model/configs/btc-5m-refprice-twap-target-training-20260607-20260824.toml",
+    "policies": {
+      "full_combined": {
+        "confidence": 0.65,
+        "maximum_loss_severity": 0.5,
+        "maximum_second": 179,
+        "minimum_second": 90,
+        "stress_edge": 0.03
+      },
+      "q5": {
+        "early_admission": 0.8,
+        "early_confidence": 0.75,
+        "early_payoff_lower_bound": 0.02,
+        "early_stress_edge": 0.0,
+        "late_admission": 0.75,
+        "late_confidence": 0.85,
+        "late_payoff_lower_bound": -0.02,
+        "late_stress_edge": 0.0,
+        "middle_enabled": false
+      },
+      "regime_calibrated": {
+        "confidence": 0.7,
+        "maximum_second": 179,
+        "minimum_second": 90,
+        "stress_edge": 0.03
+      },
+      "specialist_distilled": {
+        "cells": {
+          "early_15_89": {
+            "confidence": 0.85,
+            "maximum_second": 89,
+            "minimum_second": 15,
+            "stress_edge": 0.0
+          },
+          "late_180_240": {
+            "confidence": 0.85,
+            "maximum_second": 240,
+            "minimum_second": 180,
+            "stress_edge": 0.005
+          },
+          "middle_120_149": {
+            "confidence": 0.85,
+            "maximum_second": 149,
+            "minimum_second": 120,
+            "stress_edge": 0.03
+          },
+          "middle_150_179": {
+            "confidence": 0.8,
+            "maximum_second": 179,
+            "minimum_second": 150,
+            "stress_edge": 0.05
+          },
+          "middle_90_119": {
+            "confidence": 0.85,
+            "maximum_second": 119,
+            "minimum_second": 90,
+            "stress_edge": 0.0
+          }
+        }
+      },
+      "stratified_payoff": {
+        "confidence": 0.65,
+        "maximum_second": 179,
+        "minimum_second": 90,
+        "stress_edge": 0.02
+      }
+    },
+    "sha256": "2d1e83138660589c5deb76d6915c2919726c990a24eb1707469bffeb73d98970",
+    "windows": {
+      "admission_end": "2026-08-21T00:00:00+00:00",
+      "calibration_end": "2026-08-23T00:00:00+00:00",
+      "data_start": "2026-06-07T00:00:00+00:00",
+      "evaluation_end": "2026-08-25T00:00:00+00:00",
+      "outcome_fit_end": "2026-08-19T00:00:00+00:00",
+      "twap_fit_start": "2026-08-01T00:00:00+00:00",
+      "watermark": "2026-08-24"
+    }
+  },
+  "container_images_changed": false,
+  "created_at": "2026-08-25T21:10:08.917630+00:00",
+  "dataset": {
+    "capacity_source": "polymarket.btc_market_capacity_execution_snapshots",
+    "created_at": "2026-08-25T20:03:46.934980+00:00",
+    "historical_refprice_source": "market_data.chainlink_btcusd_reference_prices:pmdata_chainlink_streams",
+    "interpolation_used": false,
+    "markets_by_partition": 13853,
+    "partitions": [
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 20483,
+          "joined_markets": 288,
+          "joined_rows": 11645,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 8717,
+          "refprice_source_rows": 85262,
+          "strict_capacity_rows": 12134,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-07",
+        "markets": 288,
+        "path": "2026-06-07.parquet",
+        "rows": 11645,
+        "sha256": "c4bd07bd029133d171f33c3fe03f3f8c7b712250cb9266f50d06888b43b8b192"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 6,
+          "joined_markets": 288,
+          "joined_rows": 11778,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11778,
+          "refprice_source_rows": 85438,
+          "strict_capacity_rows": 12280,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-08",
+        "markets": 288,
+        "path": "2026-06-08.parquet",
+        "rows": 11778,
+        "sha256": "d0550c65b558688893b261257305854178a8562f8a4ba789dcbc8d767d157184"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 28,
+          "joined_markets": 288,
+          "joined_rows": 11886,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11876,
+          "refprice_source_rows": 85590,
+          "strict_capacity_rows": 12421,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-09",
+        "markets": 288,
+        "path": "2026-06-09.parquet",
+        "rows": 11886,
+        "sha256": "65c3de766ac11bda9e01a028b609c668cecfb1e4782be155afe5dc6c1ee8637b"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2,
+          "joined_markets": 284,
+          "joined_rows": 10768,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 10768,
+          "refprice_source_rows": 85552,
+          "strict_capacity_rows": 11223,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-10",
+        "markets": 284,
+        "path": "2026-06-10.parquet",
+        "rows": 10768,
+        "sha256": "39f40e56320489703c1d93dc1eb80a8ffc06f822fcdfbe5f26589cbf01fece30"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 3,
+          "joined_markets": 235,
+          "joined_rows": 8866,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 8866,
+          "refprice_source_rows": 85724,
+          "strict_capacity_rows": 9292,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-11",
+        "markets": 235,
+        "path": "2026-06-11.parquet",
+        "rows": 8866,
+        "sha256": "fef22d08b8b5190e31271e04ec91ba23be3286dae790aaae5ccec574f71274de"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 12,
+          "joined_markets": 41,
+          "joined_rows": 1734,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 1729,
+          "refprice_source_rows": 85735,
+          "strict_capacity_rows": 1814,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-12",
+        "markets": 41,
+        "path": "2026-06-12.parquet",
+        "rows": 1734,
+        "sha256": "d8579dd4afaf38ace8ba2a51d16a7fbe024a9e2a47da21db0d12cc417e5c93a3"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-13",
+        "markets": 0,
+        "path": "2026-06-13.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-14",
+        "markets": 0,
+        "path": "2026-06-14.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-15",
+        "markets": 0,
+        "path": "2026-06-15.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 276,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 82800,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-16",
+        "markets": 0,
+        "path": "2026-06-16.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-17",
+        "markets": 0,
+        "path": "2026-06-17.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-18",
+        "markets": 0,
+        "path": "2026-06-18.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-19",
+        "markets": 0,
+        "path": "2026-06-19.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-20",
+        "markets": 0,
+        "path": "2026-06-20.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 287,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86100,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-21",
+        "markets": 0,
+        "path": "2026-06-21.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 283,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 84900,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-22",
+        "markets": 0,
+        "path": "2026-06-22.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-23",
+        "markets": 0,
+        "path": "2026-06-23.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-24",
+        "markets": 0,
+        "path": "2026-06-24.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-25",
+        "markets": 0,
+        "path": "2026-06-25.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-26",
+        "markets": 0,
+        "path": "2026-06-26.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-27",
+        "markets": 0,
+        "path": "2026-06-27.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-06-28",
+        "markets": 0,
+        "path": "2026-06-28.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2508,
+          "joined_markets": 89,
+          "joined_rows": 354,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 320,
+          "refprice_source_rows": 85302,
+          "strict_capacity_rows": 369,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-29",
+        "markets": 89,
+        "path": "2026-06-29.parquet",
+        "rows": 354,
+        "sha256": "2cfb4a0beddfb01479abe7c01906027e43846cb7005a1422951709ff1b6be684"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2604,
+          "joined_markets": 254,
+          "joined_rows": 932,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 890,
+          "refprice_source_rows": 85267,
+          "strict_capacity_rows": 992,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-06-30",
+        "markets": 254,
+        "path": "2026-06-30.parquet",
+        "rows": 932,
+        "sha256": "ca9435657fcd6011117da70143f978f6c57e6f0369a4fddd1389264e3feee3d5"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2395,
+          "joined_markets": 160,
+          "joined_rows": 4619,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 4522,
+          "refprice_source_rows": 84936,
+          "strict_capacity_rows": 4825,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-01",
+        "markets": 160,
+        "path": "2026-07-01.parquet",
+        "rows": 4619,
+        "sha256": "3604479b82c528142348ed1c02c4721de63eb536bc746db419e39019974510ba"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2768,
+          "joined_markets": 288,
+          "joined_rows": 12121,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11572,
+          "refprice_source_rows": 85044,
+          "strict_capacity_rows": 12673,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-02",
+        "markets": 288,
+        "path": "2026-07-02.parquet",
+        "rows": 12121,
+        "sha256": "f4b7e745379e01b3149d86ebf54da519616c67b547fa4d9993e5504b36451e97"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 7144,
+          "joined_markets": 288,
+          "joined_rows": 12132,
+          "oi_eligible_rows": 11624,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 10998,
+          "refprice_source_rows": 85760,
+          "strict_capacity_rows": 12692,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-03",
+        "markets": 288,
+        "path": "2026-07-03.parquet",
+        "rows": 12132,
+        "sha256": "5767a351b3a25c566bac8c117982b3cd8355dbc9c702c1072edae43f5dbeca4e"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 4818,
+          "joined_markets": 288,
+          "joined_rows": 12162,
+          "oi_eligible_rows": 12162,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11370,
+          "refprice_source_rows": 85849,
+          "strict_capacity_rows": 12707,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-04",
+        "markets": 288,
+        "path": "2026-07-04.parquet",
+        "rows": 12162,
+        "sha256": "eae707d21d5ba5702293b610e3b4c9d2202afd128c95d3fdcc59cbb669319e56"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 257,
+          "incomplete_refprice_source_rows": 1684,
+          "joined_markets": 257,
+          "joined_rows": 10796,
+          "oi_eligible_rows": 10796,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 77100,
+          "refprice_eligible_rows": 10525,
+          "refprice_source_rows": 85629,
+          "strict_capacity_rows": 12651,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-05",
+        "markets": 257,
+        "path": "2026-07-05.parquet",
+        "rows": 10796,
+        "sha256": "c1987e2702640772e6837b4a8ace4bf924cd01e608ad27af4e35992de51822b2"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 256,
+          "incomplete_refprice_source_rows": 4906,
+          "joined_markets": 256,
+          "joined_rows": 10874,
+          "oi_eligible_rows": 10874,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 76800,
+          "refprice_eligible_rows": 10056,
+          "refprice_source_rows": 85549,
+          "strict_capacity_rows": 12714,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-06",
+        "markets": 256,
+        "path": "2026-07-06.parquet",
+        "rows": 10874,
+        "sha256": "749a881e6025b86be743434d28ac55fd9a75f47f49dec15cd482dcafa4d542da"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2127,
+          "joined_markets": 246,
+          "joined_rows": 10376,
+          "oi_eligible_rows": 10376,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 10212,
+          "refprice_source_rows": 85444,
+          "strict_capacity_rows": 10849,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-07",
+        "markets": 246,
+        "path": "2026-07-07.parquet",
+        "rows": 10376,
+        "sha256": "ec63b3ebe919ee6bc81890631d4c66f967714a9466220b3c7ee94c1edf20e595"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 1401,
+          "joined_markets": 275,
+          "joined_rows": 11553,
+          "oi_eligible_rows": 11553,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11257,
+          "refprice_source_rows": 85275,
+          "strict_capacity_rows": 12090,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-08",
+        "markets": 275,
+        "path": "2026-07-08.parquet",
+        "rows": 11553,
+        "sha256": "3a728b12f87f933533c32962b857c9b9e917615ca1cb08aa9674697711a9a0e8"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-07-09",
+        "markets": 0,
+        "path": "2026-07-09.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-07-10",
+        "markets": 0,
+        "path": "2026-07-10.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 244,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 73200,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-07-11",
+        "markets": 0,
+        "path": "2026-07-11.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 256,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 76800,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-07-12",
+        "markets": 0,
+        "path": "2026-07-12.parquet",
+        "rows": 0,
+        "sha256": "3fc3c2ecddf8e4b38a30552b25040af959e9701484d72396e974f7dd69fe811f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-07-13",
+        "markets": 0,
+        "path": "2026-07-13.parquet",
+        "rows": 0,
+        "sha256": "48a1de3f6bb10d05ace4f421fd9e72375e8fd68e5b8a2bd0ccf64bbdbb8f0357"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 2,
+          "joined_markets": 1,
+          "joined_rows": 44,
+          "oi_eligible_rows": 44,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 44,
+          "refprice_source_rows": 85669,
+          "strict_capacity_rows": 46,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-14",
+        "markets": 1,
+        "path": "2026-07-14.parquet",
+        "rows": 44,
+        "sha256": "1c1bc5ce5119abee18e3856319405cb8e91ef528abe35901d21cfec77379cb33"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 79,
+          "joined_rows": 3427,
+          "oi_eligible_rows": 3427,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 3427,
+          "refprice_source_rows": 85775,
+          "strict_capacity_rows": 3581,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-15",
+        "markets": 79,
+        "path": "2026-07-15.parquet",
+        "rows": 3427,
+        "sha256": "71fc1a508f9cf9d7549f3f53dc2c0866e43b8994774c485d19b66131db621774"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 283,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 283,
+          "joined_rows": 11898,
+          "oi_eligible_rows": 11898,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 84900,
+          "refprice_eligible_rows": 11895,
+          "refprice_source_rows": 85876,
+          "strict_capacity_rows": 12668,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-16",
+        "markets": 283,
+        "path": "2026-07-16.parquet",
+        "rows": 11898,
+        "sha256": "6cc5bc822afd5bbbcd073c8bc78be787d691a71df13aaa77b188f71e53c34b75"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12002,
+          "oi_eligible_rows": 12002,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12002,
+          "refprice_source_rows": 86059,
+          "strict_capacity_rows": 12558,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-17",
+        "markets": 288,
+        "path": "2026-07-17.parquet",
+        "rows": 12002,
+        "sha256": "dc7cb49bd85a0434ba302e14d9b5aec4acdf44f90954cec1a755bb94ec0136ca"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12336,
+          "oi_eligible_rows": 12336,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12336,
+          "refprice_source_rows": 86066,
+          "strict_capacity_rows": 12900,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-18",
+        "markets": 288,
+        "path": "2026-07-18.parquet",
+        "rows": 12336,
+        "sha256": "cb3913cb78463edeba54c4b4455753fa49d3921e2bd853474789c12f1bbd4f4f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 284,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 284,
+          "joined_rows": 12179,
+          "oi_eligible_rows": 12179,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85200,
+          "refprice_eligible_rows": 12179,
+          "refprice_source_rows": 86031,
+          "strict_capacity_rows": 12916,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-19",
+        "markets": 284,
+        "path": "2026-07-19.parquet",
+        "rows": 12179,
+        "sha256": "af3eab7443b21f4fd21d42a6bdb4c35aecf9782e744eb7ee36a356658c401a44"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 287,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 287,
+          "joined_rows": 11864,
+          "oi_eligible_rows": 11864,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86100,
+          "refprice_eligible_rows": 11864,
+          "refprice_source_rows": 85870,
+          "strict_capacity_rows": 12465,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-20",
+        "markets": 287,
+        "path": "2026-07-20.parquet",
+        "rows": 11864,
+        "sha256": "f3d3242fddf11ea294fbeefc0e6d48b4a2adde5122b7b1eda7624efd75c60fee"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 283,
+          "joined_rows": 11911,
+          "oi_eligible_rows": 11911,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11911,
+          "refprice_source_rows": 85752,
+          "strict_capacity_rows": 12454,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-21",
+        "markets": 283,
+        "path": "2026-07-21.parquet",
+        "rows": 11911,
+        "sha256": "be70c5f26885b67cc47a5e31bb4dde59578974bb53d81ccf12560c78fa757dde"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12076,
+          "oi_eligible_rows": 12076,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12076,
+          "refprice_source_rows": 84902,
+          "strict_capacity_rows": 12621,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-22",
+        "markets": 288,
+        "path": "2026-07-22.parquet",
+        "rows": 12076,
+        "sha256": "fb34e3f6a636cb2e5f9f1a1468a97c4838407777c91358f235689caee371ce07"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12020,
+          "oi_eligible_rows": 12020,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11688,
+          "refprice_source_rows": 81308,
+          "strict_capacity_rows": 12564,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-23",
+        "markets": 288,
+        "path": "2026-07-23.parquet",
+        "rows": 12020,
+        "sha256": "2ab21e9d0b7837bc1ff1e644ec4fb3b5b7b2dd60dace635ab54f9417f4c7183a"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 11980,
+          "oi_eligible_rows": 11980,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11976,
+          "refprice_source_rows": 82585,
+          "strict_capacity_rows": 12523,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-24",
+        "markets": 288,
+        "path": "2026-07-24.parquet",
+        "rows": 11980,
+        "sha256": "d951c22055c16e60b1d5b29f4109c7b196a694b8786de6cdedaf900361b29070"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 286,
+          "joined_rows": 11960,
+          "oi_eligible_rows": 11960,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 11959,
+          "refprice_source_rows": 82598,
+          "strict_capacity_rows": 12599,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-25",
+        "markets": 286,
+        "path": "2026-07-25.parquet",
+        "rows": 11960,
+        "sha256": "117101f79845bc0e35ad4368129fbc3fe530767a61c2205f2d2c30a5ef45d683"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12126,
+          "oi_eligible_rows": 12126,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12125,
+          "refprice_source_rows": 83137,
+          "strict_capacity_rows": 12675,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-26",
+        "markets": 288,
+        "path": "2026-07-26.parquet",
+        "rows": 12126,
+        "sha256": "64acc5a013ed6e8bdc25408a662961d37cda31788aea504fb9c6f0b9f8c25b70"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 287,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 287,
+          "joined_rows": 11932,
+          "oi_eligible_rows": 11932,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86100,
+          "refprice_eligible_rows": 11931,
+          "refprice_source_rows": 82974,
+          "strict_capacity_rows": 12519,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-27",
+        "markets": 287,
+        "path": "2026-07-27.parquet",
+        "rows": 11932,
+        "sha256": "e322d4a1dc5a8305184189c017552fdb071fe0a66f0305a6a964307be0478c4e"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 280,
+          "joined_rows": 11204,
+          "oi_eligible_rows": 11204,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11204,
+          "refprice_source_rows": 83463,
+          "strict_capacity_rows": 11721,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-28",
+        "markets": 280,
+        "path": "2026-07-28.parquet",
+        "rows": 11204,
+        "sha256": "b647354eed0948537a8a4536200cb4b7c792a11fb8a6d119d779343d0427f544"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 11860,
+          "oi_eligible_rows": 11860,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11860,
+          "refprice_source_rows": 84011,
+          "strict_capacity_rows": 12411,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-29",
+        "markets": 288,
+        "path": "2026-07-29.parquet",
+        "rows": 11860,
+        "sha256": "33b652777dd4966720f6e7fbaf78956903eb005e95755e71ce13836958995760"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 11929,
+          "oi_eligible_rows": 11929,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11929,
+          "refprice_source_rows": 84366,
+          "strict_capacity_rows": 12476,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-30",
+        "markets": 288,
+        "path": "2026-07-30.parquet",
+        "rows": 11929,
+        "sha256": "cba8b621beba78fe42ecff9039e4fab243cb2bb3ff73a338169e22afd27f92f6"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 287,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 287,
+          "joined_rows": 12065,
+          "oi_eligible_rows": 12065,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86100,
+          "refprice_eligible_rows": 12065,
+          "refprice_source_rows": 84480,
+          "strict_capacity_rows": 12648,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 0,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-07-31",
+        "markets": 287,
+        "path": "2026-07-31.parquet",
+        "rows": 12065,
+        "sha256": "18e5b5bfb9ccc44093b8ab84f25c083f1fb639dd9839da1722e88d1949bbf9a2"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 11774,
+          "oi_eligible_rows": 11774,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 11774,
+          "refprice_source_rows": 84527,
+          "strict_capacity_rows": 12316,
+          "twap_input_eligible_rows": 10416,
+          "twap_input_source_rows": 150358,
+          "twap_labeled_markets": 240,
+          "twap_labeled_rows": 9782
+        },
+        "date": "2026-08-01",
+        "markets": 288,
+        "path": "2026-08-01.parquet",
+        "rows": 11774,
+        "sha256": "1e1bbabecfad3411e9b6376b14f0e1df2bf31afc7400b17033af8453559c95b3"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 281,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 281,
+          "joined_rows": 11627,
+          "oi_eligible_rows": 11627,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 84300,
+          "refprice_eligible_rows": 11627,
+          "refprice_source_rows": 84591,
+          "strict_capacity_rows": 12473,
+          "twap_input_eligible_rows": 11627,
+          "twap_input_source_rows": 169166,
+          "twap_labeled_markets": 266,
+          "twap_labeled_rows": 11031
+        },
+        "date": "2026-08-02",
+        "markets": 281,
+        "path": "2026-08-02.parquet",
+        "rows": 11627,
+        "sha256": "a019ecf0a93d6fbaaf973e838d97110be374a7624e0841c80cfe84c25d8fbedf"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 285,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 285,
+          "joined_rows": 11878,
+          "oi_eligible_rows": 11878,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85500,
+          "refprice_eligible_rows": 11878,
+          "refprice_source_rows": 84391,
+          "strict_capacity_rows": 12536,
+          "twap_input_eligible_rows": 11878,
+          "twap_input_source_rows": 168765,
+          "twap_labeled_markets": 265,
+          "twap_labeled_rows": 11040
+        },
+        "date": "2026-08-03",
+        "markets": 285,
+        "path": "2026-08-03.parquet",
+        "rows": 11878,
+        "sha256": "a103c9e96fa40e8d20b4bc875a9b12a6b21b1738ec1b04edd036b85dc11aa2fc"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 269,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 269,
+          "joined_rows": 11285,
+          "oi_eligible_rows": 11285,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 80700,
+          "refprice_eligible_rows": 11285,
+          "refprice_source_rows": 84176,
+          "strict_capacity_rows": 12653,
+          "twap_input_eligible_rows": 11285,
+          "twap_input_source_rows": 168332,
+          "twap_labeled_markets": 259,
+          "twap_labeled_rows": 10860
+        },
+        "date": "2026-08-04",
+        "markets": 269,
+        "path": "2026-08-04.parquet",
+        "rows": 11285,
+        "sha256": "8947e7a6531301bef15354b6ff8ec91b5ec32c1b6b8f70ec5a64b2ecadde0479"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 285,
+          "joined_rows": 11858,
+          "oi_eligible_rows": 11858,
+          "raw_capacity_rows": 27552,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 11856,
+          "refprice_source_rows": 83146,
+          "strict_capacity_rows": 12442,
+          "twap_input_eligible_rows": 11857,
+          "twap_input_source_rows": 166283,
+          "twap_labeled_markets": 267,
+          "twap_labeled_rows": 11104
+        },
+        "date": "2026-08-05",
+        "markets": 285,
+        "path": "2026-08-05.parquet",
+        "rows": 11858,
+        "sha256": "b52d473ea7dbbae9f5820995a711809d11f98c2dd21eed2ee5b324b561e98945"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12050,
+          "oi_eligible_rows": 12050,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12046,
+          "refprice_source_rows": 82545,
+          "strict_capacity_rows": 12600,
+          "twap_input_eligible_rows": 12046,
+          "twap_input_source_rows": 165081,
+          "twap_labeled_markets": 261,
+          "twap_labeled_rows": 10908
+        },
+        "date": "2026-08-06",
+        "markets": 288,
+        "path": "2026-08-06.parquet",
+        "rows": 12050,
+        "sha256": "1f664f2619471a8842590ec3a22d1e9f5c3af625380a86a95ddb3b9f58cb5a05"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 286,
+          "joined_rows": 12006,
+          "oi_eligible_rows": 12006,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 12006,
+          "refprice_source_rows": 82362,
+          "strict_capacity_rows": 12637,
+          "twap_input_eligible_rows": 12006,
+          "twap_input_source_rows": 164716,
+          "twap_labeled_markets": 261,
+          "twap_labeled_rows": 10983
+        },
+        "date": "2026-08-07",
+        "markets": 286,
+        "path": "2026-08-07.parquet",
+        "rows": 12006,
+        "sha256": "76ad7a4fe6140faf0a28326c4ba565fba07accd435d297d3339af3f6e322de16"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 288,
+          "joined_rows": 12438,
+          "oi_eligible_rows": 12438,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 12438,
+          "refprice_source_rows": 82736,
+          "strict_capacity_rows": 12994,
+          "twap_input_eligible_rows": 0,
+          "twap_input_source_rows": 79350,
+          "twap_labeled_markets": 0,
+          "twap_labeled_rows": 0
+        },
+        "date": "2026-08-08",
+        "markets": 288,
+        "path": "2026-08-08.parquet",
+        "rows": 12438,
+        "sha256": "ecde25f0e44d49426571bbd5fc8a92f67a3cb024eacdff7052e95ba1485a8606"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 286,
+          "joined_rows": 11967,
+          "oi_eligible_rows": 9273,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 11967,
+          "refprice_source_rows": 82725,
+          "strict_capacity_rows": 12588,
+          "twap_input_eligible_rows": 11958,
+          "twap_input_source_rows": 165384,
+          "twap_labeled_markets": 266,
+          "twap_labeled_rows": 11137
+        },
+        "date": "2026-08-09",
+        "markets": 286,
+        "path": "2026-08-09.parquet",
+        "rows": 11967,
+        "sha256": "ff59701d871a868fb721676c2f04fc0c046a7b9c9625f82359d29fc43f3c6291"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 9,
+          "joined_rows": 328,
+          "oi_eligible_rows": 0,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 327,
+          "refprice_source_rows": 82612,
+          "strict_capacity_rows": 344,
+          "twap_input_eligible_rows": 327,
+          "twap_input_source_rows": 165214,
+          "twap_labeled_markets": 9,
+          "twap_labeled_rows": 328
+        },
+        "date": "2026-08-10",
+        "markets": 9,
+        "path": "2026-08-10.parquet",
+        "rows": 328,
+        "sha256": "2fb16b8643c8b2c260b52fc74b058cb1596505493a691397e919031463a6670f"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 282,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 84600,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-08-11",
+        "markets": 0,
+        "path": "2026-08-11.parquet",
+        "rows": 0,
+        "sha256": "48a1de3f6bb10d05ace4f421fd9e72375e8fd68e5b8a2bd0ccf64bbdbb8f0357"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 282,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 84600,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-08-12",
+        "markets": 0,
+        "path": "2026-08-12.parquet",
+        "rows": 0,
+        "sha256": "48a1de3f6bb10d05ace4f421fd9e72375e8fd68e5b8a2bd0ccf64bbdbb8f0357"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 285,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85500,
+          "reason": "no_joined_rows",
+          "strict_capacity_rows": 0
+        },
+        "date": "2026-08-13",
+        "markets": 0,
+        "path": "2026-08-13.parquet",
+        "rows": 0,
+        "sha256": "48a1de3f6bb10d05ace4f421fd9e72375e8fd68e5b8a2bd0ccf64bbdbb8f0357"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 288,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 62,
+          "joined_rows": 2544,
+          "oi_eligible_rows": 1044,
+          "raw_capacity_rows": 26633,
+          "raw_core_rows": 86400,
+          "refprice_eligible_rows": 2544,
+          "refprice_source_rows": 82553,
+          "strict_capacity_rows": 2660,
+          "twap_input_eligible_rows": 2544,
+          "twap_input_source_rows": 165095,
+          "twap_labeled_markets": 62,
+          "twap_labeled_rows": 2544
+        },
+        "date": "2026-08-14",
+        "markets": 62,
+        "path": "2026-08-14.parquet",
+        "rows": 2544,
+        "sha256": "8dbba5f1c7cbe93705a53cab260f30f56ff84d869b94cbeb1a22503bd071d7b2"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 283,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 280,
+          "joined_rows": 11625,
+          "oi_eligible_rows": 2666,
+          "raw_capacity_rows": 27404,
+          "raw_core_rows": 84900,
+          "refprice_eligible_rows": 11624,
+          "refprice_source_rows": 82371,
+          "strict_capacity_rows": 12313,
+          "twap_input_eligible_rows": 11624,
+          "twap_input_source_rows": 164732,
+          "twap_labeled_markets": 268,
+          "twap_labeled_rows": 11135
+        },
+        "date": "2026-08-15",
+        "markets": 280,
+        "path": "2026-08-15.parquet",
+        "rows": 11625,
+        "sha256": "0bacb181503da9739db55dc39b5cddccf220dfde467fd140ff5cb8f3f8592a99"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 283,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 273,
+          "joined_rows": 10893,
+          "oi_eligible_rows": 1816,
+          "raw_capacity_rows": 27142,
+          "raw_core_rows": 84900,
+          "refprice_eligible_rows": 10893,
+          "refprice_source_rows": 82597,
+          "strict_capacity_rows": 11539,
+          "twap_input_eligible_rows": 10893,
+          "twap_input_source_rows": 165177,
+          "twap_labeled_markets": 249,
+          "twap_labeled_rows": 10023
+        },
+        "date": "2026-08-16",
+        "markets": 273,
+        "path": "2026-08-16.parquet",
+        "rows": 10893,
+        "sha256": "0771df1e3e23f2cfc5fb368c9b86ead6e824331d45d128bda276fcef208c8da0"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 281,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 277,
+          "joined_rows": 9959,
+          "oi_eligible_rows": 2981,
+          "raw_capacity_rows": 27035,
+          "raw_core_rows": 84300,
+          "refprice_eligible_rows": 9957,
+          "refprice_source_rows": 82137,
+          "strict_capacity_rows": 10534,
+          "twap_input_eligible_rows": 9957,
+          "twap_input_source_rows": 164262,
+          "twap_labeled_markets": 249,
+          "twap_labeled_rows": 8981
+        },
+        "date": "2026-08-17",
+        "markets": 277,
+        "path": "2026-08-17.parquet",
+        "rows": 9959,
+        "sha256": "a15c06c171c75b6689f4904322c9ccce2c7ca9295ebf12b78e7f26b16f8f3c30"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 285,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 278,
+          "joined_rows": 9641,
+          "oi_eligible_rows": 3388,
+          "raw_capacity_rows": 27478,
+          "raw_core_rows": 85500,
+          "refprice_eligible_rows": 9641,
+          "refprice_source_rows": 81830,
+          "strict_capacity_rows": 10186,
+          "twap_input_eligible_rows": 9641,
+          "twap_input_source_rows": 163648,
+          "twap_labeled_markets": 233,
+          "twap_labeled_rows": 7979
+        },
+        "date": "2026-08-18",
+        "markets": 278,
+        "path": "2026-08-18.parquet",
+        "rows": 9641,
+        "sha256": "f8e4eef5011a69481ffb2c2211b2960d6ca4882cc7325a955406c5f2c411cd22"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 287,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 251,
+          "joined_rows": 8870,
+          "oi_eligible_rows": 3536,
+          "raw_capacity_rows": 27257,
+          "raw_core_rows": 86100,
+          "refprice_eligible_rows": 8870,
+          "refprice_source_rows": 81658,
+          "strict_capacity_rows": 9391,
+          "twap_input_eligible_rows": 8399,
+          "twap_input_source_rows": 156505,
+          "twap_labeled_markets": 201,
+          "twap_labeled_rows": 7150
+        },
+        "date": "2026-08-19",
+        "markets": 251,
+        "path": "2026-08-19.parquet",
+        "rows": 8870,
+        "sha256": "63f08e419edfe947da8502749d8f927f4925ab0b6f026929584aed9106f7f073"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 284,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 284,
+          "joined_rows": 11530,
+          "oi_eligible_rows": 5041,
+          "raw_capacity_rows": 27615,
+          "raw_core_rows": 85200,
+          "refprice_eligible_rows": 11530,
+          "refprice_source_rows": 81748,
+          "strict_capacity_rows": 12262,
+          "twap_input_eligible_rows": 11052,
+          "twap_input_source_rows": 156657,
+          "twap_labeled_markets": 246,
+          "twap_labeled_rows": 9922
+        },
+        "date": "2026-08-20",
+        "markets": 284,
+        "path": "2026-08-20.parquet",
+        "rows": 11530,
+        "sha256": "f4803d59ad1859611d3faf4921f1afb5c29683be558b037b419e738c0c9f078a"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 286,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 286,
+          "joined_rows": 11759,
+          "oi_eligible_rows": 5047,
+          "raw_capacity_rows": 27648,
+          "raw_core_rows": 85800,
+          "refprice_eligible_rows": 11757,
+          "refprice_source_rows": 81415,
+          "strict_capacity_rows": 12417,
+          "twap_input_eligible_rows": 11757,
+          "twap_input_source_rows": 162822,
+          "twap_labeled_markets": 239,
+          "twap_labeled_rows": 9875
+        },
+        "date": "2026-08-21",
+        "markets": 286,
+        "path": "2026-08-21.parquet",
+        "rows": 11759,
+        "sha256": "7c9515fe87247dd00a3b2cb82d8108fdb0622568589cdccbefa06103a5840e0a"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 284,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 281,
+          "joined_rows": 11588,
+          "oi_eligible_rows": 4485,
+          "raw_capacity_rows": 27597,
+          "raw_core_rows": 85200,
+          "refprice_eligible_rows": 11588,
+          "refprice_source_rows": 81883,
+          "strict_capacity_rows": 12260,
+          "twap_input_eligible_rows": 11588,
+          "twap_input_source_rows": 163752,
+          "twap_labeled_markets": 261,
+          "twap_labeled_rows": 10743
+        },
+        "date": "2026-08-22",
+        "markets": 281,
+        "path": "2026-08-22.parquet",
+        "rows": 11588,
+        "sha256": "fccab94579b8c8ca8bcd3322f37f3d4c78ad61edd8f75b822a5a7e6f0df279d7"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 253,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 248,
+          "joined_rows": 7661,
+          "oi_eligible_rows": 2591,
+          "raw_capacity_rows": 25637,
+          "raw_core_rows": 75900,
+          "refprice_eligible_rows": 7661,
+          "refprice_source_rows": 82122,
+          "strict_capacity_rows": 8335,
+          "twap_input_eligible_rows": 7661,
+          "twap_input_source_rows": 164226,
+          "twap_labeled_markets": 227,
+          "twap_labeled_rows": 6986
+        },
+        "date": "2026-08-23",
+        "markets": 248,
+        "path": "2026-08-23.parquet",
+        "rows": 7661,
+        "sha256": "d99cba1f3596dc7d358f352c3f820e95dd770a91987b9883a50c207793f89a08"
+      },
+      {
+        "audit": {
+          "complete_core_markets": 284,
+          "incomplete_refprice_source_rows": 0,
+          "joined_markets": 282,
+          "joined_rows": 11136,
+          "oi_eligible_rows": 4442,
+          "raw_capacity_rows": 27316,
+          "raw_core_rows": 85200,
+          "refprice_eligible_rows": 11135,
+          "refprice_source_rows": 82133,
+          "strict_capacity_rows": 11788,
+          "twap_input_eligible_rows": 11135,
+          "twap_input_source_rows": 164252,
+          "twap_labeled_markets": 260,
+          "twap_labeled_rows": 10329
+        },
+        "date": "2026-08-24",
+        "markets": 282,
+        "path": "2026-08-24.parquet",
+        "rows": 11136,
+        "sha256": "a6d41b3d2825e0e06d29e0ee78325fb8254a3229eb8ec168c421f48b0a769e49"
+      }
+    ],
+    "perfect_coverage_required": false,
+    "range_end": "2026-08-25T00:00:00+00:00",
+    "range_start": "2026-06-07T00:00:00+00:00",
+    "rows": 551826,
+    "schema_version": "btc-refprice-twap-lineage-dataset-v2",
+    "sql_sha256": {
+      "btc-refprice-twap-capacity-source.sql": "789d3c5396125cde67e3a787713ee2aa941fa7033d55ca9eee4aa4b294693a49",
+      "btc-refprice-twap-core-source.sql": "3d071e56c9e13efb97da625f1e2c397d1b5aad385bb24deb73db8dd29bd48525",
+      "btc-refprice-twap-input-source.sql": "8b14a8312e6ee2e5fc7f837625e3ca8fc5196c7221b8cc0369b3815cec73c0c0",
+      "btc-refprice-twap-label-source.sql": "f86f4f0c6ff9fc648a3462a3630a1788fd01a5f95f17057c2e7925ac2f116c89",
+      "btc-refprice-twap-open-interest-source.sql": "24a4ba62e5e92a94e8a9f53bb0ff294516e1afd677f007d2537fbe9150ea5640",
+      "btc-refprice-twap-oracle-source.sql": "7a10b6e359035185181c49df8d24ad64877d0146edb52e41a6adfe6603d4c818",
+      "btc-refprice-twap-refprice-source.sql": "934dec51440ef14c2d96feb3dcad629e7bfca4743f9038ddaf00fa4d62fdf2f9"
+    },
+    "training_cadence_seconds": 5,
+    "twap_target_source": "market_data.pmdata_chainlink_btcusd_twap:60",
+    "vwap_quantities": [
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      40,
+      50,
+      75,
+      100,
+      125,
+      150,
+      175,
+      200
+    ],
+    "watermark": "2026-08-24"
+  },
+  "incumbents": {
+    "full_combined": {
+      "manifest_sha256": "8dcffc4ede295e4e59a3bddce4c7eb92e0a65592fb14ea3fd375bfdd87e289c9",
+      "model_key": "btc-5m-chainlink-full-combined-paper-20260820",
+      "model_sha256": "cd178add748c7ebd18cbce638747fb33b73b84a98c95172b9f1454ae5be4a9df",
+      "unchanged": true
+    },
+    "q5": {
+      "manifest_sha256": "b5d5aed5ac889e5a42801948b2a6a1e88b1a65220ce703f880adf0cb1cbdbcf0",
+      "model_key": "btc-5m-payoff-aware-q5-paper-20260820",
+      "model_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e",
+      "unchanged": true
+    },
+    "regime_calibrated": {
+      "manifest_sha256": "c5844ac70376c70c4161822fb342ff7a18410922d584413c86a7cbf968f7ae5f",
+      "model_key": "btc-5m-chainlink-regime-calibrated-paper-20260820",
+      "model_sha256": "7473fc33a9bd1438e432462ce9d06a4cfb4cd5a73ea5e4c3aec0024c9ead2369",
+      "unchanged": true
+    },
+    "specialist_distilled": {
+      "manifest_sha256": "d77d80c17c488ed3134a7654c2d94b72c7fd694279214d226ea4d5348b6d972d",
+      "model_key": "btc-5m-specialist-distilled-fair-value-paper-20260823-v1",
+      "model_sha256": "9ec96d8aaedd7ab656230fa12012122ea934f7a350995ada4d0bc2802464f799",
+      "unchanged": true
+    },
+    "stratified_payoff": {
+      "manifest_sha256": "a28c7c7ef862e88603428cf382527c94059ea1fc748637b6a51eeb85606a5bf6",
+      "model_key": "btc-5m-chainlink-stratified-payoff-paper-20260820",
+      "model_sha256": "4379f5e1279a4d77afccf9dc510c1061e551aa6686f5945dea53f830df0f12ac",
+      "unchanged": true
+    }
+  },
+  "limitations": [
+    "R is the RefPrice refresh; T and RT use TWAP-60 labels from August 1 onward and official outcomes as pre-August auxiliary learning.",
+    "Evaluation is projected five-share execution against recorded ask VWAP and does not model queue position.",
+    "Incomplete source rows are excluded individually and never block the complete training run.",
+    "No runtime artifact or trading-process configuration was exported."
+  ],
+  "paper_only": true,
+  "production_qualified": false,
+  "profile": "btc_5m_refprice_twap_target_training",
+  "results": {
+    "R": {
+      "full_combined": {
+        "accuracy": 0.6932515337423313,
+        "average_probability_up": 0.489840808666698,
+        "brier": 0.14245303251527527,
+        "directions": {
+          "DOWN": {
+            "losses": 32,
+            "net_pnl": -9.418906536,
+            "trades": 108,
+            "wins": 76
+          },
+          "UP": {
+            "losses": 18,
+            "net_pnl": -17.497268213859996,
+            "trades": 55,
+            "wins": 37
+          }
+        },
+        "ece_10": 0.032501078269302416,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -39.742616536,
+            "trades": 110,
+            "wins": 72
+          },
+          "middle_150_179": {
+            "net_pnl": 7.790121786140002,
+            "trades": 11,
+            "wins": 10
+          },
+          "middle_90_119": {
+            "net_pnl": 5.036319999999998,
+            "trades": 42,
+            "wins": 31
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -16.001858337359998,
+            "trades": 40,
+            "wins": 19
+          },
+          "0.65-0.75": {
+            "net_pnl": -9.636950000000004,
+            "trades": 47,
+            "wins": 31
+          },
+          "0.75-0.85": {
+            "net_pnl": -5.354459876500006,
+            "trades": 45,
+            "wins": 35
+          },
+          "0.85-1.01": {
+            "net_pnl": 4.077093464000005,
+            "trades": 31,
+            "wins": 28
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 6468,
+        "expectancy_per_trade": -0.16512990644085893,
+        "log_loss": 0.4431903808047508,
+        "losses": 50,
+        "market_coverage": 0.3347022587268994,
+        "net_pnl": -26.916174749860005,
+        "no_trade_markets": 324,
+        "prediction_market_coverage": 0.839835728952772,
+        "prediction_markets": 409,
+        "settled": 163,
+        "stress_net_pnl": -35.066174749860004,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.3326137747054602,
+            "net_pnl": -54.216045276990016,
+            "stress_net_pnl": -70.51604527699,
+            "trades": 163
+          },
+          "100": {
+            "expectancy_per_trade": -3.509342362409583,
+            "net_pnl": -572.022805072762,
+            "stress_net_pnl": -735.0228050727623,
+            "trades": 163
+          },
+          "125": {
+            "expectancy_per_trade": -4.44477151833334,
+            "net_pnl": -724.4977574883344,
+            "stress_net_pnl": -928.2477574883347,
+            "trades": 163
+          },
+          "15": {
+            "expectancy_per_trade": -0.5019684866277724,
+            "net_pnl": -81.82086332032691,
+            "stress_net_pnl": -106.27086332032692,
+            "trades": 163
+          },
+          "150": {
+            "expectancy_per_trade": -5.400607045172766,
+            "net_pnl": -880.298948363161,
+            "stress_net_pnl": -1124.7989483631613,
+            "trades": 163
+          },
+          "175": {
+            "expectancy_per_trade": -6.376905089950977,
+            "net_pnl": -1039.4355296620092,
+            "stress_net_pnl": -1324.685529662009,
+            "trades": 163
+          },
+          "20": {
+            "expectancy_per_trade": -0.6722195084388036,
+            "net_pnl": -109.57177987552498,
+            "stress_net_pnl": -142.171779875525,
+            "trades": 163
+          },
+          "200": {
+            "expectancy_per_trade": -7.373192941735751,
+            "net_pnl": -1201.8304495029274,
+            "stress_net_pnl": -1527.8304495029279,
+            "trades": 163
+          },
+          "25": {
+            "expectancy_per_trade": -0.8434448270455216,
+            "net_pnl": -137.48150680842002,
+            "stress_net_pnl": -178.23150680842005,
+            "trades": 163
+          },
+          "30": {
+            "expectancy_per_trade": -1.0155077415524205,
+            "net_pnl": -165.52776187304454,
+            "stress_net_pnl": -214.42776187304457,
+            "trades": 163
+          },
+          "40": {
+            "expectancy_per_trade": -1.3615817666510888,
+            "net_pnl": -221.93782796412748,
+            "stress_net_pnl": -287.1378279641275,
+            "trades": 163
+          },
+          "5": {
+            "expectancy_per_trade": -0.16512990644085895,
+            "net_pnl": -26.916174749860005,
+            "stress_net_pnl": -35.066174749860004,
+            "trades": 163
+          },
+          "50": {
+            "expectancy_per_trade": -1.7095873001975337,
+            "net_pnl": -278.662729932198,
+            "stress_net_pnl": -360.16272993219803,
+            "trades": 163
+          },
+          "75": {
+            "expectancy_per_trade": -2.596996104079475,
+            "net_pnl": -423.3103649649545,
+            "stress_net_pnl": -545.5603649649545,
+            "trades": 163
+          }
+        },
+        "wins": 113
+      },
+      "q5": {
+        "accuracy": null,
+        "average_probability_up": 0.48598173281897583,
+        "brier": 0.1791659544931431,
+        "directions": {
+          "DOWN": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "UP": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "ece_10": 0.04546464963243942,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_150_179": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_90_119": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.65-0.75": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.75-0.85": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": null,
+        "log_loss": 0.536493576536881,
+        "losses": 0,
+        "market_coverage": 0.0,
+        "net_pnl": 0.0,
+        "no_trade_markets": 487,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 0,
+        "stress_net_pnl": 0.0,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "100": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "125": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "15": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "150": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "175": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "20": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "200": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "25": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "30": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "40": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "5": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "50": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "75": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          }
+        },
+        "wins": 0
+      },
+      "regime_calibrated": {
+        "accuracy": 0.6438356164383562,
+        "average_probability_up": 0.4819506918143706,
+        "brier": 0.17610646482948647,
+        "directions": {
+          "DOWN": {
+            "losses": 16,
+            "net_pnl": -4.890317758159999,
+            "trades": 45,
+            "wins": 29
+          },
+          "UP": {
+            "losses": 10,
+            "net_pnl": -7.980383337359998,
+            "trades": 28,
+            "wins": 18
+          }
+        },
+        "ece_10": 0.03768576824047655,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -26.235870000000002,
+            "trades": 28,
+            "wins": 13
+          },
+          "middle_150_179": {
+            "net_pnl": 12.674258904480002,
+            "trades": 27,
+            "wins": 21
+          },
+          "middle_90_119": {
+            "net_pnl": 0.6909100000000012,
+            "trades": 18,
+            "wins": 13
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -11.563418337360002,
+            "trades": 15,
+            "wins": 6
+          },
+          "0.65-0.75": {
+            "net_pnl": -4.151395000000003,
+            "trades": 49,
+            "wins": 33
+          },
+          "0.75-0.85": {
+            "net_pnl": -0.6529327581600003,
+            "trades": 4,
+            "wins": 3
+          },
+          "0.85-1.01": {
+            "net_pnl": 3.4970450000000013,
+            "trades": 5,
+            "wins": 5
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.1763109739112331,
+        "log_loss": 0.5258461969040449,
+        "losses": 26,
+        "market_coverage": 0.14989733059548255,
+        "net_pnl": -12.870701095520015,
+        "no_trade_markets": 414,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 73,
+        "stress_net_pnl": -16.52070109552,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.35452138322958904,
+            "net_pnl": -25.880060975760003,
+            "stress_net_pnl": -33.180060975760014,
+            "trades": 73
+          },
+          "100": {
+            "expectancy_per_trade": -3.9279520488536037,
+            "net_pnl": -286.7404995663131,
+            "stress_net_pnl": -359.7404995663131,
+            "trades": 73
+          },
+          "125": {
+            "expectancy_per_trade": -5.00253312616329,
+            "net_pnl": -365.18491820992017,
+            "stress_net_pnl": -456.43491820992017,
+            "trades": 73
+          },
+          "15": {
+            "expectancy_per_trade": -0.5369881710557086,
+            "net_pnl": -39.20013648706673,
+            "stress_net_pnl": -50.150136487066725,
+            "trades": 73
+          },
+          "150": {
+            "expectancy_per_trade": -6.105562803526264,
+            "net_pnl": -445.70608465741725,
+            "stress_net_pnl": -555.2060846574174,
+            "trades": 73
+          },
+          "175": {
+            "expectancy_per_trade": -7.229224063689298,
+            "net_pnl": -527.7333566493188,
+            "stress_net_pnl": -655.4833566493186,
+            "trades": 73
+          },
+          "20": {
+            "expectancy_per_trade": -0.7224994715123977,
+            "net_pnl": -52.74246142040503,
+            "stress_net_pnl": -67.342461420405,
+            "trades": 73
+          },
+          "200": {
+            "expectancy_per_trade": -8.387409803440502,
+            "net_pnl": -612.2809156511566,
+            "stress_net_pnl": -758.2809156511564,
+            "trades": 73
+          },
+          "25": {
+            "expectancy_per_trade": -0.909766924958521,
+            "net_pnl": -66.41298552197203,
+            "stress_net_pnl": -84.662985521972,
+            "trades": 73
+          },
+          "30": {
+            "expectancy_per_trade": -1.0995580471722692,
+            "net_pnl": -80.26773744357565,
+            "stress_net_pnl": -102.16773744357566,
+            "trades": 73
+          },
+          "40": {
+            "expectancy_per_trade": -1.4883450676177745,
+            "net_pnl": -108.64918993609754,
+            "stress_net_pnl": -137.84918993609753,
+            "trades": 73
+          },
+          "5": {
+            "expectancy_per_trade": -0.17631097391123296,
+            "net_pnl": -12.870701095520005,
+            "stress_net_pnl": -16.520701095520003,
+            "trades": 73
+          },
+          "50": {
+            "expectancy_per_trade": -1.8823388127120824,
+            "net_pnl": -137.41073332798203,
+            "stress_net_pnl": -173.91073332798194,
+            "trades": 73
+          },
+          "75": {
+            "expectancy_per_trade": -2.8900359055459335,
+            "net_pnl": -210.97262110485315,
+            "stress_net_pnl": -265.72262110485315,
+            "trades": 73
+          }
+        },
+        "wins": 47
+      },
+      "specialist_distilled": {
+        "accuracy": 0.7608695652173914,
+        "average_probability_up": 0.48712711368633327,
+        "brier": 0.18704079823921582,
+        "directions": {
+          "DOWN": {
+            "losses": 14,
+            "net_pnl": 2.792714999999995,
+            "trades": 60,
+            "wins": 46
+          },
+          "UP": {
+            "losses": 8,
+            "net_pnl": -2.0646050000000016,
+            "trades": 32,
+            "wins": 24
+          }
+        },
+        "ece_10": 0.020958828325911186,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 9.031179999999999,
+            "trades": 26,
+            "wins": 22
+          },
+          "late_180_240": {
+            "net_pnl": 2.4947649999999992,
+            "trades": 24,
+            "wins": 19
+          },
+          "middle_120_149": {
+            "net_pnl": -18.715925000000002,
+            "trades": 21,
+            "wins": 13
+          },
+          "middle_150_179": {
+            "net_pnl": 4.332645000000001,
+            "trades": 13,
+            "wins": 9
+          },
+          "middle_90_119": {
+            "net_pnl": 3.5854450000000004,
+            "trades": 8,
+            "wins": 7
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 3.071545,
+            "trades": 11,
+            "wins": 6
+          },
+          "0.65-0.75": {
+            "net_pnl": -0.9908599999999984,
+            "trades": 20,
+            "wins": 14
+          },
+          "0.75-0.85": {
+            "net_pnl": 2.063424999999996,
+            "trades": 50,
+            "wins": 41
+          },
+          "0.85-1.01": {
+            "net_pnl": -3.4159999999999995,
+            "trades": 11,
+            "wins": 9
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": 0.007914239130434802,
+        "log_loss": 0.5531233997325784,
+        "losses": 22,
+        "market_coverage": 0.188911704312115,
+        "net_pnl": 0.7281100000000018,
+        "no_trade_markets": 395,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 92,
+        "stress_net_pnl": -3.8718900000000045,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": 0.015061555782608635,
+            "net_pnl": 1.3856631319999946,
+            "stress_net_pnl": -7.814336868000014,
+            "trades": 92
+          },
+          "100": {
+            "expectancy_per_trade": -0.03819806146178377,
+            "net_pnl": -3.5142216544841065,
+            "stress_net_pnl": -95.51422165448416,
+            "trades": 92
+          },
+          "125": {
+            "expectancy_per_trade": -0.10641541895381,
+            "net_pnl": -9.79021854375052,
+            "stress_net_pnl": -124.79021854375058,
+            "trades": 92
+          },
+          "15": {
+            "expectancy_per_trade": 0.02079882413007567,
+            "net_pnl": 1.9134918199669615,
+            "stress_net_pnl": -11.88650818003305,
+            "trades": 92
+          },
+          "150": {
+            "expectancy_per_trade": -0.2004646633987727,
+            "net_pnl": -18.44274903268709,
+            "stress_net_pnl": -156.44274903268732,
+            "trades": 92
+          },
+          "175": {
+            "expectancy_per_trade": -0.3292046657934648,
+            "net_pnl": -30.28682925299876,
+            "stress_net_pnl": -191.28682925299904,
+            "trades": 92
+          },
+          "20": {
+            "expectancy_per_trade": 0.0250890784874455,
+            "net_pnl": 2.3081952208449863,
+            "stress_net_pnl": -16.09180477915502,
+            "trades": 92
+          },
+          "200": {
+            "expectancy_per_trade": -0.4852171407704584,
+            "net_pnl": -44.63997695088218,
+            "stress_net_pnl": -228.6399769508824,
+            "trades": 92
+          },
+          "25": {
+            "expectancy_per_trade": 0.027431531475478076,
+            "net_pnl": 2.523700895743983,
+            "stress_net_pnl": -20.476299104256032,
+            "trades": 92
+          },
+          "30": {
+            "expectancy_per_trade": 0.02875460868686531,
+            "net_pnl": 2.6454239991916086,
+            "stress_net_pnl": -24.954576000808416,
+            "trades": 92
+          },
+          "40": {
+            "expectancy_per_trade": 0.02952013383793453,
+            "net_pnl": 2.715852313089977,
+            "stress_net_pnl": -34.08414768691006,
+            "trades": 92
+          },
+          "5": {
+            "expectancy_per_trade": 0.007914239130434743,
+            "net_pnl": 0.7281099999999963,
+            "stress_net_pnl": -3.871890000000006,
+            "trades": 92
+          },
+          "50": {
+            "expectancy_per_trade": 0.026439875398347613,
+            "net_pnl": 2.4324685366479804,
+            "stress_net_pnl": -43.56753146335203,
+            "trades": 92
+          },
+          "75": {
+            "expectancy_per_trade": 0.002648148666889238,
+            "net_pnl": 0.24362967735380991,
+            "stress_net_pnl": -68.75637032264622,
+            "trades": 92
+          }
+        },
+        "wins": 70
+      },
+      "stratified_payoff": {
+        "accuracy": 0.6422018348623854,
+        "average_probability_up": 0.4819506918143706,
+        "brier": 0.17610646482948647,
+        "directions": {
+          "DOWN": {
+            "losses": 22,
+            "net_pnl": -3.4215127581600058,
+            "trades": 59,
+            "wins": 37
+          },
+          "UP": {
+            "losses": 17,
+            "net_pnl": -10.202148337359995,
+            "trades": 50,
+            "wins": 33
+          }
+        },
+        "ece_10": 0.03768576824047655,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -30.485325,
+            "trades": 52,
+            "wins": 28
+          },
+          "middle_150_179": {
+            "net_pnl": 14.12809890448,
+            "trades": 26,
+            "wins": 20
+          },
+          "middle_90_119": {
+            "net_pnl": 2.733565000000003,
+            "trades": 31,
+            "wins": 22
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 14.256451662639996,
+            "trades": 41,
+            "wins": 26
+          },
+          "0.65-0.75": {
+            "net_pnl": -24.394220000000004,
+            "trades": 49,
+            "wins": 29
+          },
+          "0.75-0.85": {
+            "net_pnl": 3.7919872418399994,
+            "trades": 8,
+            "wins": 7
+          },
+          "0.85-1.01": {
+            "net_pnl": -7.277879999999996,
+            "trades": 11,
+            "wins": 8
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.12498771647266063,
+        "log_loss": 0.5258461969040449,
+        "losses": 39,
+        "market_coverage": 0.22381930184804927,
+        "net_pnl": -13.623661095520008,
+        "no_trade_markets": 378,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 109,
+        "stress_net_pnl": -19.073661095519995,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.2516874357021102,
+            "net_pnl": -27.433930491530013,
+            "stress_net_pnl": -38.33393049153001,
+            "trades": 109
+          },
+          "100": {
+            "expectancy_per_trade": -2.8299777214355877,
+            "net_pnl": -308.467571636479,
+            "stress_net_pnl": -417.4675716364792,
+            "trades": 109
+          },
+          "125": {
+            "expectancy_per_trade": -3.6100754766452723,
+            "net_pnl": -393.49822695433465,
+            "stress_net_pnl": -529.7482269543345,
+            "trades": 109
+          },
+          "15": {
+            "expectancy_per_trade": -0.3821478379120996,
+            "net_pnl": -41.65411433241886,
+            "stress_net_pnl": -58.00411433241887,
+            "trades": 109
+          },
+          "150": {
+            "expectancy_per_trade": -4.410936305340321,
+            "net_pnl": -480.792057282095,
+            "stress_net_pnl": -644.2920572820952,
+            "trades": 109
+          },
+          "175": {
+            "expectancy_per_trade": -5.228563295733261,
+            "net_pnl": -569.9133992349255,
+            "stress_net_pnl": -760.6633992349257,
+            "trades": 109
+          },
+          "20": {
+            "expectancy_per_trade": -0.5146954884092663,
+            "net_pnl": -56.10180823661003,
+            "stress_net_pnl": -77.90180823661,
+            "trades": 109
+          },
+          "200": {
+            "expectancy_per_trade": -6.077135642222372,
+            "net_pnl": -662.4077850022386,
+            "stress_net_pnl": -880.4077850022388,
+            "trades": 109
+          },
+          "25": {
+            "expectancy_per_trade": -0.648583704508514,
+            "net_pnl": -70.69562379142803,
+            "stress_net_pnl": -97.94562379142802,
+            "trades": 109
+          },
+          "30": {
+            "expectancy_per_trade": -0.7846966006530935,
+            "net_pnl": -85.5319294711872,
+            "stress_net_pnl": -118.23192947118719,
+            "trades": 109
+          },
+          "40": {
+            "expectancy_per_trade": -1.0629108592485321,
+            "net_pnl": -115.85728365809001,
+            "stress_net_pnl": -159.45728365809003,
+            "trades": 109
+          },
+          "5": {
+            "expectancy_per_trade": -0.12498771647266063,
+            "net_pnl": -13.623661095520008,
+            "stress_net_pnl": -19.073661095520006,
+            "trades": 109
+          },
+          "50": {
+            "expectancy_per_trade": -1.3453948823889184,
+            "net_pnl": -146.64804218039208,
+            "stress_net_pnl": -201.14804218039214,
+            "trades": 109
+          },
+          "75": {
+            "expectancy_per_trade": -2.0746507178296096,
+            "net_pnl": -226.13692824342746,
+            "stress_net_pnl": -307.8869282434276,
+            "trades": 109
+          }
+        },
+        "wins": 70
+      }
+    },
+    "RT": {
+      "full_combined": {
+        "accuracy": 0.7012987012987013,
+        "average_probability_up": 0.5100785669664591,
+        "brier": 0.14482953416322714,
+        "directions": {
+          "DOWN": {
+            "losses": 27,
+            "net_pnl": 0.27793999999999597,
+            "trades": 98,
+            "wins": 71
+          },
+          "UP": {
+            "losses": 19,
+            "net_pnl": -6.6267049999999985,
+            "trades": 56,
+            "wins": 37
+          }
+        },
+        "ece_10": 0.02050443175482348,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -10.549020000000002,
+            "trades": 101,
+            "wins": 69
+          },
+          "middle_150_179": {
+            "net_pnl": 5.09098,
+            "trades": 10,
+            "wins": 9
+          },
+          "middle_90_119": {
+            "net_pnl": -0.8907250000000017,
+            "trades": 43,
+            "wins": 30
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -6.607840000000004,
+            "trades": 46,
+            "wins": 23
+          },
+          "0.65-0.75": {
+            "net_pnl": -7.168045000000002,
+            "trades": 39,
+            "wins": 26
+          },
+          "0.75-0.85": {
+            "net_pnl": -0.010950000000005122,
+            "trades": 41,
+            "wins": 33
+          },
+          "0.85-1.01": {
+            "net_pnl": 7.438070000000005,
+            "trades": 28,
+            "wins": 26
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 6468,
+        "expectancy_per_trade": -0.04122574675324676,
+        "log_loss": 0.44778708859318,
+        "losses": 46,
+        "market_coverage": 0.3162217659137577,
+        "net_pnl": -6.348765,
+        "no_trade_markets": 333,
+        "prediction_market_coverage": 0.839835728952772,
+        "prediction_markets": 409,
+        "settled": 154,
+        "stress_net_pnl": -14.048765000000003,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.08415784058629873,
+            "net_pnl": -12.960307450290003,
+            "stress_net_pnl": -28.360307450290012,
+            "trades": 154
+          },
+          "100": {
+            "expectancy_per_trade": -0.9937408705019681,
+            "net_pnl": -153.0360940573031,
+            "stress_net_pnl": -307.0360940573032,
+            "trades": 154
+          },
+          "125": {
+            "expectancy_per_trade": -1.2956487961004373,
+            "net_pnl": -199.52991459946733,
+            "stress_net_pnl": -392.02991459946736,
+            "trades": 154
+          },
+          "15": {
+            "expectancy_per_trade": -0.12790487765859854,
+            "net_pnl": -19.697351159424173,
+            "stress_net_pnl": -42.797351159424174,
+            "trades": 154
+          },
+          "150": {
+            "expectancy_per_trade": -1.621975020735618,
+            "net_pnl": -249.78415319328516,
+            "stress_net_pnl": -480.7841531932855,
+            "trades": 154
+          },
+          "175": {
+            "expectancy_per_trade": -1.9703659469277088,
+            "net_pnl": -303.43635582686716,
+            "stress_net_pnl": -572.9363558268674,
+            "trades": 154
+          },
+          "20": {
+            "expectancy_per_trade": -0.1722766936884091,
+            "net_pnl": -26.530610828015,
+            "stress_net_pnl": -57.33061082801502,
+            "trades": 154
+          },
+          "200": {
+            "expectancy_per_trade": -2.340535818995274,
+            "net_pnl": -360.44251612527216,
+            "stress_net_pnl": -668.4425161252725,
+            "trades": 154
+          },
+          "25": {
+            "expectancy_per_trade": -0.21768042617150662,
+            "net_pnl": -33.522785630412024,
+            "stress_net_pnl": -72.02278563041205,
+            "trades": 154
+          },
+          "30": {
+            "expectancy_per_trade": -0.2639710450434237,
+            "net_pnl": -40.65154093668725,
+            "stress_net_pnl": -86.85154093668727,
+            "trades": 154
+          },
+          "40": {
+            "expectancy_per_trade": -0.35883033082222404,
+            "net_pnl": -55.2598709466225,
+            "stress_net_pnl": -116.85987094662252,
+            "trades": 154
+          },
+          "5": {
+            "expectancy_per_trade": -0.041225746753246764,
+            "net_pnl": -6.348765000000002,
+            "stress_net_pnl": -14.048765000000005,
+            "trades": 154
+          },
+          "50": {
+            "expectancy_per_trade": -0.45628534957294814,
+            "net_pnl": -70.26794383423402,
+            "stress_net_pnl": -147.26794383423405,
+            "trades": 154
+          },
+          "75": {
+            "expectancy_per_trade": -0.7140468235755671,
+            "net_pnl": -109.96321083063735,
+            "stress_net_pnl": -225.46321083063745,
+            "trades": 154
+          }
+        },
+        "wins": 108
+      },
+      "q5": {
+        "accuracy": null,
+        "average_probability_up": 0.5128761836057263,
+        "brier": 0.179069548029337,
+        "directions": {
+          "DOWN": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "UP": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "ece_10": 0.03137605495821744,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_150_179": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_90_119": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.65-0.75": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.75-0.85": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": null,
+        "log_loss": 0.5338214525502868,
+        "losses": 0,
+        "market_coverage": 0.0,
+        "net_pnl": 0.0,
+        "no_trade_markets": 487,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 0,
+        "stress_net_pnl": 0.0,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "100": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "125": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "15": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "150": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "175": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "20": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "200": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "25": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "30": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "40": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "5": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "50": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "75": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          }
+        },
+        "wins": 0
+      },
+      "regime_calibrated": {
+        "accuracy": 0.6896551724137931,
+        "average_probability_up": 0.5066185403709406,
+        "brier": 0.1775528425395519,
+        "directions": {
+          "DOWN": {
+            "losses": 12,
+            "net_pnl": -0.8502200000000026,
+            "trades": 35,
+            "wins": 23
+          },
+          "UP": {
+            "losses": 6,
+            "net_pnl": 4.997889999999997,
+            "trades": 23,
+            "wins": 17
+          }
+        },
+        "ece_10": 0.027204517095450076,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -16.097455000000004,
+            "trades": 35,
+            "wins": 20
+          },
+          "middle_150_179": {
+            "net_pnl": 19.146035,
+            "trades": 16,
+            "wins": 15
+          },
+          "middle_90_119": {
+            "net_pnl": 1.0990900000000003,
+            "trades": 7,
+            "wins": 5
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 1.7155349999999996,
+            "trades": 13,
+            "wins": 8
+          },
+          "0.65-0.75": {
+            "net_pnl": 2.2358249999999975,
+            "trades": 36,
+            "wins": 25
+          },
+          "0.75-0.85": {
+            "net_pnl": -0.5316500000000013,
+            "trades": 8,
+            "wins": 6
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.7279600000000003,
+            "trades": 1,
+            "wins": 1
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": 0.07151155172413783,
+        "log_loss": 0.5285435199148428,
+        "losses": 18,
+        "market_coverage": 0.11909650924024641,
+        "net_pnl": 4.1476699999999935,
+        "no_trade_markets": 429,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 58,
+        "stress_net_pnl": 1.2476699999999952,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": 0.14231330218344804,
+            "net_pnl": 8.254171526639986,
+            "stress_net_pnl": 2.4541715266399833,
+            "trades": 58
+          },
+          "100": {
+            "expectancy_per_trade": 1.20549197840012,
+            "net_pnl": 69.91853474720695,
+            "stress_net_pnl": 11.918534747206898,
+            "trades": 58
+          },
+          "125": {
+            "expectancy_per_trade": 1.4429351632922054,
+            "net_pnl": 83.69023947094792,
+            "stress_net_pnl": 11.1902394709478,
+            "trades": 58
+          },
+          "15": {
+            "expectancy_per_trade": 0.2094423655016436,
+            "net_pnl": 12.14765719909533,
+            "stress_net_pnl": 3.4476571990953344,
+            "trades": 58
+          },
+          "150": {
+            "expectancy_per_trade": 1.6550804001520092,
+            "net_pnl": 95.99466320881653,
+            "stress_net_pnl": 8.994663208816617,
+            "trades": 58
+          },
+          "175": {
+            "expectancy_per_trade": 1.8579656885881342,
+            "net_pnl": 107.76200993811177,
+            "stress_net_pnl": 6.262009938111765,
+            "trades": 58
+          },
+          "20": {
+            "expectancy_per_trade": 0.2750378122986203,
+            "net_pnl": 15.952193113319977,
+            "stress_net_pnl": 4.352193113319971,
+            "trades": 58
+          },
+          "200": {
+            "expectancy_per_trade": 2.0285477533308964,
+            "net_pnl": 117.65576969319198,
+            "stress_net_pnl": 1.6557696931917887,
+            "trades": 58
+          },
+          "25": {
+            "expectancy_per_trade": 0.3397888912182064,
+            "net_pnl": 19.707755690655972,
+            "stress_net_pnl": 5.207755690655974,
+            "trades": 58
+          },
+          "30": {
+            "expectancy_per_trade": 0.40433961281776143,
+            "net_pnl": 23.451697543430164,
+            "stress_net_pnl": 6.051697543430164,
+            "trades": 58
+          },
+          "40": {
+            "expectancy_per_trade": 0.5273431833163356,
+            "net_pnl": 30.585904632347464,
+            "stress_net_pnl": 7.38590463234746,
+            "trades": 58
+          },
+          "5": {
+            "expectancy_per_trade": 0.07151155172413783,
+            "net_pnl": 4.1476699999999935,
+            "stress_net_pnl": 1.2476699999999923,
+            "trades": 58
+          },
+          "50": {
+            "expectancy_per_trade": 0.6488113370078966,
+            "net_pnl": 37.631057546458,
+            "stress_net_pnl": 8.631057546457965,
+            "trades": 58
+          },
+          "75": {
+            "expectancy_per_trade": 0.9392001379205537,
+            "net_pnl": 54.473607999392115,
+            "stress_net_pnl": 10.973607999392094,
+            "trades": 58
+          }
+        },
+        "wins": 40
+      },
+      "specialist_distilled": {
+        "accuracy": 0.734375,
+        "average_probability_up": 0.49050413659112335,
+        "brier": 0.18770889478681382,
+        "directions": {
+          "DOWN": {
+            "losses": 19,
+            "net_pnl": 4.3178350000000005,
+            "trades": 81,
+            "wins": 62
+          },
+          "UP": {
+            "losses": 15,
+            "net_pnl": -22.303229472639998,
+            "trades": 47,
+            "wins": 32
+          }
+        },
+        "ece_10": 0.020844030648658144,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 2.7201249999999977,
+            "trades": 40,
+            "wins": 32
+          },
+          "late_180_240": {
+            "net_pnl": 12.613675,
+            "trades": 23,
+            "wins": 20
+          },
+          "middle_120_149": {
+            "net_pnl": -14.143765000000002,
+            "trades": 18,
+            "wins": 11
+          },
+          "middle_150_179": {
+            "net_pnl": -7.2557849999999995,
+            "trades": 23,
+            "wins": 14
+          },
+          "middle_90_119": {
+            "net_pnl": -11.919644472639998,
+            "trades": 24,
+            "wins": 17
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -6.384154999999999,
+            "trades": 14,
+            "wins": 6
+          },
+          "0.65-0.75": {
+            "net_pnl": -0.24128999999999623,
+            "trades": 32,
+            "wins": 23
+          },
+          "0.75-0.85": {
+            "net_pnl": -12.61161447264001,
+            "trades": 64,
+            "wins": 49
+          },
+          "0.85-1.01": {
+            "net_pnl": 1.251665000000003,
+            "trades": 18,
+            "wins": 16
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.1405108943175,
+        "log_loss": 0.5563414483037106,
+        "losses": 34,
+        "market_coverage": 0.26283367556468173,
+        "net_pnl": -17.98539447264,
+        "no_trade_markets": 359,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 128,
+        "stress_net_pnl": -24.38539447264001,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.2821773677350782,
+            "net_pnl": -36.11870307009001,
+            "stress_net_pnl": -48.91870307009,
+            "trades": 128
+          },
+          "100": {
+            "expectancy_per_trade": -3.02156972779168,
+            "net_pnl": -386.76092515733507,
+            "stress_net_pnl": -514.7609251573351,
+            "trades": 128
+          },
+          "125": {
+            "expectancy_per_trade": -3.8356478817488364,
+            "net_pnl": -490.96292886385106,
+            "stress_net_pnl": -650.9629288638512,
+            "trades": 128
+          },
+          "15": {
+            "expectancy_per_trade": -0.42470802131234325,
+            "net_pnl": -54.36262672797994,
+            "stress_net_pnl": -73.56262672797993,
+            "trades": 128
+          },
+          "150": {
+            "expectancy_per_trade": -4.673372924657949,
+            "net_pnl": -598.1917343562175,
+            "stress_net_pnl": -790.1917343562175,
+            "trades": 128
+          },
+          "175": {
+            "expectancy_per_trade": -5.54434853236468,
+            "net_pnl": -709.676612142679,
+            "stress_net_pnl": -933.6766121426796,
+            "trades": 128
+          },
+          "20": {
+            "expectancy_per_trade": -0.5684452419903127,
+            "net_pnl": -72.76099097476002,
+            "stress_net_pnl": -98.36099097476001,
+            "trades": 128
+          },
+          "200": {
+            "expectancy_per_trade": -6.434996821983202,
+            "net_pnl": -823.6795932138499,
+            "stress_net_pnl": -1079.6795932138498,
+            "trades": 128
+          },
+          "25": {
+            "expectancy_per_trade": -0.7141519516307812,
+            "net_pnl": -91.41144980873999,
+            "stress_net_pnl": -123.41144980873997,
+            "trades": 128
+          },
+          "30": {
+            "expectancy_per_trade": -0.8609054487874805,
+            "net_pnl": -110.19589744479751,
+            "stress_net_pnl": -148.59589744479757,
+            "trades": 128
+          },
+          "40": {
+            "expectancy_per_trade": -1.1574378527783789,
+            "net_pnl": -148.1520451556325,
+            "stress_net_pnl": -199.35204515563248,
+            "trades": 128
+          },
+          "5": {
+            "expectancy_per_trade": -0.14051089431750002,
+            "net_pnl": -17.985394472640003,
+            "stress_net_pnl": -24.385394472639994,
+            "trades": 128
+          },
+          "50": {
+            "expectancy_per_trade": -1.4584568189485159,
+            "net_pnl": -186.68247282541003,
+            "stress_net_pnl": -250.68247282541006,
+            "trades": 128
+          },
+          "75": {
+            "expectancy_per_trade": -2.229422782208161,
+            "net_pnl": -285.3661161226446,
+            "stress_net_pnl": -381.3661161226446,
+            "trades": 128
+          }
+        },
+        "wins": 94
+      },
+      "stratified_payoff": {
+        "accuracy": 0.6788990825688074,
+        "average_probability_up": 0.5066185403709406,
+        "brier": 0.1775528425395519,
+        "directions": {
+          "DOWN": {
+            "losses": 18,
+            "net_pnl": 0.6523999999999974,
+            "trades": 51,
+            "wins": 33
+          },
+          "UP": {
+            "losses": 17,
+            "net_pnl": 1.492,
+            "trades": 58,
+            "wins": 41
+          }
+        },
+        "ece_10": 0.027204517095450076,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -25.20003000000001,
+            "trades": 64,
+            "wins": 37
+          },
+          "middle_150_179": {
+            "net_pnl": 17.510405,
+            "trades": 22,
+            "wins": 19
+          },
+          "middle_90_119": {
+            "net_pnl": 9.834025000000002,
+            "trades": 23,
+            "wins": 18
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 1.8533699999999997,
+            "trades": 33,
+            "wins": 19
+          },
+          "0.65-0.75": {
+            "net_pnl": 1.1701449999999962,
+            "trades": 47,
+            "wins": 32
+          },
+          "0.75-0.85": {
+            "net_pnl": -7.825760000000004,
+            "trades": 19,
+            "wins": 13
+          },
+          "0.85-1.01": {
+            "net_pnl": 6.946645000000002,
+            "trades": 10,
+            "wins": 10
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": 0.01967339449541274,
+        "log_loss": 0.5285435199148428,
+        "losses": 35,
+        "market_coverage": 0.22381930184804927,
+        "net_pnl": 2.1443999999999885,
+        "no_trade_markets": 378,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 109,
+        "stress_net_pnl": -3.305600000000007,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": 0.03698854686605481,
+            "net_pnl": 4.031751608399974,
+            "stress_net_pnl": -6.868248391600018,
+            "trades": 109
+          },
+          "100": {
+            "expectancy_per_trade": 0.08370608680977823,
+            "net_pnl": 9.123963462265827,
+            "stress_net_pnl": -99.87603653773415,
+            "trades": 109
+          },
+          "125": {
+            "expectancy_per_trade": 0.023005932904805137,
+            "net_pnl": 2.50764668662376,
+            "stress_net_pnl": -133.74235331337636,
+            "trades": 109
+          },
+          "15": {
+            "expectancy_per_trade": 0.05066891999715111,
+            "net_pnl": 5.5229122796894705,
+            "stress_net_pnl": -10.827087720310526,
+            "trades": 109
+          },
+          "150": {
+            "expectancy_per_trade": -0.06662959650204364,
+            "net_pnl": -7.262626018722757,
+            "stress_net_pnl": -170.76262601872284,
+            "trades": 109
+          },
+          "175": {
+            "expectancy_per_trade": -0.1729286613730618,
+            "net_pnl": -18.849224089663736,
+            "stress_net_pnl": -209.59922408966395,
+            "trades": 109
+          },
+          "20": {
+            "expectancy_per_trade": 0.06307192253816467,
+            "net_pnl": 6.874839556659948,
+            "stress_net_pnl": -14.925160443340031,
+            "trades": 109
+          },
+          "200": {
+            "expectancy_per_trade": -0.30861147774261116,
+            "net_pnl": -33.638651073944615,
+            "stress_net_pnl": -251.63865107394452,
+            "trades": 109
+          },
+          "25": {
+            "expectancy_per_trade": 0.07292859103779767,
+            "net_pnl": 7.949216423119945,
+            "stress_net_pnl": -19.300783576880022,
+            "trades": 109
+          },
+          "30": {
+            "expectancy_per_trade": 0.08206976560586665,
+            "net_pnl": 8.945604451039465,
+            "stress_net_pnl": -23.754395548960503,
+            "trades": 109
+          },
+          "40": {
+            "expectancy_per_trade": 0.0963702735526139,
+            "net_pnl": 10.504359817234917,
+            "stress_net_pnl": -33.09564018276509,
+            "trades": 109
+          },
+          "5": {
+            "expectancy_per_trade": 0.0196733944954127,
+            "net_pnl": 2.144399999999984,
+            "stress_net_pnl": -3.30560000000001,
+            "trades": 109
+          },
+          "50": {
+            "expectancy_per_trade": 0.10684542035660483,
+            "net_pnl": 11.646150818869927,
+            "stress_net_pnl": -42.853849181130066,
+            "trades": 109
+          },
+          "75": {
+            "expectancy_per_trade": 0.10943497439803766,
+            "net_pnl": 11.928412209386105,
+            "stress_net_pnl": -69.82158779061399,
+            "trades": 109
+          }
+        },
+        "wins": 74
+      }
+    },
+    "T": {
+      "full_combined": {
+        "accuracy": 0.6835443037974683,
+        "average_probability_up": 0.5042020139602099,
+        "brier": 0.14215443092548538,
+        "directions": {
+          "DOWN": {
+            "losses": 30,
+            "net_pnl": -3.680640000000002,
+            "trades": 103,
+            "wins": 73
+          },
+          "UP": {
+            "losses": 20,
+            "net_pnl": -12.394413516,
+            "trades": 55,
+            "wins": 35
+          }
+        },
+        "ece_10": 0.03023778712055439,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -21.007719999999996,
+            "trades": 102,
+            "wins": 68
+          },
+          "middle_150_179": {
+            "net_pnl": 9.749951484,
+            "trades": 14,
+            "wins": 12
+          },
+          "middle_90_119": {
+            "net_pnl": -4.817285000000002,
+            "trades": 42,
+            "wins": 28
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -8.449638515999997,
+            "trades": 50,
+            "wins": 25
+          },
+          "0.65-0.75": {
+            "net_pnl": -10.569625000000002,
+            "trades": 40,
+            "wins": 26
+          },
+          "0.75-0.85": {
+            "net_pnl": -1.7246350000000066,
+            "trades": 44,
+            "wins": 35
+          },
+          "0.85-1.01": {
+            "net_pnl": 4.668845000000004,
+            "trades": 24,
+            "wins": 22
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 6468,
+        "expectancy_per_trade": -0.1017408450379747,
+        "log_loss": 0.4392779865238349,
+        "losses": 50,
+        "market_coverage": 0.324435318275154,
+        "net_pnl": -16.075053516000004,
+        "no_trade_markets": 329,
+        "prediction_market_coverage": 0.839835728952772,
+        "prediction_markets": 409,
+        "settled": 158,
+        "stress_net_pnl": -23.975053516000003,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.20456142451018985,
+            "net_pnl": -32.32070507261,
+            "stress_net_pnl": -48.120705072610015,
+            "trades": 158
+          },
+          "100": {
+            "expectancy_per_trade": -2.204242624061924,
+            "net_pnl": -348.270334601784,
+            "stress_net_pnl": -506.27033460178427,
+            "trades": 158
+          },
+          "125": {
+            "expectancy_per_trade": -2.808858749310456,
+            "net_pnl": -443.79968239105204,
+            "stress_net_pnl": -641.299682391052,
+            "trades": 158
+          },
+          "15": {
+            "expectancy_per_trade": -0.3089147215175377,
+            "net_pnl": -48.80852599977095,
+            "stress_net_pnl": -72.50852599977097,
+            "trades": 158
+          },
+          "150": {
+            "expectancy_per_trade": -3.4356675349613677,
+            "net_pnl": -542.8354705238961,
+            "stress_net_pnl": -779.8354705238962,
+            "trades": 158
+          },
+          "175": {
+            "expectancy_per_trade": -4.085153613716505,
+            "net_pnl": -645.4542709672079,
+            "stress_net_pnl": -921.9542709672085,
+            "trades": 158
+          },
+          "20": {
+            "expectancy_per_trade": -0.414192969261614,
+            "net_pnl": -65.44248914333501,
+            "stress_net_pnl": -97.04248914333502,
+            "trades": 158
+          },
+          "200": {
+            "expectancy_per_trade": -4.75774850534441,
+            "net_pnl": -751.7242638444168,
+            "stress_net_pnl": -1067.7242638444166,
+            "trades": 158
+          },
+          "25": {
+            "expectancy_per_trade": -0.5204152395611902,
+            "net_pnl": -82.22560785066804,
+            "stress_net_pnl": -121.72560785066806,
+            "trades": 158
+          },
+          "30": {
+            "expectancy_per_trade": -0.6272569001698771,
+            "net_pnl": -99.10659022684057,
+            "stress_net_pnl": -146.50659022684056,
+            "trades": 158
+          },
+          "40": {
+            "expectancy_per_trade": -0.8430747103949371,
+            "net_pnl": -133.20580424240006,
+            "stress_net_pnl": -196.4058042424,
+            "trades": 158
+          },
+          "5": {
+            "expectancy_per_trade": -0.1017408450379747,
+            "net_pnl": -16.075053516000004,
+            "stress_net_pnl": -23.975053516000003,
+            "trades": 158
+          },
+          "50": {
+            "expectancy_per_trade": -1.0611156935090253,
+            "net_pnl": -167.65627957442598,
+            "stress_net_pnl": -246.65627957442612,
+            "trades": 158
+          },
+          "75": {
+            "expectancy_per_trade": -1.6222949298708447,
+            "net_pnl": -256.3225989195935,
+            "stress_net_pnl": -374.8225989195935,
+            "trades": 158
+          }
+        },
+        "wins": 108
+      },
+      "q5": {
+        "accuracy": null,
+        "average_probability_up": 0.5002810733108126,
+        "brier": 0.17679674264917075,
+        "directions": {
+          "DOWN": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "UP": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "ece_10": 0.035323601467447736,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_150_179": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_90_119": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.65-0.75": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.75-0.85": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": null,
+        "log_loss": 0.5275810726509069,
+        "losses": 0,
+        "market_coverage": 0.0,
+        "net_pnl": 0.0,
+        "no_trade_markets": 487,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 0,
+        "stress_net_pnl": 0.0,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "100": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "125": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "15": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "150": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "175": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "20": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "200": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "25": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "30": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "40": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "5": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "50": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          },
+          "75": {
+            "expectancy_per_trade": null,
+            "net_pnl": 0.0,
+            "stress_net_pnl": 0.0,
+            "trades": 0
+          }
+        },
+        "wins": 0
+      },
+      "regime_calibrated": {
+        "accuracy": 0.6206896551724138,
+        "average_probability_up": 0.5004528618245986,
+        "brier": 0.17630658575626562,
+        "directions": {
+          "DOWN": {
+            "losses": 14,
+            "net_pnl": -3.159695000000001,
+            "trades": 37,
+            "wins": 23
+          },
+          "UP": {
+            "losses": 8,
+            "net_pnl": -6.082888789920002,
+            "trades": 21,
+            "wins": 13
+          }
+        },
+        "ece_10": 0.02759175425249373,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -27.69702500000001,
+            "trades": 33,
+            "wins": 16
+          },
+          "middle_150_179": {
+            "net_pnl": 7.479836210079998,
+            "trades": 17,
+            "wins": 13
+          },
+          "middle_90_119": {
+            "net_pnl": 10.974605,
+            "trades": 8,
+            "wins": 7
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -7.005408337360002,
+            "trades": 20,
+            "wins": 10
+          },
+          "0.65-0.75": {
+            "net_pnl": 5.830869547439996,
+            "trades": 28,
+            "wins": 20
+          },
+          "0.75-0.85": {
+            "net_pnl": -8.068045000000003,
+            "trades": 10,
+            "wins": 6
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.15935489292965532,
+        "log_loss": 0.5237364462875558,
+        "losses": 22,
+        "market_coverage": 0.11909650924024641,
+        "net_pnl": -9.242583789920008,
+        "no_trade_markets": 429,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 58,
+        "stress_net_pnl": -12.142583789920005,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.31965936876413803,
+            "net_pnl": -18.540243388320008,
+            "stress_net_pnl": -24.340243388320015,
+            "trades": 58
+          },
+          "100": {
+            "expectancy_per_trade": -3.4387135795691566,
+            "net_pnl": -199.44538761501107,
+            "stress_net_pnl": -257.4453876150111,
+            "trades": 58
+          },
+          "125": {
+            "expectancy_per_trade": -4.3653181224637,
+            "net_pnl": -253.18845110289456,
+            "stress_net_pnl": -325.68845110289465,
+            "trades": 58
+          },
+          "15": {
+            "expectancy_per_trade": -0.484348402254033,
+            "net_pnl": -28.092207330733913,
+            "stress_net_pnl": -36.79220733073392,
+            "trades": 58
+          },
+          "150": {
+            "expectancy_per_trade": -5.321302088888245,
+            "net_pnl": -308.63552115551823,
+            "stress_net_pnl": -395.6355211555183,
+            "trades": 58
+          },
+          "175": {
+            "expectancy_per_trade": -6.30578825502109,
+            "net_pnl": -365.73571879122323,
+            "stress_net_pnl": -467.2357187912234,
+            "trades": 58
+          },
+          "20": {
+            "expectancy_per_trade": -0.6498972244537935,
+            "net_pnl": -37.69403901832001,
+            "stress_net_pnl": -49.29403901832002,
+            "trades": 58
+          },
+          "200": {
+            "expectancy_per_trade": -7.317541057381037,
+            "net_pnl": -424.4173813281002,
+            "stress_net_pnl": -540.4173813281003,
+            "trades": 58
+          },
+          "25": {
+            "expectancy_per_trade": -0.8162875471183452,
+            "net_pnl": -47.344677732864014,
+            "stress_net_pnl": -61.844677732864014,
+            "trades": 58
+          },
+          "30": {
+            "expectancy_per_trade": -0.9828913308865102,
+            "net_pnl": -57.00769719141759,
+            "stress_net_pnl": -74.40769719141761,
+            "trades": 58
+          },
+          "40": {
+            "expectancy_per_trade": -1.320697601315259,
+            "net_pnl": -76.60046087628501,
+            "stress_net_pnl": -99.80046087628507,
+            "trades": 58
+          },
+          "5": {
+            "expectancy_per_trade": -0.1593548929296552,
+            "net_pnl": -9.242583789920003,
+            "stress_net_pnl": -12.142583789920005,
+            "trades": 58
+          },
+          "50": {
+            "expectancy_per_trade": -1.6612702368353105,
+            "net_pnl": -96.353673736448,
+            "stress_net_pnl": -125.35367373644806,
+            "trades": 58
+          },
+          "75": {
+            "expectancy_per_trade": -2.5352254649406913,
+            "net_pnl": -147.04307696656008,
+            "stress_net_pnl": -190.5430769665601,
+            "trades": 58
+          }
+        },
+        "wins": 36
+      },
+      "specialist_distilled": {
+        "accuracy": 0.7358490566037735,
+        "average_probability_up": 0.48862710706973084,
+        "brier": 0.1883076430003641,
+        "directions": {
+          "DOWN": {
+            "losses": 15,
+            "net_pnl": 6.1027799999999965,
+            "trades": 66,
+            "wins": 51
+          },
+          "UP": {
+            "losses": 13,
+            "net_pnl": -18.768327166500004,
+            "trades": 40,
+            "wins": 27
+          }
+        },
+        "ece_10": 0.0211931461491311,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 13.670124999999999,
+            "trades": 31,
+            "wins": 27
+          },
+          "late_180_240": {
+            "net_pnl": 2.94945,
+            "trades": 19,
+            "wins": 15
+          },
+          "middle_120_149": {
+            "net_pnl": -15.84536,
+            "trades": 18,
+            "wins": 11
+          },
+          "middle_150_179": {
+            "net_pnl": -6.950388337359998,
+            "trades": 19,
+            "wins": 11
+          },
+          "middle_90_119": {
+            "net_pnl": -6.489373829140001,
+            "trades": 19,
+            "wins": 14
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -0.8006483373600004,
+            "trades": 12,
+            "wins": 6
+          },
+          "0.65-0.75": {
+            "net_pnl": -8.26719382914,
+            "trades": 25,
+            "wins": 16
+          },
+          "0.75-0.85": {
+            "net_pnl": -9.424325000000009,
+            "trades": 51,
+            "wins": 39
+          },
+          "0.85-1.01": {
+            "net_pnl": 5.826620000000002,
+            "trades": 18,
+            "wins": 17
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.11948629402358507,
+        "log_loss": 0.5568648902629153,
+        "losses": 28,
+        "market_coverage": 0.21765913757700206,
+        "net_pnl": -12.665547166500017,
+        "no_trade_markets": 381,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 106,
+        "stress_net_pnl": -17.965547166500002,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.24031194823820765,
+            "net_pnl": -25.47306651325001,
+            "stress_net_pnl": -36.07306651325002,
+            "trades": 106
+          },
+          "100": {
+            "expectancy_per_trade": -2.6154644288731905,
+            "net_pnl": -277.2392294605582,
+            "stress_net_pnl": -383.23922946055814,
+            "trades": 106
+          },
+          "125": {
+            "expectancy_per_trade": -3.3265730333558725,
+            "net_pnl": -352.6167415357225,
+            "stress_net_pnl": -485.11674153572267,
+            "trades": 106
+          },
+          "15": {
+            "expectancy_per_trade": -0.3629132902971891,
+            "net_pnl": -38.46880877150204,
+            "stress_net_pnl": -54.36880877150206,
+            "trades": 106
+          },
+          "150": {
+            "expectancy_per_trade": -4.068226186353862,
+            "net_pnl": -431.2319757535094,
+            "stress_net_pnl": -590.2319757535095,
+            "trades": 106
+          },
+          "175": {
+            "expectancy_per_trade": -4.840124553545085,
+            "net_pnl": -513.053202675779,
+            "stress_net_pnl": -698.553202675779,
+            "trades": 106
+          },
+          "20": {
+            "expectancy_per_trade": -0.48675626463608507,
+            "net_pnl": -51.59616405142501,
+            "stress_net_pnl": -72.79616405142502,
+            "trades": 106
+          },
+          "200": {
+            "expectancy_per_trade": -5.630351824403373,
+            "net_pnl": -596.8172933867576,
+            "stress_net_pnl": -808.8172933867577,
+            "trades": 106
+          },
+          "25": {
+            "expectancy_per_trade": -0.6120441140195473,
+            "net_pnl": -64.87667608607201,
+            "stress_net_pnl": -91.37667608607202,
+            "trades": 106
+          },
+          "30": {
+            "expectancy_per_trade": -0.7389166630999897,
+            "net_pnl": -78.32516628859891,
+            "stress_net_pnl": -110.12516628859893,
+            "trades": 106
+          },
+          "40": {
+            "expectancy_per_trade": -0.9960456749699294,
+            "net_pnl": -105.58084154681252,
+            "stress_net_pnl": -147.98084154681257,
+            "trades": 106
+          },
+          "5": {
+            "expectancy_per_trade": -0.11948629402358496,
+            "net_pnl": -12.665547166500007,
+            "stress_net_pnl": -17.965547166500006,
+            "trades": 106
+          },
+          "50": {
+            "expectancy_per_trade": -1.2563969558250005,
+            "net_pnl": -133.17807731745006,
+            "stress_net_pnl": -186.1780773174501,
+            "trades": 106
+          },
+          "75": {
+            "expectancy_per_trade": -1.9249132457780227,
+            "net_pnl": -204.0408040524704,
+            "stress_net_pnl": -283.54080405247043,
+            "trades": 106
+          }
+        },
+        "wins": 78
+      },
+      "stratified_payoff": {
+        "accuracy": 0.6326530612244898,
+        "average_probability_up": 0.5004528618245986,
+        "brier": 0.17630658575626562,
+        "directions": {
+          "DOWN": {
+            "losses": 21,
+            "net_pnl": -1.7443550000000019,
+            "trades": 57,
+            "wins": 36
+          },
+          "UP": {
+            "losses": 15,
+            "net_pnl": -6.784868337360004,
+            "trades": 41,
+            "wins": 26
+          }
+        },
+        "ece_10": 0.02759175425249373,
+        "entry_cells": {
+          "early_15_89": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "late_180_240": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "middle_120_149": {
+            "net_pnl": -26.522200000000005,
+            "trades": 60,
+            "wins": 34
+          },
+          "middle_150_179": {
+            "net_pnl": 5.109056662639999,
+            "trades": 20,
+            "wins": 14
+          },
+          "middle_90_119": {
+            "net_pnl": 12.883920000000002,
+            "trades": 18,
+            "wins": 14
+          }
+        },
+        "entry_price_buckets": {
+          "0.00-0.65": {
+            "net_pnl": -1.1622883373600001,
+            "trades": 36,
+            "wins": 20
+          },
+          "0.65-0.75": {
+            "net_pnl": 1.4259699999999942,
+            "trades": 44,
+            "wins": 30
+          },
+          "0.75-0.85": {
+            "net_pnl": -8.792905000000005,
+            "trades": 18,
+            "wins": 12
+          },
+          "0.85-1.01": {
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "evaluation_markets": 487,
+        "evaluation_rows": 17314,
+        "expectancy_per_trade": -0.08703289119755118,
+        "log_loss": 0.5237364462875558,
+        "losses": 36,
+        "market_coverage": 0.20123203285420946,
+        "net_pnl": -8.529223337360015,
+        "no_trade_markets": 389,
+        "prediction_market_coverage": 1.0,
+        "prediction_markets": 487,
+        "settled": 98,
+        "stress_net_pnl": -13.429223337360007,
+        "vwap_capacity": {
+          "10": {
+            "expectancy_per_trade": -0.17590986349020427,
+            "net_pnl": -17.239166622040017,
+            "stress_net_pnl": -27.03916662204003,
+            "trades": 98
+          },
+          "100": {
+            "expectancy_per_trade": -2.0421614609883174,
+            "net_pnl": -200.1318231768551,
+            "stress_net_pnl": -298.1318231768552,
+            "trades": 98
+          },
+          "125": {
+            "expectancy_per_trade": -2.630064786942108,
+            "net_pnl": -257.74634912032656,
+            "stress_net_pnl": -380.2463491203267,
+            "trades": 98
+          },
+          "15": {
+            "expectancy_per_trade": -0.2694184985792944,
+            "net_pnl": -26.40301286077085,
+            "stress_net_pnl": -41.103012860770875,
+            "trades": 98
+          },
+          "150": {
+            "expectancy_per_trade": -3.2459300355716896,
+            "net_pnl": -318.1011434860256,
+            "stress_net_pnl": -465.1011434860256,
+            "trades": 98
+          },
+          "175": {
+            "expectancy_per_trade": -3.880012731239331,
+            "net_pnl": -380.24124766145445,
+            "stress_net_pnl": -551.7412476614546,
+            "trades": 98
+          },
+          "20": {
+            "expectancy_per_trade": -0.3641791728000004,
+            "net_pnl": -35.68955893440004,
+            "stress_net_pnl": -55.28955893440005,
+            "trades": 98
+          },
+          "200": {
+            "expectancy_per_trade": -4.536367023095708,
+            "net_pnl": -444.56396826337937,
+            "stress_net_pnl": -640.5639682633796,
+            "trades": 98
+          },
+          "25": {
+            "expectancy_per_trade": -0.4601834926077148,
+            "net_pnl": -45.09798227555605,
+            "stress_net_pnl": -69.59798227555606,
+            "trades": 98
+          },
+          "30": {
+            "expectancy_per_trade": -0.5568421428375387,
+            "net_pnl": -54.5705299980788,
+            "stress_net_pnl": -83.97052999807883,
+            "trades": 98
+          },
+          "40": {
+            "expectancy_per_trade": -0.7526872054744651,
+            "net_pnl": -73.76334613649759,
+            "stress_net_pnl": -112.96334613649756,
+            "trades": 98
+          },
+          "5": {
+            "expectancy_per_trade": -0.0870328911975511,
+            "net_pnl": -8.529223337360008,
+            "stress_net_pnl": -13.429223337360018,
+            "trades": 98
+          },
+          "50": {
+            "expectancy_per_trade": -0.952138841358817,
+            "net_pnl": -93.30960645316406,
+            "stress_net_pnl": -142.30960645316406,
+            "trades": 98
+          },
+          "75": {
+            "expectancy_per_trade": -1.4792150909845747,
+            "net_pnl": -144.9630789164883,
+            "stress_net_pnl": -218.46307891648846,
+            "trades": 98
+          }
+        },
+        "wins": 62
+      }
+    }
+  },
+  "run_id": "20260825T205302Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "scikit_learn": "1.9.0"
+  },
+  "runtime_exported": false,
+  "schema_version": "btc-refprice-twap-lineage-training-v2",
+  "source_commit": "56593605c1d29a4527ef814ee05d7447c6babb29",
+  "trading_processes_changed": false
+}

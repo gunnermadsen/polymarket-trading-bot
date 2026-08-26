@@ -532,26 +532,42 @@ def _fit_fair_models(
     config: TournamentConfig,
     *,
     seed: int,
+    feature_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    base = _fit_probability_model(fit, calibration, EXOGENOUS_FEATURES, config, seed=seed)
+    exogenous_features = feature_names or EXOGENOUS_FEATURES
+    ranking_features = (
+        *exogenous_features,
+        "probability_selected",
+        "selected_cost_5",
+        "pm_vwap5_overround",
+        "pm_vwap200_overround",
+        "pm_depth_imbalance",
+        "pm_up_book_age_seconds",
+        "pm_down_book_age_seconds",
+    )
+    base = _fit_probability_model(fit, calibration, exogenous_features, config, seed=seed)
     stratified = _fit_probability_model(
         fit,
         calibration,
-        EXOGENOUS_FEATURES,
+        exogenous_features,
         config,
         seed=seed,
         stratified=True,
     )
-    hard_weights = _hard_negative_weights(fit, config, seed=seed + 10)
+    hard_weights = _hard_negative_weights(
+        fit, config, seed=seed + 10, feature_names=exogenous_features
+    )
     tail = _fit_probability_model(
         fit,
         calibration,
-        EXOGENOUS_FEATURES,
+        exogenous_features,
         config,
         seed=seed + 20,
         fit_weights=hard_weights,
     )
-    margin = _fit_margin_model(fit, calibration, config, seed=seed + 30)
+    margin = _fit_margin_model(
+        fit, calibration, config, seed=seed + 30, feature_names=exogenous_features
+    )
 
     specialist_probabilities = np.column_stack(
         (
@@ -571,7 +587,7 @@ def _fit_fair_models(
     teacher = selector.predict_proba(selector_matrix)[:, 1]
     distilled = _new_regressor(config, seed + 41)
     distilled.fit(
-        _matrix(calibration, EXOGENOUS_FEATURES),
+        _matrix(calibration, exogenous_features),
         teacher,
         sample_weight=market_equal_weights(calibration),
     )
@@ -592,7 +608,7 @@ def _fit_fair_models(
     )
     ranker = _new_regressor(config, seed + 50)
     ranker.fit(
-        _matrix(ranked_fit, RANKING_FEATURES),
+        _matrix(ranked_fit, ranking_features),
         ranked_fit["_rank_target"].to_numpy(),
         sample_weight=market_equal_weights(ranked_fit),
     )
@@ -604,7 +620,8 @@ def _fit_fair_models(
         "selector": selector,
         "distilled": distilled,
         "ranker": ranker,
-        "feature_names": EXOGENOUS_FEATURES,
+        "feature_names": exogenous_features,
+        "ranking_feature_names": ranking_features,
     }
 
 
@@ -681,8 +698,13 @@ def _score_probability(model: dict[str, Any], frame: pl.DataFrame) -> np.ndarray
 
 
 def _hard_negative_weights(
-    frame: pl.DataFrame, config: TournamentConfig, *, seed: int
+    frame: pl.DataFrame,
+    config: TournamentConfig,
+    *,
+    seed: int,
+    feature_names: tuple[str, ...] | None = None,
 ) -> np.ndarray:
+    features = feature_names or EXOGENOUS_FEATURES
     starts = np.sort(frame["window_start"].unique().to_numpy())
     boundaries = [starts[int(len(starts) * ratio)] for ratio in (0.50, 0.75)]
     probability = np.full(frame.height, np.nan)
@@ -697,15 +719,23 @@ def _hard_negative_weights(
         )
         if not score_mask.any():
             continue
+        train = frame.filter(pl.Series(train_mask))
+        score = frame.filter(pl.Series(score_mask))
+        fold_features_list: list[str] = []
+        for name in features:
+            values = train[name].cast(pl.Float64).drop_nulls()
+            if values.filter(values.is_finite()).n_unique() >= 2:
+                fold_features_list.append(name)
+        fold_features = tuple(fold_features_list)
+        if not fold_features:
+            raise RuntimeError("hard-negative fold has no variable finite features")
         model = _new_classifier(config, seed + index)
         model.fit(
-            _matrix(frame.filter(pl.Series(train_mask)), EXOGENOUS_FEATURES),
-            frame.filter(pl.Series(train_mask))["label_up"].to_numpy(),
-            sample_weight=market_equal_weights(frame.filter(pl.Series(train_mask))),
+            _matrix(train, fold_features),
+            train["label_up"].to_numpy(),
+            sample_weight=market_equal_weights(train),
         )
-        probability[score_mask] = model.predict_proba(
-            _matrix(frame.filter(pl.Series(score_mask)), EXOGENOUS_FEATURES)
-        )[:, 1]
+        probability[score_mask] = model.predict_proba(_matrix(score, fold_features))[:, 1]
     weights = market_equal_weights(frame)
     available = np.isfinite(probability)
     predicted = probability >= 0.5
@@ -727,7 +757,9 @@ def _fit_margin_model(
     config: TournamentConfig,
     *,
     seed: int,
+    feature_names: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    features = feature_names or EXOGENOUS_FEATURES
     target = _terminal_margin_targets(fit)
     models = {
         "lower": _new_regressor(
@@ -738,14 +770,14 @@ def _fit_margin_model(
             config, seed + 2, loss="quantile", quantile=config.model.terminal_upper_quantile
         ),
     }
-    matrix = _matrix(fit, EXOGENOUS_FEATURES)
+    matrix = _matrix(fit, features)
     weights = market_equal_weights(fit)
     for model in models.values():
         model.fit(matrix, target, sample_weight=weights)
-    raw = _raw_margin_probability(models, calibration)
+    raw = _raw_margin_probability(models, calibration, features)
     return {
         "models": models,
-        "features": EXOGENOUS_FEATURES,
+        "features": features,
         "calibrator": _fit_calibrator(raw, calibration, seed=seed + 3),
     }
 
@@ -763,8 +795,12 @@ def _terminal_margin_targets(frame: pl.DataFrame) -> np.ndarray:
     )
 
 
-def _raw_margin_probability(models: dict[str, Any], frame: pl.DataFrame) -> np.ndarray:
-    matrix = _matrix(frame, EXOGENOUS_FEATURES)
+def _raw_margin_probability(
+    models: dict[str, Any],
+    frame: pl.DataFrame,
+    feature_names: tuple[str, ...] = EXOGENOUS_FEATURES,
+) -> np.ndarray:
+    matrix = _matrix(frame, feature_names)
     lower = models["lower"].predict(matrix)
     median = models["median"].predict(matrix)
     upper = models["upper"].predict(matrix)
@@ -773,7 +809,7 @@ def _raw_margin_probability(models: dict[str, Any], frame: pl.DataFrame) -> np.n
 
 
 def _score_margin_probability(model: dict[str, Any], frame: pl.DataFrame) -> np.ndarray:
-    raw = _raw_margin_probability(model["models"], frame)
+    raw = _raw_margin_probability(model["models"], frame, model.get("features", EXOGENOUS_FEATURES))
     return model["calibrator"].predict_proba(_logit(raw).reshape(-1, 1))[:, 1]
 
 

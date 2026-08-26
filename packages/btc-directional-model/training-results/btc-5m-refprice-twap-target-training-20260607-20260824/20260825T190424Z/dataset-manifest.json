@@ -1,0 +1,1588 @@
+{
+  "capacity_source": "polymarket.btc_market_capacity_execution_snapshots",
+  "created_at": "2026-08-25T18:56:36.319251+00:00",
+  "historical_refprice_source": "market_data.chainlink_btcusd_reference_prices:pmdata_chainlink_streams",
+  "interpolation_used": false,
+  "markets_by_partition": 13853,
+  "partitions": [
+    {
+      "audit": {
+        "candle_eligible_rows": 11645,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 20483,
+        "joined_markets": 288,
+        "joined_rows": 11645,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 8717,
+        "refprice_source_rows": 85262,
+        "strict_capacity_rows": 12134,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-07",
+      "markets": 288,
+      "path": "2026-06-07.parquet",
+      "rows": 11645,
+      "sha256": "122031cdcf4264b00bd5cc7d8a5384c97fae286d530837a3232da46454e6fced"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11778,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 6,
+        "joined_markets": 288,
+        "joined_rows": 11778,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11778,
+        "refprice_source_rows": 85438,
+        "strict_capacity_rows": 12280,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-08",
+      "markets": 288,
+      "path": "2026-06-08.parquet",
+      "rows": 11778,
+      "sha256": "bc54ba033dd5fc0a6377ebc6e016167c12e3caaa47c7ecc7f5b3b0714d7b5cf5"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11886,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 28,
+        "joined_markets": 288,
+        "joined_rows": 11886,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11876,
+        "refprice_source_rows": 85590,
+        "strict_capacity_rows": 12421,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-09",
+      "markets": 288,
+      "path": "2026-06-09.parquet",
+      "rows": 11886,
+      "sha256": "78ae3128fbaa73bfaacb96ca98b8871e50b9c618f154c6f77b82573ca2270bcb"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10768,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2,
+        "joined_markets": 284,
+        "joined_rows": 10768,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 10768,
+        "refprice_source_rows": 85552,
+        "strict_capacity_rows": 11223,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-10",
+      "markets": 284,
+      "path": "2026-06-10.parquet",
+      "rows": 10768,
+      "sha256": "72c9fd290dfe91e9aaf324ee7a3d2dffe40759387e8db4a3270e4e3e6f071dad"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 8866,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 3,
+        "joined_markets": 235,
+        "joined_rows": 8866,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 8866,
+        "refprice_source_rows": 85724,
+        "strict_capacity_rows": 9292,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-11",
+      "markets": 235,
+      "path": "2026-06-11.parquet",
+      "rows": 8866,
+      "sha256": "71d8113d05f088efc43b5538fb48f8c8c1dea3a09b86a298cda025d551f05c1d"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 1734,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 12,
+        "joined_markets": 41,
+        "joined_rows": 1734,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 1729,
+        "refprice_source_rows": 85735,
+        "strict_capacity_rows": 1814,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-12",
+      "markets": 41,
+      "path": "2026-06-12.parquet",
+      "rows": 1734,
+      "sha256": "062f5130ae2a28e9c04162da1efc7c1312e79823bb6ca07c2f7e299282cdedd0"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-13",
+      "markets": 0,
+      "path": "2026-06-13.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-14",
+      "markets": 0,
+      "path": "2026-06-14.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-15",
+      "markets": 0,
+      "path": "2026-06-15.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 276,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 82800,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-16",
+      "markets": 0,
+      "path": "2026-06-16.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-17",
+      "markets": 0,
+      "path": "2026-06-17.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-18",
+      "markets": 0,
+      "path": "2026-06-18.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-19",
+      "markets": 0,
+      "path": "2026-06-19.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-20",
+      "markets": 0,
+      "path": "2026-06-20.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 287,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86100,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-21",
+      "markets": 0,
+      "path": "2026-06-21.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 283,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 84900,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-22",
+      "markets": 0,
+      "path": "2026-06-22.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-23",
+      "markets": 0,
+      "path": "2026-06-23.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-24",
+      "markets": 0,
+      "path": "2026-06-24.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-25",
+      "markets": 0,
+      "path": "2026-06-25.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-26",
+      "markets": 0,
+      "path": "2026-06-26.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-27",
+      "markets": 0,
+      "path": "2026-06-27.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-06-28",
+      "markets": 0,
+      "path": "2026-06-28.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 354,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2508,
+        "joined_markets": 89,
+        "joined_rows": 354,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 320,
+        "refprice_source_rows": 85302,
+        "strict_capacity_rows": 369,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-29",
+      "markets": 89,
+      "path": "2026-06-29.parquet",
+      "rows": 354,
+      "sha256": "d8507ade7d877b88bbd9611985b5835c97eeea9e57b07e9d4ab6dbfa20390d4a"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 932,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2604,
+        "joined_markets": 254,
+        "joined_rows": 932,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 890,
+        "refprice_source_rows": 85267,
+        "strict_capacity_rows": 992,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-06-30",
+      "markets": 254,
+      "path": "2026-06-30.parquet",
+      "rows": 932,
+      "sha256": "939b29bfc63971855e2e3ae1b6420b8da35f511e8cc7151fd8e12e64a7324162"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 4619,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2395,
+        "joined_markets": 160,
+        "joined_rows": 4619,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 4522,
+        "refprice_source_rows": 84936,
+        "strict_capacity_rows": 4825,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-01",
+      "markets": 160,
+      "path": "2026-07-01.parquet",
+      "rows": 4619,
+      "sha256": "7e73a0ed517ab64209a8409547c536d6e086a697ac3498b567041850c6f0da47"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12121,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2768,
+        "joined_markets": 288,
+        "joined_rows": 12121,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11572,
+        "refprice_source_rows": 85044,
+        "strict_capacity_rows": 12673,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-02",
+      "markets": 288,
+      "path": "2026-07-02.parquet",
+      "rows": 12121,
+      "sha256": "bd2c35261baa01eb29f8736e06d7f853dc8a5ca9c3023fa98034231fcb38b83d"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12132,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 7144,
+        "joined_markets": 288,
+        "joined_rows": 12132,
+        "oi_eligible_rows": 11624,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 10998,
+        "refprice_source_rows": 85760,
+        "strict_capacity_rows": 12692,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-03",
+      "markets": 288,
+      "path": "2026-07-03.parquet",
+      "rows": 12132,
+      "sha256": "1a8c9424a3baa8aa008df97201aa612c6a270626f0cd2958940588be06449d2b"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12162,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 4818,
+        "joined_markets": 288,
+        "joined_rows": 12162,
+        "oi_eligible_rows": 12162,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11370,
+        "refprice_source_rows": 85849,
+        "strict_capacity_rows": 12707,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-04",
+      "markets": 288,
+      "path": "2026-07-04.parquet",
+      "rows": 12162,
+      "sha256": "b3dbb87104c476fe037fe1b23dfa6ea85a340001c5d240970536874742ad1a94"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10796,
+        "complete_core_markets": 257,
+        "incomplete_refprice_source_rows": 1684,
+        "joined_markets": 257,
+        "joined_rows": 10796,
+        "oi_eligible_rows": 10796,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 77100,
+        "refprice_eligible_rows": 10525,
+        "refprice_source_rows": 85629,
+        "strict_capacity_rows": 12651,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-05",
+      "markets": 257,
+      "path": "2026-07-05.parquet",
+      "rows": 10796,
+      "sha256": "a3fb0a04987683ff35269d5b8c13192816036e2276405a2fc8e5c7f5b07707af"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10874,
+        "complete_core_markets": 256,
+        "incomplete_refprice_source_rows": 4906,
+        "joined_markets": 256,
+        "joined_rows": 10874,
+        "oi_eligible_rows": 10874,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 76800,
+        "refprice_eligible_rows": 10056,
+        "refprice_source_rows": 85549,
+        "strict_capacity_rows": 12714,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-06",
+      "markets": 256,
+      "path": "2026-07-06.parquet",
+      "rows": 10874,
+      "sha256": "3d6bd68a7fae701f7f64fb56343819a2257dd5fecca503f42f84618944a57b3b"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10376,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2127,
+        "joined_markets": 246,
+        "joined_rows": 10376,
+        "oi_eligible_rows": 10376,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 10212,
+        "refprice_source_rows": 85444,
+        "strict_capacity_rows": 10849,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-07",
+      "markets": 246,
+      "path": "2026-07-07.parquet",
+      "rows": 10376,
+      "sha256": "0ce59ca82e974bf42d1c1e53f5068ab0160d5a8c4215f6d3426f8e2bdb6aee24"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11553,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 1401,
+        "joined_markets": 275,
+        "joined_rows": 11553,
+        "oi_eligible_rows": 11553,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11257,
+        "refprice_source_rows": 85275,
+        "strict_capacity_rows": 12090,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-08",
+      "markets": 275,
+      "path": "2026-07-08.parquet",
+      "rows": 11553,
+      "sha256": "99f7df4f9f18b4aed898fe2d4eb731bf530102a498055a18123eb12007b92e61"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-07-09",
+      "markets": 0,
+      "path": "2026-07-09.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-07-10",
+      "markets": 0,
+      "path": "2026-07-10.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 244,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 73200,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-07-11",
+      "markets": 0,
+      "path": "2026-07-11.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 256,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 76800,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-07-12",
+      "markets": 0,
+      "path": "2026-07-12.parquet",
+      "rows": 0,
+      "sha256": "00106850c8df31db2b9e9bf30dd01e79546a65f67332c76e7d229a9e28ff2140"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 288,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-07-13",
+      "markets": 0,
+      "path": "2026-07-13.parquet",
+      "rows": 0,
+      "sha256": "fca60731efea13055c512fb7562026d631eb401b5e3f050fec20b65edd28528a"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 44,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 2,
+        "joined_markets": 1,
+        "joined_rows": 44,
+        "oi_eligible_rows": 44,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 44,
+        "refprice_source_rows": 85669,
+        "strict_capacity_rows": 46,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-14",
+      "markets": 1,
+      "path": "2026-07-14.parquet",
+      "rows": 44,
+      "sha256": "e3642d5cf228b817f5d2233a34f529476c48e84a6b1756336900e6341eddd985"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 3427,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 79,
+        "joined_rows": 3427,
+        "oi_eligible_rows": 3427,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 3427,
+        "refprice_source_rows": 85775,
+        "strict_capacity_rows": 3581,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-15",
+      "markets": 79,
+      "path": "2026-07-15.parquet",
+      "rows": 3427,
+      "sha256": "39fc243b82d723fa196f09c1c7f04ed7145b0b4eaf98d0a565262d895c7faf19"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11898,
+        "complete_core_markets": 283,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 283,
+        "joined_rows": 11898,
+        "oi_eligible_rows": 11898,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 84900,
+        "refprice_eligible_rows": 11895,
+        "refprice_source_rows": 85876,
+        "strict_capacity_rows": 12668,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-16",
+      "markets": 283,
+      "path": "2026-07-16.parquet",
+      "rows": 11898,
+      "sha256": "b440b46539463e395a999352d2a384ec485449ed53b381d4dd8d23ed6c700167"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12002,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12002,
+        "oi_eligible_rows": 12002,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12002,
+        "refprice_source_rows": 86059,
+        "strict_capacity_rows": 12558,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-17",
+      "markets": 288,
+      "path": "2026-07-17.parquet",
+      "rows": 12002,
+      "sha256": "0812c5aa7e60f0de3ccd73e8edc60ce9cbe12b46946c6a48ec476cffc4da40a1"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12336,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12336,
+        "oi_eligible_rows": 12336,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12336,
+        "refprice_source_rows": 86066,
+        "strict_capacity_rows": 12900,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-18",
+      "markets": 288,
+      "path": "2026-07-18.parquet",
+      "rows": 12336,
+      "sha256": "315f089f049e8dffbad7d30e70663cb369ce90fb9e746a780b415c45e5134e46"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12179,
+        "complete_core_markets": 284,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 284,
+        "joined_rows": 12179,
+        "oi_eligible_rows": 12179,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85200,
+        "refprice_eligible_rows": 12179,
+        "refprice_source_rows": 86031,
+        "strict_capacity_rows": 12916,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-19",
+      "markets": 284,
+      "path": "2026-07-19.parquet",
+      "rows": 12179,
+      "sha256": "d1df72e6043e3bbfa904a01cd1d4b94977d34f8e998ab15e9c4bd25715d55cd1"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11864,
+        "complete_core_markets": 287,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 287,
+        "joined_rows": 11864,
+        "oi_eligible_rows": 11864,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86100,
+        "refprice_eligible_rows": 11864,
+        "refprice_source_rows": 85870,
+        "strict_capacity_rows": 12465,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-20",
+      "markets": 287,
+      "path": "2026-07-20.parquet",
+      "rows": 11864,
+      "sha256": "12597f255263b040ea46100c1c6ed3c00adcde971ea642ba2218cec7e1a50286"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11911,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 283,
+        "joined_rows": 11911,
+        "oi_eligible_rows": 11911,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11911,
+        "refprice_source_rows": 85752,
+        "strict_capacity_rows": 12454,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-21",
+      "markets": 283,
+      "path": "2026-07-21.parquet",
+      "rows": 11911,
+      "sha256": "6a24eba9b26a540e47ed82ab0fabb0651f9b38e33fbe5e45323bdba27b367f2c"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12076,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12076,
+        "oi_eligible_rows": 12076,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12076,
+        "refprice_source_rows": 84902,
+        "strict_capacity_rows": 12621,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-22",
+      "markets": 288,
+      "path": "2026-07-22.parquet",
+      "rows": 12076,
+      "sha256": "e05a0f316f7642b7a317ed86c8593e4431bed75cd3b5e1f78a97583d0200f0a5"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12020,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12020,
+        "oi_eligible_rows": 12020,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11688,
+        "refprice_source_rows": 81308,
+        "strict_capacity_rows": 12564,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-23",
+      "markets": 288,
+      "path": "2026-07-23.parquet",
+      "rows": 12020,
+      "sha256": "2ce607648408ee7aa8da5ef57818da25009337c91781d1a6ebb32a54e06b12a0"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11980,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 11980,
+        "oi_eligible_rows": 11980,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11976,
+        "refprice_source_rows": 82585,
+        "strict_capacity_rows": 12523,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-24",
+      "markets": 288,
+      "path": "2026-07-24.parquet",
+      "rows": 11980,
+      "sha256": "0746d0c8e4dfb97f27ef3fafd82a84837a26d63bd9290ded3c2333c83bffc6cc"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11960,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 286,
+        "joined_rows": 11960,
+        "oi_eligible_rows": 11960,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 11959,
+        "refprice_source_rows": 82598,
+        "strict_capacity_rows": 12599,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-25",
+      "markets": 286,
+      "path": "2026-07-25.parquet",
+      "rows": 11960,
+      "sha256": "d7c25c14f6981db87cb2b65ce90c355cb3cf4b90be259ed6ea84633736dd41f5"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12126,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12126,
+        "oi_eligible_rows": 12126,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12125,
+        "refprice_source_rows": 83137,
+        "strict_capacity_rows": 12675,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-26",
+      "markets": 288,
+      "path": "2026-07-26.parquet",
+      "rows": 12126,
+      "sha256": "945951ab6aa19fd21e35d135f5d33f66a092f2ad3b5b8052348aff1617134fc8"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11932,
+        "complete_core_markets": 287,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 287,
+        "joined_rows": 11932,
+        "oi_eligible_rows": 11932,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86100,
+        "refprice_eligible_rows": 11931,
+        "refprice_source_rows": 82974,
+        "strict_capacity_rows": 12519,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-27",
+      "markets": 287,
+      "path": "2026-07-27.parquet",
+      "rows": 11932,
+      "sha256": "4f57e39028a9169a6d66d4155d0923a19b516eca242446c499053a8974b67112"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11204,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 280,
+        "joined_rows": 11204,
+        "oi_eligible_rows": 11204,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11204,
+        "refprice_source_rows": 83463,
+        "strict_capacity_rows": 11721,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-28",
+      "markets": 280,
+      "path": "2026-07-28.parquet",
+      "rows": 11204,
+      "sha256": "096f14d8c7c9920e9853bdf5a41616a132ee3fdd314d57f23846a79178f27405"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11860,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 11860,
+        "oi_eligible_rows": 11860,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11860,
+        "refprice_source_rows": 84011,
+        "strict_capacity_rows": 12411,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-29",
+      "markets": 288,
+      "path": "2026-07-29.parquet",
+      "rows": 11860,
+      "sha256": "505f9cf88e404f8cfac363a5178e3c465a8ea2e4429138673f0eea465e45b982"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11929,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 11929,
+        "oi_eligible_rows": 11929,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11929,
+        "refprice_source_rows": 84366,
+        "strict_capacity_rows": 12476,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-30",
+      "markets": 288,
+      "path": "2026-07-30.parquet",
+      "rows": 11929,
+      "sha256": "6e92c86090db3f65ca0d3d90dadfd6ac8e8a97c205cfe67dfb1d3452aa5d71db"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12065,
+        "complete_core_markets": 287,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 287,
+        "joined_rows": 12065,
+        "oi_eligible_rows": 12065,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86100,
+        "refprice_eligible_rows": 12065,
+        "refprice_source_rows": 84480,
+        "strict_capacity_rows": 12648,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-07-31",
+      "markets": 287,
+      "path": "2026-07-31.parquet",
+      "rows": 12065,
+      "sha256": "88381f0a541f8593639253a737aff99d6c246708eaedb31cb7ae1580ac95e873"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11774,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 11774,
+        "oi_eligible_rows": 11774,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 11774,
+        "refprice_source_rows": 84527,
+        "strict_capacity_rows": 12316,
+        "twap_labeled_markets": 240,
+        "twap_labeled_rows": 9782
+      },
+      "date": "2026-08-01",
+      "markets": 288,
+      "path": "2026-08-01.parquet",
+      "rows": 11774,
+      "sha256": "29cdfca7525b7e4ba7d3f17511b59b85e74ba8e4ec66bb55ccb0f77f9020373c"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11627,
+        "complete_core_markets": 281,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 281,
+        "joined_rows": 11627,
+        "oi_eligible_rows": 11627,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 84300,
+        "refprice_eligible_rows": 11627,
+        "refprice_source_rows": 84591,
+        "strict_capacity_rows": 12473,
+        "twap_labeled_markets": 266,
+        "twap_labeled_rows": 11031
+      },
+      "date": "2026-08-02",
+      "markets": 281,
+      "path": "2026-08-02.parquet",
+      "rows": 11627,
+      "sha256": "878abf1b15ed39408ac91d3c019524e5a9395e4fec862ac750de01447f2a77fc"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11878,
+        "complete_core_markets": 285,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 285,
+        "joined_rows": 11878,
+        "oi_eligible_rows": 11878,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85500,
+        "refprice_eligible_rows": 11878,
+        "refprice_source_rows": 84391,
+        "strict_capacity_rows": 12536,
+        "twap_labeled_markets": 265,
+        "twap_labeled_rows": 11040
+      },
+      "date": "2026-08-03",
+      "markets": 285,
+      "path": "2026-08-03.parquet",
+      "rows": 11878,
+      "sha256": "422f2fdef7d65cf437ad29bfb82a2cd44b12f7245d373292ce0ca298d2fc8e1b"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11285,
+        "complete_core_markets": 269,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 269,
+        "joined_rows": 11285,
+        "oi_eligible_rows": 11285,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 80700,
+        "refprice_eligible_rows": 11285,
+        "refprice_source_rows": 84176,
+        "strict_capacity_rows": 12653,
+        "twap_labeled_markets": 259,
+        "twap_labeled_rows": 10860
+      },
+      "date": "2026-08-04",
+      "markets": 269,
+      "path": "2026-08-04.parquet",
+      "rows": 11285,
+      "sha256": "90514a71178335083969ae44723aa526de32476430136ca415243f83be036c41"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11858,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 285,
+        "joined_rows": 11858,
+        "oi_eligible_rows": 11858,
+        "raw_capacity_rows": 27552,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 11856,
+        "refprice_source_rows": 83146,
+        "strict_capacity_rows": 12442,
+        "twap_labeled_markets": 267,
+        "twap_labeled_rows": 11104
+      },
+      "date": "2026-08-05",
+      "markets": 285,
+      "path": "2026-08-05.parquet",
+      "rows": 11858,
+      "sha256": "db481d5042c5518ee83c4f6f83aa2c9a737d2ac45ccba4656b5fc5b7ac9ac16d"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12050,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12050,
+        "oi_eligible_rows": 12050,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12046,
+        "refprice_source_rows": 82545,
+        "strict_capacity_rows": 12600,
+        "twap_labeled_markets": 261,
+        "twap_labeled_rows": 10908
+      },
+      "date": "2026-08-06",
+      "markets": 288,
+      "path": "2026-08-06.parquet",
+      "rows": 12050,
+      "sha256": "e36de66cac2c1c61c289d643cedbe5f4682916977e4289e3859229aa703c4eb5"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12006,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 286,
+        "joined_rows": 12006,
+        "oi_eligible_rows": 12006,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 12006,
+        "refprice_source_rows": 82362,
+        "strict_capacity_rows": 12637,
+        "twap_labeled_markets": 261,
+        "twap_labeled_rows": 10983
+      },
+      "date": "2026-08-07",
+      "markets": 286,
+      "path": "2026-08-07.parquet",
+      "rows": 12006,
+      "sha256": "a4c876faccd064af787e986350993fa8d005aab2f4efd64a56ed66e39a8f63e7"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 12438,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 288,
+        "joined_rows": 12438,
+        "oi_eligible_rows": 12438,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 12438,
+        "refprice_source_rows": 82736,
+        "strict_capacity_rows": 12994,
+        "twap_labeled_markets": 0,
+        "twap_labeled_rows": 0
+      },
+      "date": "2026-08-08",
+      "markets": 288,
+      "path": "2026-08-08.parquet",
+      "rows": 12438,
+      "sha256": "64fb36b3967edbec7cabac580ac817468c081e240d7ec317b468f5a4589b98eb"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10810,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 286,
+        "joined_rows": 11967,
+        "oi_eligible_rows": 9273,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 11967,
+        "refprice_source_rows": 82725,
+        "strict_capacity_rows": 12588,
+        "twap_labeled_markets": 266,
+        "twap_labeled_rows": 11137
+      },
+      "date": "2026-08-09",
+      "markets": 286,
+      "path": "2026-08-09.parquet",
+      "rows": 11967,
+      "sha256": "207cb425322a0b5d0f8bad47e45ebd01d962e5e4ecedb399f3745e89b1658cc7"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 328,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 9,
+        "joined_rows": 328,
+        "oi_eligible_rows": 0,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 327,
+        "refprice_source_rows": 82612,
+        "strict_capacity_rows": 344,
+        "twap_labeled_markets": 9,
+        "twap_labeled_rows": 328
+      },
+      "date": "2026-08-10",
+      "markets": 9,
+      "path": "2026-08-10.parquet",
+      "rows": 328,
+      "sha256": "4788e7ece4eb2b154b88e4d1cb51726b5615eae47284c11be84fba85387db4f0"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 282,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 84600,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-08-11",
+      "markets": 0,
+      "path": "2026-08-11.parquet",
+      "rows": 0,
+      "sha256": "fca60731efea13055c512fb7562026d631eb401b5e3f050fec20b65edd28528a"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 282,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 84600,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-08-12",
+      "markets": 0,
+      "path": "2026-08-12.parquet",
+      "rows": 0,
+      "sha256": "fca60731efea13055c512fb7562026d631eb401b5e3f050fec20b65edd28528a"
+    },
+    {
+      "audit": {
+        "complete_core_markets": 285,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85500,
+        "reason": "no_joined_rows",
+        "strict_capacity_rows": 0
+      },
+      "date": "2026-08-13",
+      "markets": 0,
+      "path": "2026-08-13.parquet",
+      "rows": 0,
+      "sha256": "fca60731efea13055c512fb7562026d631eb401b5e3f050fec20b65edd28528a"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 2544,
+        "complete_core_markets": 288,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 62,
+        "joined_rows": 2544,
+        "oi_eligible_rows": 1044,
+        "raw_capacity_rows": 26633,
+        "raw_core_rows": 86400,
+        "refprice_eligible_rows": 2544,
+        "refprice_source_rows": 82553,
+        "strict_capacity_rows": 2660,
+        "twap_labeled_markets": 62,
+        "twap_labeled_rows": 2544
+      },
+      "date": "2026-08-14",
+      "markets": 62,
+      "path": "2026-08-14.parquet",
+      "rows": 2544,
+      "sha256": "b35641eada6c5d3fc9d34096e16ed4c43ae19ab15751cb716276cb84a4913f5e"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11625,
+        "complete_core_markets": 283,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 280,
+        "joined_rows": 11625,
+        "oi_eligible_rows": 2666,
+        "raw_capacity_rows": 27404,
+        "raw_core_rows": 84900,
+        "refprice_eligible_rows": 11624,
+        "refprice_source_rows": 82371,
+        "strict_capacity_rows": 12313,
+        "twap_labeled_markets": 268,
+        "twap_labeled_rows": 11135
+      },
+      "date": "2026-08-15",
+      "markets": 280,
+      "path": "2026-08-15.parquet",
+      "rows": 11625,
+      "sha256": "e13b5f58b7b66411e8d92759fd86eb73086d28e743e4595989ca0d916549f602"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 10893,
+        "complete_core_markets": 283,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 273,
+        "joined_rows": 10893,
+        "oi_eligible_rows": 1816,
+        "raw_capacity_rows": 27142,
+        "raw_core_rows": 84900,
+        "refprice_eligible_rows": 10893,
+        "refprice_source_rows": 82597,
+        "strict_capacity_rows": 11539,
+        "twap_labeled_markets": 249,
+        "twap_labeled_rows": 10023
+      },
+      "date": "2026-08-16",
+      "markets": 273,
+      "path": "2026-08-16.parquet",
+      "rows": 10893,
+      "sha256": "158d1e691a64556478cb0e412db473d7fdadf8ff2e0ad1f0c2f5f348fc8d63f5"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 9959,
+        "complete_core_markets": 281,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 277,
+        "joined_rows": 9959,
+        "oi_eligible_rows": 2981,
+        "raw_capacity_rows": 27035,
+        "raw_core_rows": 84300,
+        "refprice_eligible_rows": 9957,
+        "refprice_source_rows": 82137,
+        "strict_capacity_rows": 10534,
+        "twap_labeled_markets": 249,
+        "twap_labeled_rows": 8981
+      },
+      "date": "2026-08-17",
+      "markets": 277,
+      "path": "2026-08-17.parquet",
+      "rows": 9959,
+      "sha256": "f566e337ac34dc098061c26fa8b22e98f2761ef2d89b058822d3762dab5ac820"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 9641,
+        "complete_core_markets": 285,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 278,
+        "joined_rows": 9641,
+        "oi_eligible_rows": 3388,
+        "raw_capacity_rows": 27478,
+        "raw_core_rows": 85500,
+        "refprice_eligible_rows": 9641,
+        "refprice_source_rows": 81830,
+        "strict_capacity_rows": 10186,
+        "twap_labeled_markets": 233,
+        "twap_labeled_rows": 7979
+      },
+      "date": "2026-08-18",
+      "markets": 278,
+      "path": "2026-08-18.parquet",
+      "rows": 9641,
+      "sha256": "16b23d63d3941e013aab3ad66fca140bb9a3e94542d25549d51b2a155acc42c6"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 8870,
+        "complete_core_markets": 287,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 251,
+        "joined_rows": 8870,
+        "oi_eligible_rows": 3536,
+        "raw_capacity_rows": 27257,
+        "raw_core_rows": 86100,
+        "refprice_eligible_rows": 8870,
+        "refprice_source_rows": 81658,
+        "strict_capacity_rows": 9391,
+        "twap_labeled_markets": 201,
+        "twap_labeled_rows": 7150
+      },
+      "date": "2026-08-19",
+      "markets": 251,
+      "path": "2026-08-19.parquet",
+      "rows": 8870,
+      "sha256": "4b57ca6623f21fa684a22d540f5a1ef634056a21132594d499bd21421b77cc81"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11530,
+        "complete_core_markets": 284,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 284,
+        "joined_rows": 11530,
+        "oi_eligible_rows": 5041,
+        "raw_capacity_rows": 27615,
+        "raw_core_rows": 85200,
+        "refprice_eligible_rows": 11530,
+        "refprice_source_rows": 81748,
+        "strict_capacity_rows": 12262,
+        "twap_labeled_markets": 246,
+        "twap_labeled_rows": 9922
+      },
+      "date": "2026-08-20",
+      "markets": 284,
+      "path": "2026-08-20.parquet",
+      "rows": 11530,
+      "sha256": "78d2c7dcc3276c6b02d98acd2518662516489e36afe0df0a50833b17c45d4a16"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11759,
+        "complete_core_markets": 286,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 286,
+        "joined_rows": 11759,
+        "oi_eligible_rows": 5047,
+        "raw_capacity_rows": 27648,
+        "raw_core_rows": 85800,
+        "refprice_eligible_rows": 11757,
+        "refprice_source_rows": 81415,
+        "strict_capacity_rows": 12417,
+        "twap_labeled_markets": 239,
+        "twap_labeled_rows": 9875
+      },
+      "date": "2026-08-21",
+      "markets": 286,
+      "path": "2026-08-21.parquet",
+      "rows": 11759,
+      "sha256": "e6bc4cd4e6c100474b2b0d74b0fb7a5b0d284bc5ecabf8912a570e145b193399"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11588,
+        "complete_core_markets": 284,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 281,
+        "joined_rows": 11588,
+        "oi_eligible_rows": 4485,
+        "raw_capacity_rows": 27597,
+        "raw_core_rows": 85200,
+        "refprice_eligible_rows": 11588,
+        "refprice_source_rows": 81883,
+        "strict_capacity_rows": 12260,
+        "twap_labeled_markets": 261,
+        "twap_labeled_rows": 10743
+      },
+      "date": "2026-08-22",
+      "markets": 281,
+      "path": "2026-08-22.parquet",
+      "rows": 11588,
+      "sha256": "bd62a424895d30d91d9d27f90c328c84685fea2d10138aa4074b90ae806fd8b8"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 7661,
+        "complete_core_markets": 253,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 248,
+        "joined_rows": 7661,
+        "oi_eligible_rows": 2591,
+        "raw_capacity_rows": 25637,
+        "raw_core_rows": 75900,
+        "refprice_eligible_rows": 7661,
+        "refprice_source_rows": 82122,
+        "strict_capacity_rows": 8335,
+        "twap_labeled_markets": 227,
+        "twap_labeled_rows": 6986
+      },
+      "date": "2026-08-23",
+      "markets": 248,
+      "path": "2026-08-23.parquet",
+      "rows": 7661,
+      "sha256": "2a4dd94cd5917ef578ce6792c6014e102ee5160fd1065e07fac9c99919f51df4"
+    },
+    {
+      "audit": {
+        "candle_eligible_rows": 11136,
+        "complete_core_markets": 284,
+        "incomplete_refprice_source_rows": 0,
+        "joined_markets": 282,
+        "joined_rows": 11136,
+        "oi_eligible_rows": 4442,
+        "raw_capacity_rows": 27316,
+        "raw_core_rows": 85200,
+        "refprice_eligible_rows": 11135,
+        "refprice_source_rows": 82133,
+        "strict_capacity_rows": 11788,
+        "twap_labeled_markets": 260,
+        "twap_labeled_rows": 10329
+      },
+      "date": "2026-08-24",
+      "markets": 282,
+      "path": "2026-08-24.parquet",
+      "rows": 11136,
+      "sha256": "02dcb1bc5245c4d2591aab5e79aac65dcf8424fd971c6a789dc142c75b2937f1"
+    }
+  ],
+  "perfect_coverage_required": false,
+  "range_end": "2026-08-25T00:00:00+00:00",
+  "range_start": "2026-06-07T00:00:00+00:00",
+  "rows": 551826,
+  "schema_version": "btc-refprice-twap-target-dataset-v1",
+  "sql_sha256": {
+    "btc-refprice-twap-candle-source.sql": "41d1da71b8230ffe0fc38d829bdcdac6229c7ccb5ff93a21af8f5257e1190290",
+    "btc-refprice-twap-capacity-source.sql": "789d3c5396125cde67e3a787713ee2aa941fa7033d55ca9eee4aa4b294693a49",
+    "btc-refprice-twap-core-source.sql": "3d071e56c9e13efb97da625f1e2c397d1b5aad385bb24deb73db8dd29bd48525",
+    "btc-refprice-twap-label-source.sql": "f86f4f0c6ff9fc648a3462a3630a1788fd01a5f95f17057c2e7925ac2f116c89",
+    "btc-refprice-twap-open-interest-source.sql": "24a4ba62e5e92a94e8a9f53bb0ff294516e1afd677f007d2537fbe9150ea5640",
+    "btc-refprice-twap-oracle-source.sql": "7a10b6e359035185181c49df8d24ad64877d0146edb52e41a6adfe6603d4c818",
+    "btc-refprice-twap-refprice-source.sql": "934dec51440ef14c2d96feb3dcad629e7bfca4743f9038ddaf00fa4d62fdf2f9"
+  },
+  "training_cadence_seconds": 5,
+  "twap_target_source": "market_data.pmdata_chainlink_btcusd_twap:60",
+  "vwap_quantities": [
+    5,
+    10,
+    15,
+    20,
+    25,
+    30,
+    40,
+    50,
+    75,
+    100,
+    125,
+    150,
+    175,
+    200
+  ],
+  "watermark": "2026-08-24"
+}
