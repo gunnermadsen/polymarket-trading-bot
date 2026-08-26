@@ -238,7 +238,7 @@ groups:
           service: polymarket-bot
           severity: warning
         isPaused: false
-      - uid: clob_silent_connection_watchdog_disconnect
+      - uid: clob_silent_watchdog_disconnect
         title: CLOB silent connection watchdog disconnect observed
         condition: C
         data:
