@@ -566,9 +566,13 @@ def attach_causal_twap_features(
         pl.Series("twap_source_age_seconds", age),
     ).with_columns(
         pl.coalesce("proxy_open_twap30", "binance_open_twap30").alias("opening_twap30"),
-        pl.col("binance_open_twap30").fill_null(pl.col("binance_open_twap60")),
+        pl.col("binance_open_twap30")
+        .fill_null(pl.col("binance_open_twap60"))
+        .alias("opening_binance_twap30"),
+        pl.col("binance_open_twap60").alias("opening_binance_twap60"),
         (pl.col("binance_open_twap60") / pl.col("proxy_open_price"))
         .log().mul(10_000).alias("opening_binance_chainlink_basis_bps"),
+    ).with_columns(
         (pl.col("current_twap30") / pl.col("opening_twap30"))
         .log().mul(10_000).alias("twap30_change_from_open_bps"),
         (pl.col("current_twap60") / pl.col("opening_twap60"))
