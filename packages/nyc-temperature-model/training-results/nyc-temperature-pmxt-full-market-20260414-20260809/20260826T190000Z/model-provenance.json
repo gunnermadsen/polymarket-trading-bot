@@ -1,0 +1,9 @@
+{
+  "artifact_path": "/output/tournament.joblib",
+  "artifact_sha256": "3b398466a5782162d7d3f9c006f53b3d8efaffaa239c073b617710ae06433e89",
+  "deployment_status": "not_deployed_training_only",
+  "producing_git_revision": "f4196688e6dea6b32c581bfdea1dfc19905007e6",
+  "qualification_status": "no_economic_champion",
+  "source_input_sha256": "94750015968835e4a201bdd1a2f54e3fb9941ac8e07d70a75882a4a6125141fb",
+  "training_run_identity": "08709e6a-c4f0-4ccb-8ed5-71224be8578a"
+}
