@@ -8,11 +8,14 @@ from nyc_temperature_model import execution_ingestion
 from nyc_temperature_model.execution_ingestion import (
     Book,
     _apply_event,
+    _completed_trade_refresh_decision_times,
     _decode_archive_with_redownload,
+    _last_trade_refresh_requested,
     _last_trade_rows,
     _levels,
     _load_archive_events,
     _manifest_digest,
+    _record_archive,
     _retryable_archive_gap,
     _vwap,
 )
@@ -51,9 +54,7 @@ def test_price_change_never_invents_an_unseeded_book():
 
 
 def test_pmxt_book_levels_accept_archive_pair_encoding():
-    assert _levels('[["0.40", "2.5"], ["0.41", "0"]]') == {
-        Decimal("0.40"): Decimal("2.5")
-    }
+    assert _levels('[["0.40", "2.5"], ["0.41", "0"]]') == {Decimal("0.40"): Decimal("2.5")}
 
 
 def test_pmxt_archive_download_resumes_a_legacy_partial_file(tmp_path):
@@ -239,3 +240,199 @@ def test_last_trade_prices_are_causal_filtered_and_content_addressed():
     assert rows[0]["price"] == Decimal("0.12")
     assert len(rows[0]["event_id"]) == 64
     assert rows[0]["provider_received_at"] <= decision
+
+
+def test_last_trade_refresh_parameter_requires_a_boolean():
+    assert _last_trade_refresh_requested(SimpleNamespace(request={})) is False
+    assert (
+        _last_trade_refresh_requested(SimpleNamespace(request={"refresh_last_trades": True}))
+        is True
+    )
+    with __import__("pytest").raises(ValueError, match="must be a boolean"):
+        _last_trade_refresh_requested(SimpleNamespace(request={"refresh_last_trades": "true"}))
+
+
+def test_trade_refresh_reuses_only_complete_gap_free_decisions(monkeypatch):
+    complete = datetime(2026, 8, 1, 4, tzinfo=UTC)
+    gap = datetime(2026, 8, 2, 4, tzinfo=UTC)
+    partial = datetime(2026, 8, 3, 4, tzinfo=UTC)
+    rows = [
+        {"decision_time": complete, "quality_flags": []},
+        {"decision_time": complete, "quality_flags": []},
+        {
+            "decision_time": gap,
+            "quality_flags": ["pmxt_archive_missing_2026-08-02T03Z"],
+        },
+        {"decision_time": gap, "quality_flags": []},
+        {"decision_time": partial, "quality_flags": []},
+    ]
+
+    class Result:
+        def fetchall(self):
+            return rows
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, *_args):
+            return Result()
+
+    monkeypatch.setattr(execution_ingestion, "connection", lambda *_args: Connection())
+    market_1 = {"market_id": "market-1"}
+    market_2 = {"market_id": "market-2"}
+    groups = [
+        (complete, [market_1, market_2]),
+        (gap, [market_1, market_2]),
+        (partial, [market_1, market_2]),
+    ]
+    job = SimpleNamespace(
+        range_start=complete,
+        range_end=datetime(2026, 8, 4, 4, tzinfo=UTC),
+    )
+
+    assert _completed_trade_refresh_decision_times(
+        SimpleNamespace(database_url="postgresql://test"), job, groups
+    ) == {complete}
+
+
+def test_trade_refresh_preserves_an_existing_archive_ledger_row(monkeypatch):
+    class Result:
+        def fetchone(self):
+            return {"artifact_id": "existing-artifact"}
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def transaction(self):
+            return Transaction()
+
+        def execute(self, *_args):
+            return Result()
+
+    monkeypatch.setattr(execution_ingestion, "connection", lambda *_args: Connection())
+    monkeypatch.setattr(
+        execution_ingestion,
+        "insert_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not replace")),
+    )
+
+    artifact_id = _record_archive(
+        SimpleNamespace(database_url="postgresql://test"),
+        datetime(2026, 8, 1, 3, tzinfo=UTC),
+        "https://example.test/archive.parquet",
+        availability="available",
+        digest="a" * 64,
+        size=100,
+        preserve_existing=True,
+    )
+
+    assert artifact_id == "existing-artifact"
+
+
+def test_trade_refresh_writes_trades_and_coverage_without_touching_snapshots(
+    monkeypatch,
+):
+    decision = datetime(2026, 8, 1, 4, tzinfo=UTC)
+    market = {
+        "market_id": "market-1",
+        "condition_id": "condition-1",
+        "yes_token_id": "yes-token",
+        "no_token_id": "no-token",
+    }
+    event = {
+        "event_type": "last_trade_price",
+        "asset_id": "yes-token",
+        "timestamp": datetime(2026, 8, 1, 3, 59, 57, tzinfo=UTC),
+        "timestamp_received": datetime(2026, 8, 1, 3, 59, 58, tzinfo=UTC),
+        "price": "0.12",
+        "size": "5",
+        "side": "BUY",
+    }
+    statements = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def executemany(self, statement, _rows):
+            statements.append(statement)
+
+    class Transaction:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def transaction(self):
+            return Transaction()
+
+        def cursor(self):
+            return Cursor()
+
+        def execute(self, statement, _parameters):
+            statements.append(statement)
+
+    monkeypatch.setattr(
+        execution_ingestion, "_decision_groups", lambda *_args: [(decision, [market])]
+    )
+    monkeypatch.setattr(
+        execution_ingestion,
+        "_completed_trade_refresh_decision_times",
+        lambda *_args: set(),
+    )
+    monkeypatch.setattr(
+        execution_ingestion,
+        "_load_archive_events",
+        lambda *_args, **_kwargs: (
+            [dict(event)],
+            "11111111-1111-1111-1111-111111111111",
+            None,
+        ),
+    )
+    monkeypatch.setattr(execution_ingestion, "connection", lambda *_args: Connection())
+    monkeypatch.setattr(execution_ingestion, "update_progress", lambda *_args: None)
+
+    result = execution_ingestion.ingest_pmxt_execution(
+        SimpleNamespace(
+            database_url="postgresql://test",
+            pmxt_base_url="https://example.test",
+        ),
+        SimpleNamespace(
+            request={"refresh_last_trades": True},
+            range_start=decision,
+            range_end=decision.replace(hour=5),
+        ),
+    )
+
+    sql = "\n".join(statements)
+    assert "weather.pmxt_last_trade_prices" in sql
+    assert "weather.pmxt_trade_window_coverage" in sql
+    assert "weather.execution_snapshots" not in sql
+    assert result["snapshots"] == 0
+    assert result["processed_decision_groups"] == 1
