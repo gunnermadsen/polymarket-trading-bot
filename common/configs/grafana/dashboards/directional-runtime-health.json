@@ -65,6 +65,54 @@
       "targets": [{"editorMode": "code", "expr": "increase(polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total[5m])", "instant": false, "legendFormat": "Lag-unavailable transitions / 5m", "range": true, "refId": "A"}],
       "title": "CLOB Lag Readiness Transitions",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 16},
+      "id": 7,
+      "panels": [],
+      "title": "CLOB Transport Health",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "ms"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 17},
+      "id": 8,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds", "instant": false, "legendFormat": "Maximum read repoll delay", "range": true, "refId": "A"}],
+      "title": "CLOB Socket Read Repoll Delay",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 17},
+      "id": 9,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "polymarket_btc_clob_socket_inbound_silence_seconds", "instant": false, "legendFormat": "Inbound silence", "range": true, "refId": "A"}],
+      "title": "CLOB Socket Inbound Silence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "unit": "short"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+      "id": 10,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"editorMode": "code", "expr": "increase(polymarket_btc_clob_transport_disconnects_total[10m])", "instant": false, "legendFormat": "{{reason}}", "range": true, "refId": "A"}],
+      "title": "CLOB Transport Disconnects by Reason (10m)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"min": 0, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+      "id": 11,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "polymarket_btc_clob_transport_recovery_duration_seconds", "instant": false, "legendFormat": "Latest completed recovery", "range": true, "refId": "A"}],
+      "title": "CLOB Transport Recovery Duration",
+      "type": "timeseries"
     }
   ],
   "refresh": "20s",
@@ -76,5 +124,5 @@
   "timezone": "browser",
   "title": "Directional Runtime Health",
   "uid": "directional-runtime-health",
-  "version": 1
+  "version": 2
 }
