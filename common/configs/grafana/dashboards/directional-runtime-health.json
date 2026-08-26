@@ -45,6 +45,26 @@
       "targets": [{"editorMode": "code", "expr": "polymarket_btc_polygon_oracle_age_seconds", "instant": false, "legendFormat": "Oracle age", "range": true, "refId": "A"}],
       "title": "Polygon Oracle Round Age",
       "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "id": 5,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "polymarket_btc_clob_source_to_receive_lag_milliseconds", "instant": false, "legendFormat": "CLOB source-to-receive lag", "range": true, "refId": "A"}],
+      "title": "CLOB Source-to-Receive Lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "decimals": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "id": 6,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"editorMode": "code", "expr": "increase(polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total[5m])", "instant": false, "legendFormat": "Lag-unavailable transitions / 5m", "range": true, "refId": "A"}],
+      "title": "CLOB Lag Readiness Transitions",
+      "type": "timeseries"
     }
   ],
   "refresh": "20s",

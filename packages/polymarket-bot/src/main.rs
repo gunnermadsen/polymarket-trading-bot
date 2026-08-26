@@ -3255,6 +3255,36 @@ impl RuntimeControl {
     }
 }
 
+fn append_clob_source_lag_prometheus_metrics(
+    output: &mut String,
+    metrics: Option<&serde_json::Value>,
+) {
+    let source_lag = metrics
+        .and_then(|value| value.get("clob_active_last_source_to_receive_lag_milliseconds"))
+        .and_then(serde_json::Value::as_i64);
+    let unavailable_transitions = metrics
+        .and_then(|value| value.get("clob_source_to_receive_lag_unavailable_transitions"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    output.push_str(
+        "# HELP polymarket_btc_clob_source_to_receive_lag_milliseconds Latest observed difference between the CLOB event timestamp and local receipt time in milliseconds.\n\
+# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n",
+    );
+    if let Some(source_lag) = source_lag {
+        output.push_str(&format!(
+            "polymarket_btc_clob_source_to_receive_lag_milliseconds {source_lag}\n"
+        ));
+    }
+    output.push_str(
+        "# HELP polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total Number of transitions into source-to-receive-lag CLOB unavailability.\n\
+# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n",
+    );
+    output.push_str(&format!(
+        "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total {unavailable_transitions}\n"
+    ));
+}
+
 #[async_trait]
 impl ControlApi for RuntimeControl {
     async fn health(&self) -> Result<HealthResponse, HttpError> {
@@ -3339,6 +3369,7 @@ impl ControlApi for RuntimeControl {
                 "polymarket_btc_polygon_oracle_age_seconds {oracle_age}\n"
             ));
         }
+        append_clob_source_lag_prometheus_metrics(&mut output, metrics);
         Ok(output)
     }
 
@@ -4301,6 +4332,27 @@ async fn shutdown_signal() {
 mod lifecycle_tests {
     use super::*;
     use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
+
+    #[test]
+    fn prometheus_exposition_includes_clob_source_lag_gauge_and_transition_counter() {
+        let metrics = serde_json::json!({
+            "clob_active_last_source_to_receive_lag_milliseconds": 2_417,
+            "clob_source_to_receive_lag_unavailable_transitions": 9
+        });
+        let mut output = String::new();
+
+        append_clob_source_lag_prometheus_metrics(&mut output, Some(&metrics));
+
+        assert!(output
+            .contains("# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n"));
+        assert!(output.contains("polymarket_btc_clob_source_to_receive_lag_milliseconds 2417\n"));
+        assert!(output.contains(
+            "# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n"
+        ));
+        assert!(output.contains(
+            "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total 9\n"
+        ));
+    }
 
     #[tokio::test]
     async fn inactive_runtime_status_reports_configured_mode_without_unbound_live_status() {

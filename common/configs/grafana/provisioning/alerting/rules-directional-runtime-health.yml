@@ -122,3 +122,61 @@ groups:
           service: polymarket-bot
           severity: warning
         isPaused: false
+      - uid: clob_source_timestamp_lag_flapping
+        title: CLOB source timestamp lag flapping
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 300, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: increase(polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total[5m])
+              instant: true
+              intervalMs: 1000
+              legendFormat: __auto
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              settings: {mode: dropNN}
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange: {from: 0, to: 0}
+            model:
+              conditions:
+                - evaluator: {params: [3], type: gte}
+                  operator: {type: and}
+                  query: {params: [C]}
+                  reducer: {params: [], type: last}
+                  type: query
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 60s
+        annotations:
+          description: The CLOB order book repeatedly became unavailable because exchange event timestamps lagged local receipt time. This measures source timestamp lag transitions, not consumer queue pressure.
+          summary: CLOB source timestamp lag repeatedly blocked trading readiness
+        labels:
+          condition: clob_source_timestamp_lag_flapping
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          family: clob_market_data
+          service: polymarket-bot
+          severity: warning
+        isPaused: false

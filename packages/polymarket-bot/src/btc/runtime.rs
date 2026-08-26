@@ -508,6 +508,8 @@ pub struct BtcRuntimeMetrics {
     pub clob_book_unavailable_receipt_age_milliseconds: Option<i64>,
     #[serde(default)]
     pub clob_book_unavailable_source_to_receive_lag_milliseconds: Option<i64>,
+    #[serde(default)]
+    pub clob_source_to_receive_lag_unavailable_transitions: u64,
     pub clob_active_subscribed_assets: u64,
     pub clob_active_subscription_target_fingerprint_sha256: Option<String>,
     pub clob_active_peer_address: Option<String>,
@@ -4697,10 +4699,20 @@ async fn record_clob_epoch_unavailable(
     recovery_window: &mut ClobRecoveryWindow,
 ) {
     recovery_window.open_if_closed(unavailable_at, unavailable_instant);
+    let entering_source_to_receive_lag = diagnostic.reason == "source_to_receive_lag"
+        && recovery_window
+            .diagnostic
+            .as_ref()
+            .is_none_or(|current| current.reason != "source_to_receive_lag");
     if !recovery_window.update_diagnostic(diagnostic.clone()) {
         return;
     }
     let mut runtime_metrics = metrics.write().await;
+    if entering_source_to_receive_lag {
+        runtime_metrics.clob_source_to_receive_lag_unavailable_transitions = runtime_metrics
+            .clob_source_to_receive_lag_unavailable_transitions
+            .saturating_add(1);
+    }
     runtime_metrics.clob_active_connection_epoch = None;
     runtime_metrics.clob_active_connection_id = None;
     runtime_metrics.clob_recovery_unavailable_since = recovery_window.since;
@@ -11557,6 +11569,77 @@ mod tests {
         let mut different_token = later_sample;
         different_token.token_id = Some("token-2".to_string());
         assert!(recovery_window.update_diagnostic(different_token));
+    }
+
+    #[tokio::test]
+    async fn clob_source_to_receive_lag_counter_tracks_reason_transitions_only() {
+        let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
+        let started = Instant::now();
+        let checked_at = Utc.timestamp_opt(1_783_902_610, 0).unwrap();
+        let mut recovery_window = ClobRecoveryWindow::open(checked_at, started);
+        let source_lag = ClobReadinessDiagnostic {
+            reason: "source_to_receive_lag",
+            market_id: Some("market-1".to_string()),
+            token_id: Some("token-1".to_string()),
+            integrity_status: Some(FeedIntegrityStatus::Ok),
+            bootstrapped: Some(true),
+            has_bid: Some(true),
+            has_ask: Some(true),
+            source_age_milliseconds: Some(2_001),
+            receipt_age_milliseconds: Some(1),
+            source_to_receive_lag_milliseconds: Some(2_000),
+        };
+
+        record_clob_epoch_unavailable(
+            &metrics,
+            Uuid::new_v4(),
+            1,
+            checked_at,
+            started,
+            source_lag.clone(),
+            &mut recovery_window,
+        )
+        .await;
+        let mut same_reason_different_token = source_lag.clone();
+        same_reason_different_token.token_id = Some("token-2".to_string());
+        record_clob_epoch_unavailable(
+            &metrics,
+            Uuid::new_v4(),
+            1,
+            checked_at,
+            started,
+            same_reason_different_token,
+            &mut recovery_window,
+        )
+        .await;
+        record_clob_epoch_unavailable(
+            &metrics,
+            Uuid::new_v4(),
+            1,
+            checked_at,
+            started,
+            ClobReadinessDiagnostic::transport_unavailable(),
+            &mut recovery_window,
+        )
+        .await;
+        record_clob_epoch_unavailable(
+            &metrics,
+            Uuid::new_v4(),
+            1,
+            checked_at,
+            started,
+            source_lag,
+            &mut recovery_window,
+        )
+        .await;
+
+        assert_eq!(
+            metrics
+                .read()
+                .await
+                .clob_source_to_receive_lag_unavailable_transitions,
+            2
+        );
     }
 
     #[tokio::test]
