@@ -95,6 +95,12 @@ from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
 from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
 from .training_readiness import prepare_training_readiness
+from .twap60_challenger_tournament import (
+    load_config as load_twap60_tournament_config,
+)
+from .twap60_challenger_tournament import (
+    run_tournament as run_twap60_tournament,
+)
 
 
 def main() -> None:
@@ -204,6 +210,9 @@ def main() -> None:
         command = subparsers.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--force", action="store_true")
+    twap60_run = subparsers.add_parser("twap60-challenger-tournament-run")
+    twap60_run.add_argument("--config", type=Path, required=True)
+    twap60_run.add_argument("--force", action="store_true")
     chainlink_oi_run = subparsers.add_parser(
         "chainlink-oi-champion-benchmark-run"
     )
@@ -546,6 +555,17 @@ def main() -> None:
         print(f"report: {run_dir / 'training-report.md'}")
         print(f"status: {result['status']}")
         print("runtime/trading processes changed: false")
+        return
+    if args.command == "twap60-challenger-tournament-run":
+        config = load_twap60_tournament_config(args.config)
+        run_dir, result = run_twap60_tournament(config, force_extract=args.force)
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"status: {result['tournament']['selection']['status']}")
+        print(
+            "provisional challenger: "
+            f"{result['tournament']['selection']['provisional_challenger'] or 'none'}"
+        )
+        print("runtime/database/trading processes changed: false")
         return
     if args.command == "chainlink-oi-champion-benchmark-run":
         config = load_chainlink_oi_benchmark_config(args.config)
