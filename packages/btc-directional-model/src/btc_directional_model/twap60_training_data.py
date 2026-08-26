@@ -962,7 +962,9 @@ def build_tournament_frame(
     candles = load_source_group(paths, "candles").unique(
         subset=["close_timestamp"], keep="last"
     )
-    execution = load_source_group(paths, "execution")
+    execution = load_source_group(paths, "execution").filter(
+        pl.col("window_start") >= current_start
+    )
     convention, _ = select_proxy_convention(
         labels, refprice,
         calibration_start=proxy_calibration_start,
@@ -986,6 +988,9 @@ def build_tournament_frame(
         "current_core_markets": current_core["market_id"].n_unique(),
         "economic_rows": joined.filter(pl.col("up_ask_vwap_5").is_not_null()).height,
         "economic_markets": joined.filter(pl.col("up_ask_vwap_5").is_not_null())["market_id"].n_unique(),
+        "execution_source_rows": execution.height,
+        "execution_schema_versions": sorted(execution["schema_version"].unique().to_list()),
+        "execution_artifact_ids": sorted(execution["artifact_id"].unique().to_list()),
         "proxy_convention": {
             "time_column": convention.time_column,
             "calibration_mae_bps": convention.calibration_mae_bps,

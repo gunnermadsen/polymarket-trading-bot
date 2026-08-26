@@ -61,9 +61,17 @@ FROM polymarket.btc_market_capacity_execution_snapshots snapshot
 JOIN polymarket.backfill_artifacts artifact
   ON artifact.artifact_id = snapshot.artifact_id
  AND artifact.status = 'completed'
- AND artifact.provider = 'pmxt_v2_capacity_execution_snapshots_v2'
+ AND (
+   (
+     artifact.provider = 'pmxt_v2_capacity_execution_snapshots_v2'
+     AND snapshot.schema_version = 'btc5m-capacity-book-1-240s-v2'
+   )
+   OR (
+     artifact.provider = 'polymarket_local_orderbook_capacity_execution_snapshots_v1'
+     AND snapshot.schema_version = 'btc5m-capacity-local-orderbook-1-240s-v1'
+   )
+ )
 JOIN eligible_markets market ON market.market_id = snapshot.market_id
 WHERE snapshot.sampled_at >= %(batch_start)s
   AND snapshot.sampled_at < %(batch_end)s
-  AND snapshot.schema_version = 'btc5m-capacity-book-1-240s-v2'
 ORDER BY snapshot.market_id, snapshot.sampled_at;
