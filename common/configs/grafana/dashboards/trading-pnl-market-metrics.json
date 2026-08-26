@@ -3943,8 +3943,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "polymarket-bot",
+  "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 172,
+  "version": 174,
   "weekStart": ""
 }

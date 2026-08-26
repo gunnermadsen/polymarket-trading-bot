@@ -3255,6 +3255,103 @@ impl RuntimeControl {
     }
 }
 
+fn append_clob_source_lag_prometheus_metrics(
+    output: &mut String,
+    metrics: Option<&serde_json::Value>,
+) {
+    let source_lag = metrics
+        .and_then(|value| value.get("clob_active_last_source_to_receive_lag_milliseconds"))
+        .and_then(serde_json::Value::as_i64);
+    let unavailable_transitions = metrics
+        .and_then(|value| value.get("clob_source_to_receive_lag_unavailable_transitions"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    output.push_str(
+        "# HELP polymarket_btc_clob_source_to_receive_lag_milliseconds Latest observed difference between the CLOB event timestamp and local receipt time in milliseconds.\n\
+# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n",
+    );
+    if let Some(source_lag) = source_lag {
+        output.push_str(&format!(
+            "polymarket_btc_clob_source_to_receive_lag_milliseconds {source_lag}\n"
+        ));
+    }
+    output.push_str(
+        "# HELP polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total Number of transitions into source-to-receive-lag CLOB unavailability.\n\
+# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n",
+    );
+    output.push_str(&format!(
+        "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total {unavailable_transitions}\n"
+    ));
+}
+
+fn append_clob_transport_prometheus_metrics(
+    output: &mut String,
+    metrics: Option<&serde_json::Value>,
+) {
+    let value_u64 = |name: &str| {
+        metrics
+            .and_then(|value| value.get(name))
+            .and_then(serde_json::Value::as_u64)
+    };
+    let repoll_delay = value_u64("clob_socket_read_repoll_delay_max_milliseconds").unwrap_or(0);
+    let inbound_silence = value_u64("clob_socket_inbound_silence_milliseconds");
+    let recovery_duration = value_u64("clob_transport_recovery_duration_milliseconds");
+
+    output.push_str(
+        "# HELP polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds Maximum delay between handing an inbound frame to the bounded ingress queue and beginning the next socket read poll, for the active connection.\n\
+# TYPE polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds gauge\n",
+    );
+    output.push_str(&format!(
+        "polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds {repoll_delay}\n"
+    ));
+    output.push_str(
+        "# HELP polymarket_btc_clob_socket_inbound_silence_seconds Seconds since the active CLOB reader received any WebSocket frame.\n\
+# TYPE polymarket_btc_clob_socket_inbound_silence_seconds gauge\n",
+    );
+    if let Some(inbound_silence) = inbound_silence {
+        output.push_str(&format!(
+            "polymarket_btc_clob_socket_inbound_silence_seconds {}\n",
+            inbound_silence as f64 / 1_000.0
+        ));
+    }
+    output.push_str(
+        "# HELP polymarket_btc_clob_transport_disconnects_total CLOB transport disconnects classified by bounded reason.\n\
+# TYPE polymarket_btc_clob_transport_disconnects_total counter\n",
+    );
+    for (reason, field) in [
+        (
+            "remote_close_1013",
+            "clob_transport_disconnects_remote_close_1013",
+        ),
+        (
+            "reset_without_close",
+            "clob_transport_disconnects_reset_without_close",
+        ),
+        (
+            "heartbeat_ack_timeout",
+            "clob_transport_disconnects_heartbeat_ack_timeout",
+        ),
+        ("websocket_eof", "clob_transport_disconnects_websocket_eof"),
+        ("other", "clob_transport_disconnects_other"),
+    ] {
+        let count = value_u64(field).unwrap_or(0);
+        output.push_str(&format!(
+            "polymarket_btc_clob_transport_disconnects_total{{reason=\"{reason}\"}} {count}\n"
+        ));
+    }
+    output.push_str(
+        "# HELP polymarket_btc_clob_transport_recovery_duration_seconds Duration of the most recently completed recovery from transport loss until replacement CLOB books became usable.\n\
+# TYPE polymarket_btc_clob_transport_recovery_duration_seconds gauge\n",
+    );
+    if let Some(recovery_duration) = recovery_duration {
+        output.push_str(&format!(
+            "polymarket_btc_clob_transport_recovery_duration_seconds {}\n",
+            recovery_duration as f64 / 1_000.0
+        ));
+    }
+}
+
 #[async_trait]
 impl ControlApi for RuntimeControl {
     async fn health(&self) -> Result<HealthResponse, HttpError> {
@@ -3281,6 +3378,67 @@ impl ControlApi for RuntimeControl {
             counters,
             gauges: serde_json::json!({}),
         })
+    }
+
+    async fn prometheus_metrics(&self) -> Result<String, HttpError> {
+        let runtime = match &self.btc_manager {
+            Some(manager) => manager.runtime_status().await,
+            None => serde_json::json!({}),
+        };
+        let metrics = runtime
+            .get("shared_market_data")
+            .and_then(|value| value.get("metrics"));
+        let candle_ready = metrics
+            .and_then(|value| value.get("rtds_chainlink_candle_window_ready"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let complete_minutes = metrics
+            .and_then(|value| value.get("rtds_chainlink_candle_complete_minutes"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let oracle_ready = metrics
+            .and_then(|value| value.get("polygon_oracle_ready"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let oracle_age = metrics
+            .and_then(|value| value.get("polygon_oracle_age_seconds"))
+            .and_then(serde_json::Value::as_u64);
+
+        let mut output = String::from(
+            "# HELP polymarket_btc_rtds_chainlink_candle_window_ready Whether the required 61 closed RTDS Chainlink candle minutes are available.\n\
+# TYPE polymarket_btc_rtds_chainlink_candle_window_ready gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_rtds_chainlink_candle_window_ready {}\n",
+            u8::from(candle_ready)
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_rtds_chainlink_candle_complete_minutes Complete closed RTDS Chainlink candle minutes in the required window.\n\
+# TYPE polymarket_btc_rtds_chainlink_candle_complete_minutes gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_rtds_chainlink_candle_complete_minutes {complete_minutes}\n"
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_polygon_oracle_ready Whether a causally valid and fresh Polygon oracle round is available.\n\
+# TYPE polymarket_btc_polygon_oracle_ready gauge\n",
+        );
+        output.push_str(&format!(
+            "polymarket_btc_polygon_oracle_ready {}\n",
+            u8::from(oracle_ready)
+        ));
+        output.push_str(
+            "# HELP polymarket_btc_polygon_oracle_age_seconds Age in seconds of the latest accepted Polygon oracle round.\n\
+# TYPE polymarket_btc_polygon_oracle_age_seconds gauge\n",
+        );
+        if let Some(oracle_age) = oracle_age {
+            output.push_str(&format!(
+                "polymarket_btc_polygon_oracle_age_seconds {oracle_age}\n"
+            ));
+        }
+        append_clob_source_lag_prometheus_metrics(&mut output, metrics);
+        append_clob_transport_prometheus_metrics(&mut output, metrics);
+        Ok(output)
     }
 
     async fn btc_realtime_status(&self) -> Result<serde_json::Value, HttpError> {
@@ -4242,6 +4400,64 @@ async fn shutdown_signal() {
 mod lifecycle_tests {
     use super::*;
     use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
+
+    #[test]
+    fn prometheus_exposition_includes_clob_source_lag_gauge_and_transition_counter() {
+        let metrics = serde_json::json!({
+            "clob_active_last_source_to_receive_lag_milliseconds": 2_417,
+            "clob_source_to_receive_lag_unavailable_transitions": 9
+        });
+        let mut output = String::new();
+
+        append_clob_source_lag_prometheus_metrics(&mut output, Some(&metrics));
+
+        assert!(output
+            .contains("# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n"));
+        assert!(output.contains("polymarket_btc_clob_source_to_receive_lag_milliseconds 2417\n"));
+        assert!(output.contains(
+            "# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n"
+        ));
+        assert!(output.contains(
+            "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total 9\n"
+        ));
+    }
+
+    #[test]
+    fn prometheus_exposition_includes_bounded_clob_transport_health_metrics() {
+        let metrics = serde_json::json!({
+            "clob_socket_read_repoll_delay_max_milliseconds": 17,
+            "clob_socket_inbound_silence_milliseconds": 2_500,
+            "clob_transport_disconnects_remote_close_1013": 1,
+            "clob_transport_disconnects_reset_without_close": 2,
+            "clob_transport_disconnects_heartbeat_ack_timeout": 3,
+            "clob_transport_disconnects_websocket_eof": 4,
+            "clob_transport_disconnects_other": 5,
+            "clob_transport_recovery_duration_milliseconds": 1_250
+        });
+        let mut output = String::new();
+
+        append_clob_transport_prometheus_metrics(&mut output, Some(&metrics));
+
+        assert!(
+            output.contains("polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds 17\n")
+        );
+        assert!(output.contains("polymarket_btc_clob_socket_inbound_silence_seconds 2.5\n"));
+        assert!(output.contains(
+            "polymarket_btc_clob_transport_disconnects_total{reason=\"remote_close_1013\"} 1\n"
+        ));
+        assert!(output.contains(
+            "polymarket_btc_clob_transport_disconnects_total{reason=\"reset_without_close\"} 2\n"
+        ));
+        assert!(output.contains(
+            "polymarket_btc_clob_transport_disconnects_total{reason=\"heartbeat_ack_timeout\"} 3\n"
+        ));
+        assert!(output.contains(
+            "polymarket_btc_clob_transport_disconnects_total{reason=\"websocket_eof\"} 4\n"
+        ));
+        assert!(output
+            .contains("polymarket_btc_clob_transport_disconnects_total{reason=\"other\"} 5\n"));
+        assert!(output.contains("polymarket_btc_clob_transport_recovery_duration_seconds 1.25\n"));
+    }
 
     #[tokio::test]
     async fn inactive_runtime_status_reports_configured_mode_without_unbound_live_status() {

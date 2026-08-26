@@ -3,4 +3,9 @@ global:
   scrape_timeout: 10s
   evaluation_interval: 20s
 
-scrape_configs: []
+scrape_configs:
+  - job_name: polymarket-bot
+    metrics_path: /prometheus/metrics
+    static_configs:
+      - targets:
+          - polymarket-bot:8097

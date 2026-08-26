@@ -71,6 +71,12 @@ pub trait ControlApi: Send + Sync + 'static {
 
     async fn metrics(&self) -> Result<MetricsResponse, HttpError>;
 
+    async fn prometheus_metrics(&self) -> Result<String, HttpError> {
+        Err(HttpError::not_implemented(
+            "Prometheus metrics are not wired",
+        ))
+    }
+
     async fn btc_realtime_status(&self) -> Result<serde_json::Value, HttpError> {
         Err(HttpError::not_implemented(
             "BTC realtime status is not wired",
@@ -363,6 +369,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
     Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/prometheus/metrics", get(prometheus_metrics))
         .nest("/admin", admin_routes)
         .with_state(state)
 }
@@ -373,6 +380,15 @@ async fn health(State(state): State<HttpState>) -> Result<Json<HealthResponse>, 
 
 async fn metrics(State(state): State<HttpState>) -> Result<Json<MetricsResponse>, HttpError> {
     state.control.metrics().await.map(Json)
+}
+
+async fn prometheus_metrics(State(state): State<HttpState>) -> Result<Response, HttpError> {
+    let body = state.control.prometheus_metrics().await?;
+    Ok((
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
+        .into_response())
 }
 
 async fn btc_realtime_status(
