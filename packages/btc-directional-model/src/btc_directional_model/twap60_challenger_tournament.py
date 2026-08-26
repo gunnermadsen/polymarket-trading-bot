@@ -1330,13 +1330,17 @@ def _score_champion(frame: pl.DataFrame, config: TournamentConfig) -> tuple[dict
     champion_config = load_champion_scoring_config(
         config.package_root / "configs/btc-5m-middle-market-ablation-tournament-20260525.toml"
     )
-    eligible = frame.filter(pl.col("seconds_elapsed") >= 90)
+    eligible = frame.filter(pl.col("seconds_elapsed") >= 90).with_columns(
+        pl.when(pl.col("seconds_elapsed") < 120)
+        .then(pl.lit("90-119"))
+        .when(pl.col("seconds_elapsed") < 150)
+        .then(pl.lit("120-149"))
+        .otherwise(pl.lit("150-179"))
+        .alias("middle_cell")
+    )
     scored = score_frozen_champion(eligible, candidate, champion_config)
     selected = apply_frozen_champion_policy(scored, candidate.submitted_policy)
-    selected = selected.with_columns(
-        pl.col("stress_net_pnl_5").alias("stressed_pnl_5")
-        if "stress_net_pnl_5" in selected.columns else pl.col("stressed_pnl_5")
-    )
+    selected = _decision_columns(selected, config)
     return {
         "model_key": manifest["model_key"],
         "model_sha256": digest,
