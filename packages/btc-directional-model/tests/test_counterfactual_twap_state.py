@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 from btc_directional_model.counterfactual_twap_state_data import (
     CHAINLINK_UNCERTAINTY_BPS,
     _rolling_mean_at,
@@ -15,6 +16,7 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     CANDIDATE_NAMES,
     FEATURE_TREATMENTS,
     HISTORY_ARMS,
+    _economic_frame,
     feature_names,
     load_config,
     predetermined_hyperparameters,
@@ -138,3 +140,20 @@ def test_scoring_empty_chronological_window_preserves_scored_schema() -> None:
         "predicted_margin_bps": pl.Float64,
         "predicted_margin_upper_bps": pl.Float64,
     }
+
+
+def test_economic_frame_applies_current_regime_datetime_filter() -> None:
+    config = load_config(CONFIG)
+    row = {
+        "window_start": [config.current_start],
+        "label_source": ["authentic_official_twap60"],
+        "label_up": [1],
+        "probability_up": [0.6],
+        "fee_rate": [0.0],
+    }
+    row.update({name: [0.5] for name in BOOK_RAW_FEATURES})
+
+    result = _economic_frame(pl.DataFrame(row), config)
+
+    assert result.height == 1
+    assert result["label_regime"].item() == "authentic_official_twap60"

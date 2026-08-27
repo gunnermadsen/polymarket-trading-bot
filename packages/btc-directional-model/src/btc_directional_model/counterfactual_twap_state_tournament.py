@@ -411,7 +411,7 @@ def _candidate_contract(name: str) -> tuple[str, str, bool, bool]:
 
 def _economic_frame(scored: pl.DataFrame, config: TournamentConfig) -> pl.DataFrame:
     eligible = scored.filter(
-        pl.col("window_start") >= config.current_start
+        (pl.col("window_start") >= config.current_start)
         & pl.all_horizontal(pl.col(name).is_not_null() & pl.col(name).is_finite() for name in BOOK_RAW_FEATURES)
     ).with_columns(pl.col("label_source").alias("label_regime"))
     return _decision_columns(eligible, config)
