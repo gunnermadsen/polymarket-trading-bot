@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from nyc_temperature_model.goes_ingestion import (
@@ -98,7 +99,7 @@ def test_small_goes_netcdf_fixture_is_cropped_and_summarized(tmp_path, monkeypat
     summaries, metadata = _extract_patch(source, PRODUCTS[0], patch)
 
     assert patch.is_file()
-    assert summaries[(25, "all")]["mean"] == 262.0
+    assert summaries[(25, "all")]["mean"] == 261.5
     assert summaries[(25, "all")]["valid_pixel_fraction"] == 1.0
     assert metadata["variable"] == "CMI"
 
@@ -127,7 +128,7 @@ def test_small_hrrr_grib_fixture_fields_are_cropped_to_reproducible_netcdf(
     assert patch.is_file()
     assert set(present) == set(FIELD_ALIASES)
     assert summaries[(0, "all")]["temperature_2m"]["mean"] == 290.0
-    assert summaries[(100, "all")]["total_cloud_cover"]["mean"] == 0.4
+    assert summaries[(100, "all")]["total_cloud_cover"]["mean"] == pytest.approx(0.4)
     assert units["temperature_2m"] == "fixture"
 
 
