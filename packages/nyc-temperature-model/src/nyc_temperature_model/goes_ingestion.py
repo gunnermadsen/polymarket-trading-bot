@@ -27,7 +27,7 @@ from .spatial_features import (
     spatial_mask,
 )
 
-FEATURE_SCHEMA_VERSION = "goes-abi-klga-v1"
+FEATURE_SCHEMA_VERSION = "goes-abi-klga-v2"
 GOES_TRANSITION = datetime(2025, 4, 7, 15, 10, tzinfo=UTC)
 SCAN_OFFSETS_MINUTES = (15, 60, 180)
 MINIMUM_VALID_PIXEL_FRACTION = 0.5
@@ -311,6 +311,7 @@ def _feature_values(
     scan_end: datetime,
     summaries: dict[str, dict[str, Any]],
     changes: dict[str, float | None],
+    gradients: dict[str, float | None],
     source_metadata: dict[str, Any],
 ) -> tuple:
     infrared = summaries.get("infrared_c13", {})
@@ -335,6 +336,8 @@ def _feature_values(
         visible.get("p10"), visible.get("p50"), visible.get("p90"),
         optical_depth.get("mean"), optical_depth.get("p50"), optical_depth.get("p90"),
         water_vapor.get("mean"), changes.get("change_45m"), changes.get("change_165m"),
+        gradients.get("infrared_north_south"), gradients.get("infrared_east_west"),
+        gradients.get("cloudy_north_south"), gradients.get("cloudy_east_west"),
         valid_fraction, psycopg.types.json.Jsonb(quality),
         psycopg.types.json.Jsonb(source_metadata),
     )
@@ -356,14 +359,32 @@ def _insert_feature(conn, values: tuple) -> None:
           visible_reflectance_p10,visible_reflectance_p50,visible_reflectance_p90,
           cloud_optical_depth_mean,cloud_optical_depth_p50,cloud_optical_depth_p90,
           water_vapor_brightness_temperature_mean_k,infrared_change_45m_k,
-          infrared_change_165m_k,valid_pixel_fraction,quality_flags,source_metadata
+          infrared_change_165m_k,infrared_north_south_gradient_k,
+          infrared_east_west_gradient_k,cloudy_north_south_gradient,
+          cloudy_east_west_gradient,valid_pixel_fraction,quality_flags,source_metadata
         ) VALUES (
           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+          %s,%s,%s
         ) ON CONFLICT DO NOTHING
         """,
         values,
     )
+
+
+def _spatial_difference(
+    spatial: dict[tuple[int, str], dict[str, dict[str, Any]]],
+    radius: int,
+    product_key: str,
+    first: str,
+    second: str,
+) -> float | None:
+    statistic = "cloudy_fraction" if product_key == "clear_sky_mask" else "mean"
+    first_value = spatial[(radius, first)].get(product_key, {}).get(statistic)
+    second_value = spatial[(radius, second)].get(product_key, {}).get(statistic)
+    if first_value is None or second_value is None:
+        return None
+    return first_value - second_value
 
 
 def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
@@ -373,7 +394,7 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
     offsets = tuple(int(value) for value in job.request.get("scan_offsets", SCAN_OFFSETS_MINUTES))
     radii = tuple(int(value) for value in job.request.get("radii_km", RADII_KM))
     if offsets != SCAN_OFFSETS_MINUTES or radii != RADII_KM:
-        raise ValueError("GOES v1 requires scan_offsets=[15,60,180] and radii_km=[25,50,100]")
+        raise ValueError("GOES v2 requires scan_offsets=[15,60,180] and radii_km=[25,50,100]")
     decisions = _decision_times(job.range_start, job.range_end)
     retry_statuses = set(
         job.request.get("retry_statuses", ("download_failure", "processing_failure"))
@@ -480,6 +501,9 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
                             "patch_sha": patch_sha,
                             "patch_size": patch_size,
                             "valid_fraction": valid_fraction,
+                            "raw_valid_fraction_100": summaries[(100, "all")][
+                                "valid_pixel_fraction"
+                            ],
                             "quality": {str(key): value["quality"] for key, value in summaries.items()},
                             "metadata": variable_metadata,
                         }
@@ -491,6 +515,31 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
                         {"product": product, "status": status, "metadata": {"error": str(error)[:1000]}}
                     )
                     counters["failed"] += 1
+            clear_summary = spatial[(100, "all")].get("clear_sky_mask", {})
+            cloudy_fraction = clear_summary.get("cloudy_fraction")
+            for result in product_results:
+                if result["product"].key not in (
+                    "cloud_top_temperature",
+                    "cloud_top_height",
+                ) or result["status"] not in (
+                    "complete",
+                    "valid_zero",
+                    "insufficient_valid_pixels",
+                ):
+                    continue
+                if cloudy_fraction == 0:
+                    result["status"] = "valid_zero"
+                    result["valid_fraction"] = 1.0
+                elif cloudy_fraction:
+                    cloud_valid_fraction = min(
+                        1.0, result["raw_valid_fraction_100"] / cloudy_fraction
+                    )
+                    result["valid_fraction"] = cloud_valid_fraction
+                    result["status"] = (
+                        "complete"
+                        if cloud_valid_fraction >= MINIMUM_VALID_PIXEL_FRACTION
+                        else "insufficient_valid_pixels"
+                    )
             with connection(settings.database_url) as conn, conn.transaction():
                 source_metadata: dict[str, Any] = {}
                 for result in product_results:
@@ -559,12 +608,26 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
                                 prior_ir = prior.get("infrared_c13", {}).get("mean")
                                 if current_ir is not None and prior_ir is not None and offset == 15:
                                     changes[name] = current_ir - prior_ir
+                            gradients = {
+                                "infrared_north_south": _spatial_difference(
+                                    spatial, radius, "infrared_c13", "north", "south"
+                                ),
+                                "infrared_east_west": _spatial_difference(
+                                    spatial, radius, "infrared_c13", "east", "west"
+                                ),
+                                "cloudy_north_south": _spatial_difference(
+                                    spatial, radius, "clear_sky_mask", "north", "south"
+                                ),
+                                "cloudy_east_west": _spatial_difference(
+                                    spatial, radius, "clear_sky_mask", "east", "west"
+                                ),
+                            }
                             _insert_feature(
                                 conn,
                                 _feature_values(
                                     decision_time, offset, radius, sector, satellite,
                                     offset_scan_ends.get(offset, decision_time - timedelta(minutes=15)),
-                                    current, changes, source_metadata,
+                                    current, changes, gradients, source_metadata,
                                 ),
                             )
             for source_path in temp_sources:

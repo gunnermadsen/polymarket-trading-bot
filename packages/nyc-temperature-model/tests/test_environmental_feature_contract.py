@@ -5,12 +5,17 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from nyc_temperature_model.goes_ingestion import FEATURE_SCHEMA_VERSION as GOES_FEATURE_VERSION
 from nyc_temperature_model.goes_ingestion import (
     GOES_TRANSITION,
     PRODUCTS,
     _extract_patch,
+    _spatial_difference,
     operational_satellite,
     select_causal_scan,
+)
+from nyc_temperature_model.hrrr_environment_ingestion import (
+    FEATURE_SCHEMA_VERSION as HRRR_FEATURE_VERSION,
 )
 from nyc_temperature_model.hrrr_environment_ingestion import (
     FIELD_ALIASES,
@@ -143,6 +148,24 @@ def test_hrrr_shortwave_alias_matches_cfgrib_decoding():
     assert "sdswrf" in FIELD_ALIASES["downward_shortwave_radiation"]
 
 
+def test_v2_spatial_gradients_are_explicit_numeric_features():
+    spatial = {
+        (25, "north"): {
+            "infrared_c13": {"mean": 280.0},
+            "clear_sky_mask": {"cloudy_fraction": 0.75},
+        },
+        (25, "south"): {
+            "infrared_c13": {"mean": 275.0},
+            "clear_sky_mask": {"cloudy_fraction": 0.25},
+        },
+    }
+
+    assert GOES_FEATURE_VERSION.endswith("v2")
+    assert HRRR_FEATURE_VERSION.endswith("v2")
+    assert _spatial_difference(spatial, 25, "infrared_c13", "north", "south") == 5.0
+    assert _spatial_difference(spatial, 25, "clear_sky_mask", "north", "south") == 0.5
+
+
 def test_environment_migration_uses_typed_columns_and_versioned_keys():
     migration = Path(__file__).parents[2] / "db-migrate/src/migrations/weather/1787760000000-AddTemperatureEnvironmentalFeatures.ts"
     text = migration.read_text()
@@ -154,6 +177,12 @@ def test_environment_migration_uses_typed_columns_and_versioned_keys():
     assert "feature_schema_version" in text
     assert "infrared_brightness_temperature_mean_k double precision" in text
     assert "total_cloud_cover_mean_fraction double precision" in text
+    gradients = Path(__file__).parents[2] / (
+        "db-migrate/src/migrations/weather/1787767200000-AddTemperatureSpatialGradients.ts"
+    )
+    gradient_text = gradients.read_text()
+    assert "infrared_north_south_gradient_k double precision" in gradient_text
+    assert "temperature_2m_east_west_gradient_k double precision" in gradient_text
 
 
 def test_temperature_compose_has_exactly_two_restricted_environment_workers():

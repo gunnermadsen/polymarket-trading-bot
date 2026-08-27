@@ -25,7 +25,7 @@ from .jobs import Job, update_progress
 from .sources import file_sha256
 from .spatial_features import RADII_KM, SECTORS, numeric_summary, spatial_mask
 
-FEATURE_SCHEMA_VERSION = "hrrr-environment-klga-v1"
+FEATURE_SCHEMA_VERSION = "hrrr-environment-klga-v2"
 AVAILABILITY_LAG_MINUTES = 75
 MINIMUM_VALID_PIXEL_FRACTION = 0.5
 FIELD_SEARCH = (
@@ -238,6 +238,7 @@ def _feature_values(
     radius: int,
     sector: str,
     summaries: dict[str, dict[str, float | None]],
+    gradients: dict[str, float | None],
     metadata: dict,
 ) -> tuple:
     field = lambda name: summaries.get(name, {})
@@ -258,6 +259,7 @@ def _feature_values(
         field("accumulated_precipitation").get("mean"),
         field("composite_reflectivity").get("mean"),
         field("composite_reflectivity").get("max"), valid_fraction,
+        gradients.get("temperature_north_south"), gradients.get("temperature_east_west"),
         psycopg.types.json.Jsonb({}), psycopg.types.json.Jsonb(metadata),
     )
 
@@ -273,10 +275,12 @@ def _insert_feature(conn, values: tuple) -> None:
           downward_shortwave_radiation_mean_w_m2,wind_u_10m_mean_m_s,
           wind_v_10m_mean_m_s,wind_speed_10m_mean_m_s,boundary_layer_height_mean_m,
           accumulated_precipitation_mean_mm,composite_reflectivity_mean_dbz,
-          composite_reflectivity_max_dbz,valid_pixel_fraction,quality_flags,source_metadata
+          composite_reflectivity_max_dbz,valid_pixel_fraction,
+          temperature_2m_north_south_gradient_k,temperature_2m_east_west_gradient_k,
+          quality_flags,source_metadata
         ) VALUES (
           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-          %s,%s,%s,%s,%s,%s
+          %s,%s,%s,%s,%s,%s,%s,%s
         ) ON CONFLICT DO NOTHING
         """,
         values,
@@ -289,7 +293,7 @@ def ingest_hrrr_environment(settings: Settings, job: Job) -> dict[str, Any]:
     version = str(job.request.get("feature_schema_version", FEATURE_SCHEMA_VERSION))
     lag = int(job.request.get("availability_lag_minutes", AVAILABILITY_LAG_MINUTES))
     if version != FEATURE_SCHEMA_VERSION or lag != AVAILABILITY_LAG_MINUTES:
-        raise ValueError("HRRR environment v1 requires its frozen schema and 75-minute allowance")
+        raise ValueError("HRRR environment v2 requires its frozen schema and 75-minute allowance")
     try:
         from herbie import Herbie
     except ImportError as error:
@@ -378,11 +382,26 @@ def ingest_hrrr_environment(settings: Settings, job: Job) -> dict[str, Any]:
                         ),
                     )
                     for (radius, sector), field_summaries in summaries.items():
+                        if radius:
+                            north = summaries[(radius, "north")].get("temperature_2m", {}).get("mean")
+                            south = summaries[(radius, "south")].get("temperature_2m", {}).get("mean")
+                            east = summaries[(radius, "east")].get("temperature_2m", {}).get("mean")
+                            west = summaries[(radius, "west")].get("temperature_2m", {}).get("mean")
+                        else:
+                            north = south = east = west = None
+                        gradients = {
+                            "temperature_north_south": (
+                                north - south if north is not None and south is not None else None
+                            ),
+                            "temperature_east_west": (
+                                east - west if east is not None and west is not None else None
+                            ),
+                        }
                         _insert_feature(
                             conn,
                             _feature_values(
                                 decision_time, model_run, valid_at, radius, sector,
-                                field_summaries, metadata,
+                                field_summaries, gradients, metadata,
                             ),
                         )
                 counters["completed"] += status in ("complete", "valid_zero")
