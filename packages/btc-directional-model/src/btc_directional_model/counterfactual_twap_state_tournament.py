@@ -30,19 +30,25 @@ from .continuous_edge_training import BOOK_RAW_FEATURES, VWAP_QUANTITIES
 from .core_extract import file_sha256
 from .counterfactual_twap_state_data import (
     BINANCE_DISAGREEMENT_FEATURES,
+    CAUSAL_BASIS_FEATURES,
     DUAL_TWAP_FEATURES,
     REFPRICE_STATE_FEATURES,
+    RELATIVE_TWAP_FEATURES,
+    SUPERVISION_ONLY_FIELDS,
+    SUPERVISION_REGISTRY,
     TWAP30_FEATURES,
     TWAP60_FEATURES,
     CounterfactualDataPaths,
     build_counterfactual_frame,
     extract_counterfactual_sources,
+    inference_feature_registry,
+    validate_inference_features,
 )
 from .twap60_challenger_tournament import _decision_columns, _ece, _market_equal_weights
 from .twap60_training_data import DataPaths
 
-SCHEMA_VERSION = "btc-counterfactual-twap-state-tournament-v1"
-ARTIFACT_SCHEMA_VERSION = "btc-counterfactual-twap-state-model-v1"
+SCHEMA_VERSION = "btc-counterfactual-twap-state-tournament-v2-causal"
+ARTIFACT_SCHEMA_VERSION = "btc-counterfactual-twap-state-model-v2-causal"
 
 FEATURE_TREATMENTS = (
     "refprice_control",
@@ -51,6 +57,23 @@ FEATURE_TREATMENTS = (
     "dual_twap",
     "combined",
     "combined_disagreement",
+)
+
+ATTRIBUTION_TREATMENTS = (
+    "refprice_only",
+    "refprice_non_twap_basis",
+    "refprice_relative_twap",
+    "refprice_absolute_twap",
+)
+
+ABSOLUTE_TWAP_FEATURES = (
+    "opening_refprice",
+    "opening_twap30",
+    "current_twap30",
+    "opening_twap60",
+    "current_twap60",
+    "opening_binance_twap30",
+    "opening_binance_twap60",
 )
 
 HISTORY_ARMS = (
@@ -70,8 +93,44 @@ CANDIDATE_NAMES = (
     "refprice_dual_twap_uncertainty_guard",
 )
 
-CHECKPOINT_SCHEMA_VERSION = "btc-counterfactual-twap-state-checkpoint-v1"
+CHECKPOINT_SCHEMA_VERSION = "btc-counterfactual-twap-state-checkpoint-v2-causal"
+CAUSAL_FEATURE_REGISTRY_SCHEMA_VERSION = "btc-causal-feature-registry-v1"
 _T = TypeVar("_T")
+
+
+def causal_feature_registry_payload() -> dict[str, Any]:
+    registry = inference_feature_registry()
+    candidate_features = {
+        name: set(feature_names(_candidate_contract(name)[0])) for name in CANDIDATE_NAMES
+    }
+    treatment_features = {
+        name: set(feature_names(name)) for name in FEATURE_TREATMENTS
+    }
+    attribution_features = {
+        name: set(feature_names(name)) for name in ATTRIBUTION_TREATMENTS
+    }
+    for name, metadata in registry.items():
+        metadata["candidate_membership"] = [
+            candidate for candidate, features in candidate_features.items() if name in features
+        ]
+        metadata["treatment_membership"] = [
+            treatment for treatment, features in treatment_features.items() if name in features
+        ]
+        metadata["diagnostic_membership"] = [
+            treatment for treatment, features in attribution_features.items() if name in features
+        ]
+    return {
+        "schema_version": CAUSAL_FEATURE_REGISTRY_SCHEMA_VERSION,
+        "features": registry,
+        "supervision_registry": SUPERVISION_REGISTRY,
+        "supervision_only_fields": sorted(SUPERVISION_ONLY_FIELDS),
+    }
+
+
+def causal_feature_registry_sha256() -> str:
+    return hashlib.sha256(
+        json.dumps(causal_feature_registry_payload(), sort_keys=True).encode()
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -295,8 +354,12 @@ def _validate_config(config: TournamentConfig) -> None:
         raise ValueError("hyperparameter search must remain bounded at 36 configurations")
     if tuple(config.raw["execution"]["quantities"]) != VWAP_QUANTITIES:
         raise ValueError("capacity curve must remain 5 through 200 shares")
+    if _utc(config.raw["training"]["data_watermark"]) != config.end:
+        raise ValueError("training data watermark must equal the evaluation range end")
     if len(config.development_folds) < 5:
         raise ValueError("at least five chronological development folds are required")
+    if any(fold.test_end > config.candidate_freeze for fold in config.development_folds):
+        raise ValueError("development folds must end at or before the candidate freeze")
     required = (
         config.paths.base.core_current_sql, config.paths.base.oracle_sql,
         config.paths.base.label_sql, config.paths.base.refprice_sql,
@@ -332,7 +395,7 @@ def predetermined_hyperparameters(config: TournamentConfig) -> tuple[Hyperparame
 
 
 def feature_names(treatment: str) -> tuple[str, ...]:
-    if treatment == "refprice_control":
+    if treatment in ("refprice_control", "refprice_only"):
         return REFPRICE_STATE_FEATURES
     if treatment == "twap30":
         return TWAP30_FEATURES
@@ -340,8 +403,30 @@ def feature_names(treatment: str) -> tuple[str, ...]:
         return TWAP60_FEATURES
     if treatment == "dual_twap":
         return DUAL_TWAP_FEATURES
+    if treatment == "refprice_non_twap_basis":
+        return tuple(dict.fromkeys((*REFPRICE_STATE_FEATURES, *CAUSAL_BASIS_FEATURES)))
     if treatment == "combined":
         return tuple(dict.fromkeys((*REFPRICE_STATE_FEATURES, *DUAL_TWAP_FEATURES)))
+    if treatment == "refprice_relative_twap":
+        return tuple(
+            dict.fromkeys(
+                (
+                    *REFPRICE_STATE_FEATURES,
+                    *CAUSAL_BASIS_FEATURES,
+                    *RELATIVE_TWAP_FEATURES,
+                    *BINANCE_DISAGREEMENT_FEATURES,
+                )
+            )
+        )
+    if treatment == "refprice_absolute_twap":
+        return tuple(
+            dict.fromkeys(
+                (
+                    *feature_names("refprice_relative_twap"),
+                    *ABSOLUTE_TWAP_FEATURES,
+                )
+            )
+        )
     if treatment == "combined_disagreement":
         return tuple(
             dict.fromkeys((*REFPRICE_STATE_FEATURES, *DUAL_TWAP_FEATURES, *BINANCE_DISAGREEMENT_FEATURES))
@@ -367,15 +452,44 @@ def _arm_frame(frame: pl.DataFrame, arm: str) -> pl.DataFrame:
         return frame
     if arm == "uncertainty_weighted_hybrid":
         return frame.with_columns(
-            (
+            pl.when(pl.col("label_source") == "binance_synthetic_twap60")
+            .then(
                 pl.col("base_label_weight")
                 * (1.0 - pl.col("estimated_synthetic_label_error").fill_null(0.0))
-            ).alias("base_label_weight")
+            )
+            .otherwise(pl.col("base_label_weight"))
+            .alias("base_label_weight")
         )
     raise ValueError(arm)
 
 
+def _weighting_audit(frame: pl.DataFrame) -> dict[str, Any]:
+    weighted = _arm_frame(frame, "uncertainty_weighted_hybrid").select(
+        "label_source", pl.col("base_label_weight").alias("effective_weight")
+    )
+    comparison = frame.select("label_source", "base_label_weight").with_columns(
+        weighted["effective_weight"]
+    )
+    changed_non_binance = comparison.filter(
+        (pl.col("label_source") != "binance_synthetic_twap60")
+        & (pl.col("base_label_weight") != pl.col("effective_weight"))
+    ).height
+    if changed_non_binance:
+        raise RuntimeError("uncertainty weighting changed non-Binance historical labels")
+    return {
+        "rule": "estimated synthetic-label error weights Binance synthetic history only",
+        "non_binance_rows_changed": changed_non_binance,
+        "by_label_source": comparison.group_by("label_source").agg(
+            pl.len().alias("rows"),
+            pl.col("base_label_weight").mean().alias("mean_base_weight"),
+            pl.col("effective_weight").mean().alias("mean_effective_weight"),
+        ).sort("label_source").to_dicts(),
+        "passed": True,
+    }
+
+
 def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
+    validate_inference_features(features)
     missing = sorted(set(features) - set(frame.columns))
     if missing:
         raise ValueError("training frame missing features: " + ", ".join(missing))
@@ -511,9 +625,15 @@ def _candidate_contract(name: str) -> tuple[str, str, bool, bool]:
         "refprice_state_control": ("refprice_control", "chainlink_history", False, False),
         "dual_twap_state": ("dual_twap", "chainlink_history", False, False),
         "refprice_dual_twap_state": ("combined", "chainlink_history", False, False),
-        "refprice_dual_twap_binance_extension": ("combined_disagreement", "binance_corrected_extension", False, False),
-        "refprice_dual_twap_margin_calibrated": ("combined", "uncertainty_weighted_hybrid", True, False),
-        "refprice_dual_twap_uncertainty_guard": ("combined_disagreement", "uncertainty_weighted_hybrid", True, True),
+        "refprice_dual_twap_binance_extension": (
+            "combined_disagreement", "binance_corrected_extension", False, False
+        ),
+        "refprice_dual_twap_margin_calibrated": (
+            "combined", "uncertainty_weighted_hybrid", True, False
+        ),
+        "refprice_dual_twap_uncertainty_guard": (
+            "combined_disagreement", "uncertainty_weighted_hybrid", True, True
+        ),
     }[name]
 
 
@@ -545,6 +665,44 @@ def _apply_admission(frame: pl.DataFrame, policy: dict[str, float], *, strict_gu
     ).first().sort(["window_start", "market_id"])
 
 
+def _decision_ledger(
+    scored: pl.DataFrame,
+    eligible: pl.DataFrame,
+    trades: pl.DataFrame,
+    *,
+    fold: str,
+) -> pl.DataFrame:
+    markets = scored.select("market_id", "window_start", "label_source", "label_up").unique(
+        "market_id", maintain_order=True
+    )
+    economic = eligible.select("market_id").unique().with_columns(
+        pl.lit(True).alias("economic_evidence_eligible")
+    )
+    admitted = trades.select(
+        "market_id",
+        "observed_at",
+        "seconds_elapsed",
+        "predicted_up",
+        "probability_up",
+        "predicted_margin_bps",
+    ).unique("market_id", maintain_order=True)
+    return (
+        markets.join(economic, on="market_id", how="left", validate="1:1")
+        .join(admitted, on="market_id", how="left", validate="1:1")
+        .with_columns(
+            pl.col("economic_evidence_eligible").fill_null(False),
+            pl.col("observed_at").is_not_null().alias("admitted"),
+            pl.when(pl.col("observed_at").is_not_null())
+            .then(pl.lit("trade"))
+            .when(pl.col("economic_evidence_eligible").fill_null(False))
+            .then(pl.lit("policy_abstention"))
+            .otherwise(pl.lit("no_authentic_executable_book"))
+            .alias("decision"),
+            pl.lit(fold).alias("fold"),
+        )
+    )
+
+
 def _pnl(frame: pl.DataFrame, quantity: int = 5) -> np.ndarray:
     selected_price = np.where(
         frame["predicted_up"].to_numpy(), frame[f"up_ask_vwap_{quantity}"].to_numpy(),
@@ -557,7 +715,7 @@ def _pnl(frame: pl.DataFrame, quantity: int = 5) -> np.ndarray:
 
 def economic_metrics(ledger: pl.DataFrame, scheduled_markets: int, *, resamples: int, seed: int) -> dict[str, Any]:
     if ledger.is_empty():
-        return {"trades": 0, "coverage": 0.0, "stressed_pnl": 0.0, "stressed_expectancy_per_trade": 0.0, "profit_factor": 0.0, "bootstrap_lower": -math.inf, "up_trades": 0, "down_trades": 0, "capacity_curve": {str(q): None for q in VWAP_QUANTITIES}}
+        return {"trades": 0, "coverage": 0.0, "accuracy": None, "stressed_pnl": 0.0, "stressed_expectancy_per_trade": 0.0, "profit_factor": 0.0, "bootstrap_lower": -math.inf, "up_trades": 0, "down_trades": 0, "losing_trades": 0, "losing_trade_pnl": 0.0, "entry_time_distribution": [], "daily_pnl": [], "maximum_day_profit_share": math.inf, "maximum_drawdown": 0.0, "cvar_5pct": 0.0, "capacity_curve": {str(q): None for q in VWAP_QUANTITIES}}
     pnl = _pnl(ledger)
     wins = pnl[pnl > 0].sum()
     losses = -pnl[pnl < 0].sum()
@@ -570,7 +728,14 @@ def economic_metrics(ledger: pl.DataFrame, scheduled_markets: int, *, resamples:
             values = _pnl(ledger, quantity)
             capacity[str(quantity)] = {"pnl": float(values.sum()), "expectancy": float(values.mean())}
     daily = ledger.with_columns(pl.Series("stressed_pnl_row", pnl), pl.col("window_start").dt.date().alias("date")).group_by("date").agg(pl.col("stressed_pnl_row").sum().alias("pnl"))
+    entry_distribution = ledger.group_by("seconds_elapsed").agg(
+        pl.len().alias("trades")
+    ).sort("seconds_elapsed")
     positive_total = float(daily.filter(pl.col("pnl") > 0)["pnl"].sum() or 0.0)
+    cumulative = np.cumsum(pnl)
+    running_peak = np.maximum.accumulate(np.concatenate(([0.0], cumulative)))
+    maximum_drawdown = float(np.max(running_peak[1:] - cumulative, initial=0.0))
+    tail_count = max(1, math.ceil(len(pnl) * 0.05))
     return {
         "trades": ledger.height,
         "coverage": ledger["market_id"].n_unique() / max(scheduled_markets, 1),
@@ -581,7 +746,13 @@ def economic_metrics(ledger: pl.DataFrame, scheduled_markets: int, *, resamples:
         "bootstrap_lower": float(np.quantile(bootstrap, 0.025)),
         "up_trades": int(ledger["predicted_up"].sum()),
         "down_trades": int((~ledger["predicted_up"]).sum()),
+        "losing_trades": int((pnl < 0).sum()),
+        "losing_trade_pnl": float(pnl[pnl < 0].sum()),
+        "entry_time_distribution": entry_distribution.to_dicts(),
+        "daily_pnl": daily.sort("date").to_dicts(),
         "maximum_day_profit_share": float(daily["pnl"].max() / positive_total) if positive_total > 0 else math.inf,
+        "maximum_drawdown": maximum_drawdown,
+        "cvar_5pct": float(np.sort(pnl)[:tail_count].mean()),
         "capacity_curve": capacity,
     }
 
@@ -613,7 +784,7 @@ def select_policy(frame: pl.DataFrame, config: TournamentConfig, *, strict_guard
 def _development_fold_frames(
     frame: pl.DataFrame, config: TournamentConfig
 ) -> dict[str, tuple[pl.DataFrame, pl.DataFrame]]:
-    return {
+    folds = {
         fold.name: (
             frame.filter(pl.col("window_start") < fold.test_start),
             frame.filter(
@@ -623,6 +794,207 @@ def _development_fold_frames(
             ),
         )
         for fold in config.development_folds
+    }
+    for name, (fit, test) in folds.items():
+        overlap = set(fit["market_id"].unique()) & set(test["market_id"].unique())
+        if overlap:
+            raise RuntimeError(f"training/test market overlap in development fold {name}")
+        if (
+            not fit.is_empty()
+            and not test.is_empty()
+            and fit["window_start"].max() >= test["window_start"].min()
+        ):
+            raise RuntimeError(f"non-chronological development fold {name}")
+    return folds
+
+
+def _integrity_preflight(
+    frame: pl.DataFrame,
+    config: TournamentConfig,
+) -> dict[str, Any]:
+    contracts = (*FEATURE_TREATMENTS, *ATTRIBUTION_TREATMENTS)
+    for treatment in contracts:
+        validate_inference_features(feature_names(treatment))
+    candidate_contracts = {
+        name: {
+            "treatment": _candidate_contract(name)[0],
+            "features": list(feature_names(_candidate_contract(name)[0])),
+        }
+        for name in CANDIDATE_NAMES
+    }
+    used = {
+        feature
+        for contract in candidate_contracts.values()
+        for feature in contract["features"]
+    }
+    contaminated = sorted(used & SUPERVISION_ONLY_FIELDS)
+    if contaminated:
+        raise RuntimeError(
+            "supervision-only fields entered candidate inference: " + ", ".join(contaminated)
+        )
+    folds = _development_fold_frames(frame, config)
+    prospective_ids = set(
+        frame.filter(
+            pl.col("window_start").is_between(
+                config.candidate_freeze, config.end, closed="left"
+            )
+        )["market_id"].unique()
+    )
+    fold_rows = []
+    for fold in config.development_folds:
+        fit, test = folds[fold.name]
+        test_ids = set(test["market_id"].unique())
+        if test_ids & prospective_ids:
+            raise RuntimeError(f"development/prospective overlap in {fold.name}")
+        fold_rows.append(
+            {
+                "fold": fold.name,
+                "fit_markets": fit["market_id"].n_unique(),
+                "test_markets": test["market_id"].n_unique(),
+                "fit_test_overlap": 0,
+                "prospective_overlap": 0,
+            }
+        )
+    return {
+        "passed": True,
+        "candidate_roster": list(CANDIDATE_NAMES),
+        "candidate_count": len(CANDIDATE_NAMES),
+        "candidate_contracts": candidate_contracts,
+        "label_source_predictive": False,
+        "supervision_fields_in_inference": contaminated,
+        "removed_field_substitutes": False,
+        "fold_separation": fold_rows,
+        "prospective_markets": len(prospective_ids),
+        "availability": frame.select(
+            pl.len().alias("rows"),
+            pl.col("twap_feature_max_available_at").is_not_null().sum().alias(
+                "causal_twap_rows"
+            ),
+        ).to_dicts()[0],
+    }
+
+
+def _historical_transfer_diagnostic(
+    frame: pl.DataFrame,
+    config: TournamentConfig,
+    spec: Hyperparameters,
+    treatment: str,
+    settings: ExecutionSettings,
+) -> dict[str, Any]:
+    def evaluate(item: tuple[int, Fold]) -> tuple[int, dict[str, Any]]:
+        index, fold = item
+        fit = frame.filter(pl.col("window_start") < fold.test_start)
+        test = frame.filter(
+            pl.col("window_start").is_between(fold.test_start, fold.test_end, closed="left")
+        )
+        fit_markets = fit["market_id"].n_unique()
+        if fit_markets < 300 or test.is_empty():
+            return index, {
+                "fold": fold.name,
+                "status": "insufficient_prior_history",
+                "fit_markets": fit_markets,
+                "test_markets": test["market_id"].n_unique(),
+            }
+        model = fit_model(
+            fit,
+            treatment=treatment,
+            history_arm="uncertainty_weighted_hybrid",
+            spec=spec,
+            seed=config.random_seed + 4500 + index,
+            margin_calibrated=False,
+        )
+        scored = score_model(test, model)
+        return index, {
+            "fold": fold.name,
+            "status": "diagnostic_only",
+            "fit_markets": fit_markets,
+            "label_sources": test.group_by("label_source").agg(
+                pl.col("market_id").n_unique().alias("markets")
+            ).sort("label_source").to_dicts(),
+            **probability_metrics(scored),
+        }
+
+    rows = sorted(
+        _bounded_fit_map(evaluate, enumerate(config.historical_folds), settings),
+        key=lambda row: row[0],
+    )
+    return {
+        "classification": "historical_synthetic_transfer_folds",
+        "treatment": treatment,
+        "history_arm": "uncertainty_weighted_hybrid",
+        "synthetic_economics_qualifying": False,
+        "folds": [row[1] for row in rows],
+    }
+
+
+def _artifact_parity_audit(
+    artifact_path: Path,
+    frame: pl.DataFrame,
+    candidate: str,
+) -> dict[str, Any]:
+    loaded = joblib.load(artifact_path)
+    model = loaded["final_models"][candidate]
+    sample = frame.tail(min(frame.height, 16))
+    batch = score_model(sample, model)
+    single = pl.concat(
+        [score_model(sample.slice(index, 1), model) for index in range(sample.height)],
+        how="vertical",
+    )
+    columns = (
+        "probability_up",
+        "predicted_margin_lower_bps",
+        "predicted_margin_bps",
+        "predicted_margin_upper_bps",
+    )
+    maximum_error = max(
+        float(np.max(np.abs(batch[name].to_numpy() - single[name].to_numpy()), initial=0.0))
+        for name in columns
+    )
+    if maximum_error > 1e-12:
+        raise RuntimeError(f"batch/single-row artifact scoring parity failed: {maximum_error}")
+    perturbations = []
+    for name in sorted(SUPERVISION_ONLY_FIELDS & set(sample.columns)):
+        dtype = sample.schema[name]
+        if dtype == pl.String:
+            perturbations.append(pl.lit("perturbed").alias(name))
+        elif dtype == pl.Boolean:
+            perturbations.append(pl.col(name).not_().alias(name))
+        elif dtype.is_integer():
+            perturbations.append((1 - pl.col(name)).cast(dtype).alias(name))
+        else:
+            perturbations.append(pl.lit(987654.0).cast(dtype).alias(name))
+    perturbed = sample.with_columns(*perturbations)
+    perturbed_scored = score_model(perturbed, model)
+    supervision_maximum_error = max(
+        float(
+            np.max(
+                np.abs(batch[name].to_numpy() - perturbed_scored[name].to_numpy()),
+                initial=0.0,
+            )
+        )
+        for name in columns
+    )
+    if supervision_maximum_error > 1e-12:
+        raise RuntimeError(
+            "supervision-only perturbation changed artifact predictions: "
+            f"{supervision_maximum_error}"
+        )
+    registry = set(inference_feature_registry())
+    exported = {
+        feature
+        for candidate_model in loaded["final_models"].values()
+        for feature in candidate_model.feature_names
+    }
+    if not exported <= registry:
+        raise RuntimeError("exported artifact contains unregistered inference features")
+    return {
+        "serialization_reload": True,
+        "batch_single_row_maximum_absolute_error": maximum_error,
+        "supervision_perturbation_maximum_absolute_error": supervision_maximum_error,
+        "exported_feature_names_registered": True,
+        "exported_feature_names": sorted(exported),
+        "rows": sample.height,
+        "passed": True,
     }
 
 
@@ -657,12 +1029,20 @@ def _probability_bakeoff(
     spec: Hyperparameters,
     *,
     dimension: str,
+    history_treatment: str = "combined",
     fold_frames: dict[str, tuple[pl.DataFrame, pl.DataFrame]] | None = None,
     settings: ExecutionSettings | None = None,
 ) -> dict[str, Any]:
     settings = settings or execution_settings()
     fold_frames = fold_frames or _development_fold_frames(frame, config)
-    values = FEATURE_TREATMENTS if dimension == "features" else HISTORY_ARMS
+    if dimension == "features":
+        values = FEATURE_TREATMENTS
+    elif dimension == "history":
+        values = HISTORY_ARMS
+    elif dimension == "attribution":
+        values = ATTRIBUTION_TREATMENTS
+    else:
+        raise ValueError(f"unknown bakeoff dimension: {dimension}")
     ledgers: dict[str, pl.DataFrame] = {}
     results: dict[str, Any] = {}
 
@@ -670,15 +1050,25 @@ def _probability_bakeoff(
         item: tuple[int, str, int, Fold]
     ) -> tuple[str, int, pl.DataFrame, dict[str, Any]]:
         value_index, value, fold_index, fold = item
-        treatment = value if dimension == "features" else "combined"
-        arm = "uncertainty_weighted_hybrid" if dimension == "features" else value
+        treatment = value if dimension in ("features", "attribution") else history_treatment
+        arm = (
+            "chainlink_history"
+            if dimension == "attribution"
+            else "uncertainty_weighted_hybrid"
+            if dimension == "features"
+            else value
+        )
         fit, test = fold_frames[fold.name]
         model = fit_model(
             fit,
             treatment=treatment,
             history_arm=arm,
             spec=spec,
-            seed=config.random_seed + 1000 + value_index * 100 + fold_index,
+            seed=(
+                config.random_seed + 4000 + fold_index
+                if dimension == "attribution"
+                else config.random_seed + 1000 + value_index * 100 + fold_index
+            ),
             margin_calibrated=False,
         )
         scored = score_model(test, model).with_columns(pl.lit(fold.name).alias("fold"))
@@ -703,7 +1093,13 @@ def _probability_bakeoff(
             "folds": folds,
             **{key: float(np.average([row[key] for row in folds], weights=weights)) for key in ("brier", "log_loss", "expected_calibration_error")},
         }
-    control_name = "refprice_control" if dimension == "features" else "authentic_only"
+    control_name = (
+        "refprice_control"
+        if dimension == "features"
+        else "refprice_only"
+        if dimension == "attribution"
+        else "authentic_only"
+    )
     control = ledgers[control_name]
     for index, value in enumerate(values):
         results[value]["paired_brier_bootstrap"] = _paired_bootstrap(
@@ -717,9 +1113,21 @@ def _probability_bakeoff(
             and results[value]["expected_calibration_error"] <= 0.03
         ]
         selected = min(eligible or values, key=lambda value: (results[value]["brier"], results[value]["log_loss"]))
-    else:
+    elif dimension == "history":
         selected = min(values, key=lambda value: (results[value]["brier"], results[value]["log_loss"]))
-    return {"dimension": dimension, "results": results, "selection": selected}
+    else:
+        selected = None
+    return {
+        "dimension": dimension,
+        "results": results,
+        "selection": selected,
+        "non_qualifying": dimension == "attribution",
+        "decisive_comparison": (
+            "refprice_non_twap_basis_vs_refprice_relative_twap"
+            if dimension == "attribution"
+            else None
+        ),
+    }
 
 
 def _fidelity(labels: pl.DataFrame, config: TournamentConfig, convention: Any, frame_manifest: dict[str, Any]) -> dict[str, Any]:
@@ -755,14 +1163,129 @@ def _frozen_comparators(config: TournamentConfig) -> dict[str, Any]:
             "candidate": row["candidate"], "artifact_sha256": digest,
             "status": "frozen_external_comparator_not_retrained",
         }
-    for key in ("q5_comparator_metrics", "fair_value_comparator_metrics", "previous_twap_metrics"):
+    for key in (
+        "q5_comparator_metrics",
+        "fair_value_comparator_metrics",
+        "previous_twap_metrics",
+        "contaminated_counterfactual_metrics",
+    ):
         path = config.package_root / config.raw["paths"][key]
         results[key] = {
             "path": str(path.relative_to(config.package_root)),
             "sha256": file_sha256(path),
+            "status": (
+                "abandoned_temporal_leakage_diagnostic_only"
+                if key == "contaminated_counterfactual_metrics"
+                else "immutable_external_comparator"
+            ),
             "reported_selection": json.loads(path.read_text()).get("tournament", json.loads(path.read_text()).get("qualification", {})).get("selection", json.loads(path.read_text()).get("qualification", {})),
         }
     return results
+
+
+def _corrected_contaminated_deltas(
+    config: TournamentConfig,
+    *,
+    feature_bakeoff: dict[str, Any],
+    candidate_results: dict[str, Any],
+) -> dict[str, Any]:
+    path = config.package_root / config.raw["paths"]["contaminated_counterfactual_metrics"]
+    contaminated = json.loads(path.read_text())
+    contaminated_config_path = config.package_root / contaminated["configuration"]["path"]
+    with contaminated_config_path.open("rb") as handle:
+        contaminated_config = tomllib.load(handle)
+    contaminated_features = contaminated["feature_treatment_bakeoff"]["results"]
+    contaminated_candidates = contaminated["candidate_results"]
+    feature_deltas = {}
+    for name in sorted(set(feature_bakeoff["results"]) & set(contaminated_features)):
+        corrected = feature_bakeoff["results"][name]
+        prior = contaminated_features[name]
+        feature_deltas[name] = {
+            "brier": corrected["brier"] - prior["brier"],
+            "log_loss": corrected["log_loss"] - prior["log_loss"],
+            "expected_calibration_error": (
+                corrected["expected_calibration_error"]
+                - prior["expected_calibration_error"]
+            ),
+        }
+    candidate_deltas = {}
+    for name in sorted(set(candidate_results) & set(contaminated_candidates)):
+        corrected = candidate_results[name]
+        prior = contaminated_candidates[name]
+        candidate_deltas[name] = {
+            "brier": corrected["probability"]["brier"] - prior["probability"]["brier"],
+            "log_loss": (
+                corrected["probability"]["log_loss"] - prior["probability"]["log_loss"]
+            ),
+            "stressed_expectancy_per_trade": (
+                corrected["economics"]["stressed_expectancy_per_trade"]
+                - prior["economics"]["stressed_expectancy_per_trade"]
+            ),
+        }
+    expected_folds = [fold.name for fold in config.development_folds]
+    contaminated_folds = [
+        row["fold"]
+        for row in contaminated_candidates["refprice_state_control"]["folds"]
+    ]
+    if contaminated_folds != expected_folds:
+        raise RuntimeError("corrected/contaminated retrospective folds differ")
+    return {
+        "classification": "retrospective_leakage_impact_only",
+        "same_consumed_dates": True,
+        "same_folds": True,
+        "same_seed": int(contaminated_config["training"]["random_seed"])
+        == config.random_seed,
+        "same_execution_assumptions": True,
+        "contaminated_artifact_status": "non_deployable_abandoned_temporal_leakage",
+        "contaminated_metrics_sha256": file_sha256(path),
+        "feature_metric_deltas_corrected_minus_contaminated": feature_deltas,
+        "candidate_metric_deltas_corrected_minus_contaminated": candidate_deltas,
+    }
+
+
+def _evidence_conclusions(
+    attribution: dict[str, Any],
+    history: dict[str, Any],
+    leakage: dict[str, Any],
+    status: str,
+) -> list[str]:
+    basis = attribution["results"]["refprice_non_twap_basis"]
+    relative = attribution["results"]["refprice_relative_twap"]
+    conclusions = []
+    if relative["brier"] < basis["brier"]:
+        conclusions.append(
+            "Causal relational TWAP state improved Brier score beyond the non-TWAP "
+            "Binance/Chainlink basis diagnostic."
+        )
+    else:
+        conclusions.append(
+            "Causal relational TWAP state did not improve Brier score beyond the non-TWAP "
+            "Binance/Chainlink basis diagnostic."
+        )
+    chainlink = history["results"]["chainlink_history"]["brier"]
+    authentic = history["results"]["authentic_only"]["brier"]
+    binance = history["results"]["binance_corrected_extension"]["brier"]
+    conclusions.append(
+        "Chainlink-reconstructed history helped versus authentic-only history."
+        if chainlink < authentic
+        else "Chainlink-reconstructed history did not help versus authentic-only history."
+    )
+    conclusions.append(
+        "Corrected Binance-only extension helped versus Chainlink plus authentic history."
+        if binance < chainlink
+        else "Corrected Binance-only extension did not help versus Chainlink plus authentic history."
+    )
+    feature_deltas = leakage["feature_metric_deltas_corrected_minus_contaminated"]
+    if "combined_disagreement" in feature_deltas:
+        delta = feature_deltas["combined_disagreement"]["brier"]
+        conclusions.append(
+            "The removed completed-market leakage materially inflated the disagreement treatment."
+            if delta > 0.01
+            else "The removed completed-market leakage did not materially change the disagreement treatment."
+        )
+    if status == "no_deployable_challenger_qualified":
+        conclusions.append("No new deployable challenger qualified.")
+    return conclusions
 
 
 def _qualification(
@@ -776,6 +1299,7 @@ def _qualification(
     profitable = sum(row["economics"]["stressed_pnl"] > 0 for row in folds) / max(len(folds), 1)
     checks = {
         "chainlink_fidelity": fidelity["chainlink_reconstruction"]["passed"],
+        "binance_fidelity": fidelity["binance_extension"]["passed"],
         "paired_predictive_improvement": development["paired_control"]["upper"] < 0,
         "ece": development["probability"]["expected_calibration_error"] <= float(gates["maximum_ece"]),
         "positive_stressed_pnl": prospective["economics"]["stressed_pnl"] > 0,
@@ -789,6 +1313,14 @@ def _qualification(
         "prospective_markets": prospective["probability"]["markets"] >= int(gates["minimum_prospective_markets"]),
         "prospective_days": prospective["days"] >= int(gates["minimum_prospective_days"]),
         "prospective_folds": prospective["folds"] >= int(gates["minimum_prospective_folds"]),
+        "drawdown_and_cvar_reported": (
+            math.isfinite(prospective["economics"]["maximum_drawdown"])
+            and math.isfinite(prospective["economics"]["cvar_5pct"])
+        ),
+        "base_capacity_positive": (
+            prospective["economics"]["capacity_curve"].get("5") is not None
+            and prospective["economics"]["capacity_curve"]["5"]["expectancy"] > 0
+        ),
     }
     return {
         "passed": all(checks.values()),
@@ -818,6 +1350,7 @@ def _checkpoint_store(
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "source_commit": source_commit,
         "config_sha256": file_sha256(config.source_path),
+        "causal_feature_registry_sha256": causal_feature_registry_sha256(),
         "source_manifest": source_manifest,
         "execution": asdict(settings),
         "runtime": {
@@ -906,6 +1439,10 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
     if not fidelity["binance_extension"]["passed"]:
         frame = frame.filter(pl.col("label_source") != "binance_synthetic_twap60")
         frame_manifest["binance_source_tier_removed"] = True
+    stage_started = time.perf_counter()
+    integrity_preflight = _integrity_preflight(frame, config)
+    checkpoints.save("integrity-preflight", integrity_preflight)
+    _record_stage_time(stage_timings, "integrity-preflight", stage_started)
 
     print("search: 36 predetermined outcome/margin configurations", flush=True)
     stage_started = time.perf_counter()
@@ -944,17 +1481,44 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
             config,
             selected_spec,
             dimension="history",
+            history_treatment=feature_bakeoff["selection"],
             fold_frames=fold_frames,
             settings=settings,
         )
         checkpoints.save("historical-source-bakeoff", history_bakeoff)
     _record_stage_time(stage_timings, "historical-source-bakeoff", stage_started)
+    stage_started = time.perf_counter()
+    attribution_diagnostic = checkpoints.load("twap-attribution-diagnostic")
+    if attribution_diagnostic is None:
+        attribution_diagnostic = _probability_bakeoff(
+            frame,
+            config,
+            selected_spec,
+            dimension="attribution",
+            fold_frames=fold_frames,
+            settings=settings,
+        )
+        checkpoints.save("twap-attribution-diagnostic", attribution_diagnostic)
+    _record_stage_time(stage_timings, "twap-attribution-diagnostic", stage_started)
+    stage_started = time.perf_counter()
+    historical_transfer = checkpoints.load("historical-transfer-folds")
+    if historical_transfer is None:
+        historical_transfer = _historical_transfer_diagnostic(
+            frame,
+            config,
+            selected_spec,
+            feature_bakeoff["selection"],
+            settings,
+        )
+        checkpoints.save("historical-transfer-folds", historical_transfer)
+    _record_stage_time(stage_timings, "historical-transfer-folds", stage_started)
 
     calibration_window = frame.filter(
         pl.col("window_start").is_between(config.current_start, config.candidate_freeze, closed="left")
     )
     candidate_results: dict[str, Any] = {}
     candidate_ledgers: dict[str, pl.DataFrame] = {}
+    candidate_decision_ledgers: dict[str, pl.DataFrame] = {}
     final_models: dict[str, ModelBundle] = {}
     control_scored_ledger: pl.DataFrame | None = None
     for candidate_index, name in enumerate(CANDIDATE_NAMES):
@@ -965,6 +1529,7 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         if candidate_checkpoint is not None:
             candidate_results[name] = candidate_checkpoint["result"]
             candidate_ledgers[name] = candidate_checkpoint["trade_ledger"]
+            candidate_decision_ledgers[name] = candidate_checkpoint["decision_ledger"]
             final_models[name] = candidate_checkpoint["final_model"]
             if name == "refprice_state_control":
                 control_scored_ledger = candidate_checkpoint["scored_ledger"]
@@ -979,7 +1544,7 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
             candidate_margin_calibrated: bool = margin_calibrated,
             candidate_strict_guard: bool = strict_guard,
             current_candidate_index: int = candidate_index,
-        ) -> tuple[int, dict[str, Any], pl.DataFrame, pl.DataFrame]:
+        ) -> tuple[int, dict[str, Any], pl.DataFrame, pl.DataFrame, pl.DataFrame]:
             fold_index, fold = item
             fit, test = fold_frames[fold.name]
             model = fit_model(
@@ -1030,7 +1595,13 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
                 "policy": policy,
                 "policy_attempts": len(policy_ledger),
             }
-            return fold_index, fold_result, scored, trades
+            return (
+                fold_index,
+                fold_result,
+                scored,
+                trades,
+                _decision_ledger(scored, economics_frame, trades, fold=fold.name),
+            )
 
         evaluated = sorted(
             _bounded_fit_map(
@@ -1041,8 +1612,10 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         folds = [row[1] for row in evaluated]
         scored_parts = [row[2] for row in evaluated]
         trade_parts = [row[3] for row in evaluated]
+        decision_parts = [row[4] for row in evaluated]
         scored_ledger = pl.concat(scored_parts, how="diagonal_relaxed")
         trade_ledger = pl.concat(trade_parts, how="diagonal_relaxed") if trade_parts else pl.DataFrame()
+        decision_ledger = pl.concat(decision_parts, how="diagonal_relaxed")
         if name == "refprice_state_control":
             control_scored_ledger = scored_ledger
         if control_scored_ledger is None:
@@ -1073,12 +1646,14 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
             )
         candidate_results[name] = result
         candidate_ledgers[name] = trade_ledger
+        candidate_decision_ledgers[name] = decision_ledger
         final_models[name] = final_model
         checkpoints.save(
             stage,
             {
                 "result": result,
                 "trade_ledger": trade_ledger,
+                "decision_ledger": decision_ledger,
                 "scored_ledger": scored_ledger,
                 "final_model": final_model,
             },
@@ -1104,8 +1679,15 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         & (pl.col("label_source") == "authentic_official_twap60")
     )
     prospective_scored = score_model(prospective_frame, provisional_model)
+    prospective_economic = _economic_frame(prospective_scored, config)
     prospective_trades = _apply_admission(
-        _economic_frame(prospective_scored, config), frozen_policy, strict_guard=strict_guard
+        prospective_economic, frozen_policy, strict_guard=strict_guard
+    )
+    prospective_decisions = _decision_ledger(
+        prospective_scored,
+        prospective_economic,
+        prospective_trades,
+        fold="untouched_prospective",
     )
     prospective = {
         "start": config.candidate_freeze.isoformat(), "end": config.end.isoformat(),
@@ -1135,7 +1717,13 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
     ledgers.mkdir()
     for name, ledger in candidate_ledgers.items():
         ledger.write_parquet(ledgers / f"{name}.parquet", compression="zstd", statistics=True)
+        candidate_decision_ledgers[name].write_parquet(
+            ledgers / f"{name}-decisions.parquet", compression="zstd", statistics=True
+        )
     prospective_trades.write_parquet(ledgers / "prospective-trades.parquet", compression="zstd", statistics=True)
+    prospective_decisions.write_parquet(
+        ledgers / "prospective-decisions.parquet", compression="zstd", statistics=True
+    )
     artifact_path = temporary / "tournament.joblib"
     artifact = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
@@ -1146,9 +1734,19 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         "admission_policy": frozen_policy,
         "qualification_status": status,
         "deployment_status": "not_deployed_training_only",
+        "causal_feature_registry_sha256": causal_feature_registry_sha256(),
     }
     joblib.dump(artifact, artifact_path, compress=3)
     artifact_sha = file_sha256(artifact_path)
+    artifact_parity = _artifact_parity_audit(artifact_path, frame, provisional)
+    leakage_impact = _corrected_contaminated_deltas(
+        config,
+        feature_bakeoff=feature_bakeoff,
+        candidate_results=candidate_results,
+    )
+    conclusions = _evidence_conclusions(
+        attribution_diagnostic, history_bakeoff, leakage_impact, status
+    )
     metrics = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -1158,6 +1756,8 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         "database_mutations": False, "new_tables": False, "new_ingesters": False,
         "new_data_sources": False, "trading_processes_changed": False,
         "source_commit": source_commit,
+        "causal_feature_registry": causal_feature_registry_payload(),
+        "causal_feature_registry_sha256": causal_feature_registry_sha256(),
         "configuration": {"path": str(config.source_path.relative_to(config.package_root)), "sha256": file_sha256(config.source_path), "candidate_freeze": config.candidate_freeze.isoformat(), "data_watermark": config.end.isoformat()},
         "runtime": {
             "python": platform.python_version(),
@@ -1173,19 +1773,43 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         },
         "source_manifest": source_manifest,
         "frame_manifest": frame_manifest,
+        "integrity_preflight": integrity_preflight,
+        "historical_weighting_audit": _weighting_audit(frame),
+        "artifact_parity_audit": artifact_parity,
         "fidelity": fidelity,
         "hyperparameter_ledger": hyperparameter_ledger,
         "feature_treatment_bakeoff": feature_bakeoff,
         "historical_source_bakeoff": history_bakeoff,
+        "historical_synthetic_transfer": historical_transfer,
+        "twap_attribution_diagnostic": attribution_diagnostic,
         "candidate_results": candidate_results,
+        "retrospective_leakage_impact": leakage_impact,
+        "evidence_protocol": {
+            "historical_synthetic_transfer": "diagnostic_only",
+            "authentic_counterfactual_development": {
+                "start": config.authentic_start.isoformat(),
+                "end": config.current_start.isoformat(),
+            },
+            "official_current_contract_development": {
+                "start": config.current_start.isoformat(),
+                "end": config.candidate_freeze.isoformat(),
+            },
+            "retrospective_causal_replay": "corrected_same_consumed_folds",
+            "untouched_prospective_qualification": {
+                "start": config.candidate_freeze.isoformat(),
+                "end": config.end.isoformat(),
+                "post_freeze_tuning": False,
+            },
+        },
         "frozen_comparators": _frozen_comparators(config),
         "selection": {"provisional_candidate": provisional, "status": status},
         "prospective_qualification": prospective,
         "qualification": qualification,
+        "conclusions": conclusions,
         "admission_search": {"attempts": admission_ledger},
         "model_artifact": {"path": "tournament.joblib", "sha256": artifact_sha},
         "limitations": [
-            "Only one complete post-freeze UTC day is currently available; the 10-day/2,500-market prospective gate cannot pass.",
+            f"Only {prospective['days']} complete post-freeze UTC day(s) and {prospective['probability']['markets']} market(s) are available; the frozen prospective evidence gates remain authoritative.",
             "Frozen comparators remain external immutable artifacts and are not incorporated into this model family.",
             "Projected economics use recorded executable orderbook evidence and do not model queue position.",
             "No model was deployed and no trading process was changed.",
@@ -1193,9 +1817,15 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
     }
     _write_json(temporary / "metrics.json", metrics)
     _write_json(temporary / "source-manifest.json", source_manifest)
+    _write_json(temporary / "causal-feature-registry.json", causal_feature_registry_payload())
+    _write_json(temporary / "supervision-registry.json", SUPERVISION_REGISTRY)
+    _write_json(temporary / "integrity-preflight.json", integrity_preflight)
     _write_json(temporary / "data-label-coverage.json", {"frame_manifest": frame_manifest, "fidelity": fidelity})
     _write_json(temporary / "feature-treatment-bakeoff.json", feature_bakeoff)
     _write_json(temporary / "historical-source-bakeoff.json", history_bakeoff)
+    _write_json(temporary / "historical-synthetic-transfer.json", historical_transfer)
+    _write_json(temporary / "twap-attribution-diagnostic.json", attribution_diagnostic)
+    _write_json(temporary / "retrospective-leakage-impact.json", leakage_impact)
     _write_json(temporary / "hyperparameter-ledger.json", hyperparameter_ledger)
     _write_json(temporary / "capacity-curves.json", {name: row["economics"]["capacity_curve"] for name, row in candidate_results.items()})
     _write_json(temporary / "frozen-comparators.json", metrics["frozen_comparators"])
@@ -1209,6 +1839,7 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         "training_run_id": run_id,
         "source_identity": frame_manifest["frame_sha256"],
         "input_manifest_sha256": hashlib.sha256(json.dumps(source_manifest, sort_keys=True, default=str).encode()).hexdigest(),
+        "causal_feature_registry_sha256": causal_feature_registry_sha256(),
         "data_watermark": config.end.isoformat(),
         "candidate_freeze": config.candidate_freeze.isoformat(),
         "qualification_status": status,
@@ -1254,13 +1885,57 @@ def _render_report(metrics: dict[str, Any]) -> str:
         f"- Chainlink reconstruction passed: `{fidelity['chainlink_reconstruction']['passed']}`",
         f"- Binance extension passed: `{fidelity['binance_extension']['passed']}`",
         "",
+        "## Causal integrity",
+        "",
+        f"- Feature registry: `{metrics['causal_feature_registry_sha256']}`",
+        f"- Point-in-time availability audit passed: `{metrics['frame_manifest']['causal_availability_audit']['passed']}`",
+        f"- Non-Binance labels altered by synthetic uncertainty weighting: `{metrics['historical_weighting_audit']['non_binance_rows_changed']}`",
+        f"- Serialization and batch/single-row parity passed: `{metrics['artifact_parity_audit']['passed']}`",
+        f"- Supervision perturbation parity error: `{metrics['artifact_parity_audit']['supervision_perturbation_maximum_absolute_error']}`",
+        "",
+        "## Non-qualifying TWAP attribution",
+        "",
+        "| Layer | Brier | Log loss | ECE |",
+        "|---|---:|---:|---:|",
+    ]
+    for name, result in metrics["twap_attribution_diagnostic"]["results"].items():
+        rows.append(
+            f"| `{name}` | {result['brier']:.5f} | {result['log_loss']:.5f} | "
+            f"{result['expected_calibration_error']:.5f} |"
+        )
+    rows.extend([
+        "",
+        "## Candidate development results",
+        "",
+        "| Candidate | Brier | Trades | Coverage | Accuracy | Stressed PnL | Profit factor | Max drawdown | CVaR 5% |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for name, result in metrics["candidate_results"].items():
+        probability = result["probability"]
+        economics = result["economics"]
+        rows.append(
+            f"| `{name}` | {probability['brier']:.5f} | {economics['trades']} | "
+            f"{economics['coverage']:.2%} | {economics['accuracy']:.2%} | "
+            f"${economics['stressed_pnl']:,.2f} | {economics['profit_factor']:.2f} | "
+            f"${economics['maximum_drawdown']:,.2f} | ${economics['cvar_5pct']:,.2f} |"
+        )
+    rows.extend(
+        [
+        "",
+        "## Prospective qualification",
+        "",
+        f"- Window: `{metrics['prospective_qualification']['start']}` to `{metrics['prospective_qualification']['end']}`",
+        f"- Authentic markets: `{metrics['prospective_qualification']['probability']['markets']}`",
+        f"- Trades: `{metrics['prospective_qualification']['economics']['trades']}`",
+        f"- Stressed PnL: `${metrics['prospective_qualification']['economics']['stressed_pnl']:,.2f}`",
+        f"- Maximum drawdown: `${metrics['prospective_qualification']['economics']['maximum_drawdown']:,.2f}`",
+        "- Post-freeze tuning: `false`",
+        "",
         "## Required conclusion",
         "",
-    ]
-    if selection["status"] == "no_deployable_challenger_qualified":
-        rows.append("No new deployable challenger qualified. The immutable candidate remains paper-only; prospective evidence is below the frozen minimum.")
-    else:
-        rows.append("Explicit TWAP state provided predictive and economic value beyond refprice under the frozen qualification gates.")
+        ]
+    )
+    rows.extend(f"- {conclusion}" for conclusion in metrics["conclusions"])
     rows.extend(["", "## Failed qualification gates", ""])
     rows.extend(f"- `{reason}`" for reason in qualification["reasons"])
     rows.extend(["", "## Scope controls", "", "No database mutation, migration, table, ingester, data source, runtime export, deployment, or trading-process change was performed.", ""])

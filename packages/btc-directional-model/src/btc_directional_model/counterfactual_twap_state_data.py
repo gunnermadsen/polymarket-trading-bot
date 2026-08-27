@@ -112,11 +112,229 @@ BINANCE_DISAGREEMENT_FEATURES = (
     "binance_twap60_minus_chainlink_twap60_bps",
     "binance_chainlink_basis_bps",
     "binance_chainlink_basis_velocity_5s_bps",
-    "raw_corrected_synthetic_margin_disagreement_bps",
-    "estimated_synthetic_label_error",
 )
 
 DUAL_TWAP_FEATURES = (*TWAP30_FEATURES, *TWAP60_FEATURES, *TWAP_CROSS_FEATURES)
+
+CAUSAL_BASIS_FEATURES = (
+    "chainlink_ref_binance_basis_bps",
+    "chainlink_ref_spread_bps",
+    "chainlink_ref_spread_change_30s_bps",
+    "chainlink_ref_binance_direction_agreement_30s",
+    "chainlink_ref_binance_basis_velocity_5s_bps",
+    "chainlink_ref_binance_disagreement_30s",
+    "chainlink_ref_source_skew_seconds",
+)
+
+RELATIVE_TWAP_FEATURES = (
+    "twap30_change_from_open_bps",
+    "twap60_change_from_open_bps",
+    "twap30_gap_to_opening_twap60_bps",
+    "twap60_gap_to_opening_twap60_bps",
+    "twap30_minus_twap60_bps",
+    "refprice_minus_twap30_bps",
+    "refprice_minus_twap60_bps",
+    "twap_directional_agreement",
+    "refprice_twap_directional_agreement",
+    "twap30_slope_5s_bps",
+    "twap30_slope_15s_bps",
+    "twap30_slope_30s_bps",
+    "twap30_slope_60s_bps",
+    "twap60_slope_5s_bps",
+    "twap60_slope_15s_bps",
+    "twap60_slope_30s_bps",
+    "twap60_slope_60s_bps",
+    "twap_acceleration_bps",
+    "twap_convergence_velocity_bps",
+    "refprice_pressure_bps",
+    "twap_boundary_cross_count",
+    "twap_seconds_since_boundary_cross",
+    "twap_path_efficiency",
+    "twap_reversal_state",
+    "twap_realized_volatility_bps",
+    "settlement_margin_volatility_z",
+    "twap_completed_prints_30",
+    "twap_completed_prints_60",
+    "twap_max_timestamp_gap_60s",
+    "twap_source_age_seconds",
+)
+
+SUPERVISION_ONLY_FIELDS = frozenset(
+    {
+        "label_up",
+        "label_source",
+        "target_margin_bps",
+        "authentic_label_up",
+        "authentic_margin_bps",
+        "proxy_label_up",
+        "proxy_margin_bps",
+        "binance_raw_margin_bps",
+        "binance_corrected_margin_bps",
+        "binance_margin_correction_bps",
+        "estimated_synthetic_label_error",
+        "raw_corrected_synthetic_margin_disagreement_bps",
+        "official_outcome",
+    }
+)
+
+SUPERVISION_REGISTRY: dict[str, dict[str, Any]] = {
+    "label_up": {"role": "target", "source": "priority terminal label"},
+    "target_margin_bps": {"role": "target", "source": "priority terminal margin"},
+    "base_label_weight": {"role": "weight", "source": "frozen label-source confidence"},
+    "estimated_synthetic_label_error": {
+        "role": "weight",
+        "source": "offline Binance synthetic-label reliability",
+        "permitted_use": "Binance synthetic sample weighting only",
+    },
+    "raw_corrected_synthetic_margin_disagreement_bps": {
+        "role": "diagnostic",
+        "source": "completed Binance terminal margins",
+        "permitted_use": "offline leakage-impact reporting only",
+    },
+    "label_source": {"role": "diagnostic", "source": "priority label assignment"},
+    "authentic_label_up": {"role": "target", "source": "authentic completed TWAP-60"},
+    "authentic_margin_bps": {"role": "target", "source": "authentic completed TWAP-60"},
+    "proxy_label_up": {"role": "target", "source": "completed Chainlink reconstruction"},
+    "proxy_margin_bps": {"role": "target", "source": "completed Chainlink reconstruction"},
+    "binance_raw_margin_bps": {"role": "target", "source": "completed Binance TWAP-60"},
+    "binance_corrected_margin_bps": {
+        "role": "target",
+        "source": "offline corrected completed Binance TWAP-60",
+    },
+    "binance_margin_correction_bps": {
+        "role": "diagnostic",
+        "source": "offline Binance terminal-margin correction",
+    },
+    "official_outcome": {"role": "diagnostic", "source": "completed official market outcome"},
+}
+
+_REFPRICE_INFERENCE_FEATURES = frozenset((*REFPRICE_STATE_FEATURES, *CAUSAL_BASIS_FEATURES))
+_TWAP_INFERENCE_FEATURES = frozenset(
+    (*TWAP30_FEATURES, *TWAP60_FEATURES, *TWAP_CROSS_FEATURES, *RELATIVE_TWAP_FEATURES)
+)
+_BINANCE_TWAP_INFERENCE_FEATURES = frozenset(BINANCE_DISAGREEMENT_FEATURES)
+
+INFERENCE_FEATURE_REGISTRY: dict[str, dict[str, Any]] = {
+    **{
+        name: {
+            "role": "inference",
+            "source": "chainlink_refprice_and_current_binance",
+            "source_event_timestamp": "source_timestamp and observed_at",
+            "source_availability_timestamp": [
+                "chainlink_twap_max_available_at",
+                "core_source_max_available_at",
+            ] if name in CAUSAL_BASIS_FEATURES else ["chainlink_twap_max_available_at"],
+            "lookback_interval": "causal trailing window ending at feature_as_of",
+            "feature_as_of_timestamp": "observed_at",
+            "live_computable": True,
+        }
+        for name in sorted(_REFPRICE_INFERENCE_FEATURES)
+    },
+    **{
+        name: {
+            "role": "inference",
+            "source": "causal_rolling_twap_state",
+            "source_event_timestamp": "source_timestamp or open_timestamp",
+            "source_availability_timestamp": ["twap_feature_max_available_at"],
+            "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+            "feature_as_of_timestamp": "observed_at",
+            "live_computable": True,
+        }
+        for name in sorted(_TWAP_INFERENCE_FEATURES)
+    },
+    **{
+        name: {
+            "role": "inference",
+            "source": "current_binance_chainlink_twap",
+            "source_event_timestamp": "source_timestamp and open_timestamp",
+            "source_availability_timestamp": [
+                "disagreement_opening_feature_max_available_at"
+                if name == "binance_chainlink_basis_velocity_5s_bps"
+                else "disagreement_feature_max_available_at"
+            ],
+            "lookback_interval": "[T-W,T) and causal trailing window ending at feature_as_of",
+            "feature_as_of_timestamp": "observed_at",
+            "live_computable": True,
+        }
+        for name in sorted(_BINANCE_TWAP_INFERENCE_FEATURES)
+    },
+}
+
+
+def inference_feature_registry() -> dict[str, dict[str, Any]]:
+    """Return the immutable causal allowlist used to construct every model matrix."""
+
+    return {name: dict(metadata) for name, metadata in INFERENCE_FEATURE_REGISTRY.items()}
+
+
+def validate_inference_features(features: tuple[str, ...]) -> None:
+    """Fail closed when supervision or unregistered fields enter a model contract."""
+
+    forbidden = sorted(set(features) & SUPERVISION_ONLY_FIELDS)
+    unregistered = sorted(set(features) - set(INFERENCE_FEATURE_REGISTRY))
+    if forbidden or unregistered:
+        problems = []
+        if forbidden:
+            problems.append("supervision-only: " + ", ".join(forbidden))
+        if unregistered:
+            problems.append("unregistered: " + ", ".join(unregistered))
+        raise ValueError("invalid inference feature contract: " + "; ".join(problems))
+
+
+CAUSAL_AVAILABILITY_COLUMNS = (
+    "chainlink_twap_max_available_at",
+    "binance_twap_max_available_at",
+    "twap_feature_max_available_at",
+    "disagreement_feature_max_available_at",
+    "disagreement_opening_feature_max_available_at",
+    "core_source_max_available_at",
+)
+
+
+def causal_availability_audit(frame: pl.DataFrame) -> dict[str, Any]:
+    """Verify that point-in-time sources never exceed the decision timestamp."""
+
+    missing = sorted(set(CAUSAL_AVAILABILITY_COLUMNS) - set(frame.columns))
+    if missing:
+        raise RuntimeError("causal availability audit columns missing: " + ", ".join(missing))
+    violations: dict[str, int] = {}
+    for name in CAUSAL_AVAILABILITY_COLUMNS:
+        count = frame.filter(
+            pl.col(name).is_not_null() & (pl.col(name) > pl.col("observed_at"))
+        ).height
+        violations[name] = count
+    if any(violations.values()):
+        raise RuntimeError(f"future source availability entered inference rows: {violations}")
+    feature_violations: dict[str, int] = {}
+    for feature, metadata in INFERENCE_FEATURE_REGISTRY.items():
+        if feature not in frame.columns:
+            continue
+        populated = pl.col(feature).is_not_null()
+        if frame.schema[feature].is_numeric():
+            populated &= pl.col(feature).is_finite()
+        availability = metadata["source_availability_timestamp"]
+        count = frame.filter(
+            populated
+            & pl.any_horizontal(
+                pl.col(column).is_null() | (pl.col(column) > pl.col("observed_at"))
+                for column in availability
+            )
+        ).height
+        feature_violations[feature] = count
+    if any(feature_violations.values()):
+        raise RuntimeError(
+            "populated inference values failed availability invariant: "
+            f"{feature_violations}"
+        )
+    return {
+        "feature_as_of": "observed_at",
+        "rows": frame.height,
+        "availability_columns": list(CAUSAL_AVAILABILITY_COLUMNS),
+        "violations": violations,
+        "feature_violations": feature_violations,
+        "features_audited": len(feature_violations),
+        "passed": True,
+    }
 
 
 @dataclass(frozen=True)
@@ -239,6 +457,13 @@ def construct_binance_labels(labels: pl.DataFrame, binance: pl.DataFrame) -> pl.
         )
         .n_unique()
         .alias("binance_open_prints"),
+        pl.col("available_at")
+        .filter(
+            (pl.col("open_timestamp") >= pl.col("window_start") - pl.duration(seconds=60))
+            & (pl.col("open_timestamp") < pl.col("window_start"))
+        )
+        .max()
+        .alias("opening_binance_max_available_at"),
         pl.col("open_timestamp")
         .filter(
             (pl.col("open_timestamp") >= pl.col("window_end") - pl.duration(seconds=60))
@@ -310,6 +535,9 @@ def fit_binance_margin_correction(
     corrected = corrected.with_columns(
         (pl.col("binance_corrected_margin_bps") >= 0).alias("binance_corrected_label_up"),
         (
+            pl.col("binance_corrected_margin_bps") - pl.col("binance_raw_margin_bps")
+        ).abs().alias("raw_corrected_synthetic_margin_disagreement_bps"),
+        (
             pl.lit(residual_scale)
             / pl.max_horizontal(pl.col("binance_corrected_margin_bps").abs(), pl.lit(0.01))
         ).clip(0.0, 0.5).alias("estimated_synthetic_label_error"),
@@ -356,6 +584,7 @@ def assign_priority_labels(
         corrected.select(
             "market_id", "binance_margin_correction_bps", "binance_corrected_margin_bps",
             "binance_corrected_label_up", "estimated_synthetic_label_error",
+            "raw_corrected_synthetic_margin_disagreement_bps",
         ),
         on="market_id",
         how="left",
@@ -475,6 +704,44 @@ def _rolling_mean_at(times: np.ndarray, values: np.ndarray, points: np.ndarray, 
     return piecewise_average(times, values, points, window_seconds=float(seconds))
 
 
+def _opening_chainlink_availability(
+    refprice: pl.DataFrame,
+    boundaries: np.ndarray,
+    *,
+    time_column: str,
+) -> np.ndarray:
+    """Return the last availability needed by each completed opening TWAP window."""
+
+    path = canonical_refprice_path(refprice).sort(time_column).unique(
+        subset=[time_column], keep="last"
+    ).sort(time_column)
+    event_times = path[time_column].to_numpy().astype("datetime64[us]").astype(np.int64)
+    available = (
+        path["provider_available_at"].to_numpy().astype("datetime64[us]").astype(np.int64)
+    )
+    boundary_us = boundaries.astype("datetime64[us]").astype(np.int64)
+    output = np.full(len(boundary_us), np.datetime64("NaT", "us"))
+    for row, boundary in enumerate(boundary_us):
+        first = max(0, int(np.searchsorted(event_times, boundary - 60_000_000, side="right")) - 1)
+        stop = int(np.searchsorted(event_times, boundary, side="left"))
+        if stop > first:
+            output[row] = np.datetime64(int(available[first:stop].max()), "us")
+    return output
+
+
+def _maximum_available_at(*arrays: np.ndarray) -> np.ndarray:
+    values = [array.astype("datetime64[us]").astype(np.int64) for array in arrays]
+    matrix = np.vstack(values)
+    missing = matrix == np.iinfo(np.int64).min
+    maximum = matrix.max(axis=0)
+    maximum[missing.any(axis=0)] = np.iinfo(np.int64).min
+    return maximum.astype("datetime64[us]")
+
+
+def _utc_datetime_series(name: str, values: np.ndarray) -> pl.Series:
+    return pl.Series(name, values).dt.replace_time_zone("UTC")
+
+
 def attach_causal_twap_features(
     frame: pl.DataFrame,
     labels: pl.DataFrame,
@@ -490,6 +757,12 @@ def attach_causal_twap_features(
     )
     chain_times = chain["provider_available_at"].to_numpy()
     chain_values = chain["price"].to_numpy()
+    chain_indices = np.searchsorted(chain_times, points, side="right") - 1
+    chain_latest = np.full(ordered.height, np.datetime64("NaT", "us"))
+    chain_available = chain_indices >= 0
+    chain_latest[chain_available] = chain_times[chain_indices[chain_available]].astype(
+        "datetime64[us]"
+    )
     chain30 = _rolling_mean_at(chain_times, chain_values, points, 30)
     chain60 = _rolling_mean_at(chain_times, chain_values, points, 60)
     chain_slopes: dict[tuple[int, int], np.ndarray] = {}
@@ -507,6 +780,7 @@ def attach_causal_twap_features(
     completed60 = np.zeros(ordered.height)
     max_gap = np.full(ordered.height, np.nan)
     age = np.full(ordered.height, np.nan)
+    binance_latest = np.full(ordered.height, np.datetime64("NaT", "us"))
     for key, indices in ordered.with_row_index("_row").group_by("market_id", maintain_order=True):
         market_id = key[0] if isinstance(key, tuple) else key
         part = binance_by_market.get(market_id)
@@ -540,17 +814,66 @@ def attach_causal_twap_features(
             if len(sample):
                 age[rows[local]] = (qi[local] - sample[-1]) / 1_000_000.0
                 max_gap[rows[local]] = float(np.diff(sample).max() / 1_000_000.0) if len(sample) > 1 else math.inf
+            if end:
+                binance_latest[rows[local]] = t[end - 1].astype("datetime64[us]")
 
     label_map = labels.select(
         "market_id", "opening_twap60", "proxy_open_price", "proxy_open_twap30",
         "opening_refprice", "binance_open_twap60",
-        "binance_open_twap30",
-        "binance_margin_correction_bps", "estimated_synthetic_label_error",
+        "binance_open_twap30", "opening_chainlink_max_available_at",
+        "opening_binance_max_available_at",
     )
     result = ordered.join(label_map, on="market_id", how="left", validate="m:1")
-    use_chain = np.isfinite(chain30) & np.isfinite(chain60)
+    use_chain = (
+        np.isfinite(chain30)
+        & np.isfinite(chain60)
+        & ordered["refprice_causal_eligible"].to_numpy()
+    )
     twap30 = np.where(use_chain, chain30, b30)
     twap60 = np.where(use_chain, chain60, b60)
+    chain_open_available = result["opening_chainlink_max_available_at"].to_numpy()
+    binance_open_available = result["opening_binance_max_available_at"].to_numpy()
+    chain_open_ready = (
+        ~np.isnat(chain_open_available)
+        & (chain_open_available <= points)
+        & np.isfinite(result["proxy_open_twap30"].to_numpy())
+        & np.isfinite(result["proxy_open_price"].to_numpy())
+    )
+    binance_open_ready = (
+        ~np.isnat(binance_open_available)
+        & (binance_open_available <= points)
+        & np.isfinite(result["binance_open_twap30"].to_numpy())
+        & np.isfinite(result["binance_open_twap60"].to_numpy())
+    )
+    use_chain_open = use_chain & chain_open_ready
+    opening_twap30 = np.where(
+        use_chain_open,
+        result["proxy_open_twap30"].to_numpy(),
+        np.where(binance_open_ready, result["binance_open_twap30"].to_numpy(), np.nan),
+    )
+    opening_twap60 = np.where(
+        use_chain_open,
+        result["proxy_open_price"].to_numpy(),
+        np.where(binance_open_ready, result["binance_open_twap60"].to_numpy(), np.nan),
+    )
+    opening_twap_available = np.where(
+        use_chain_open,
+        chain_open_available,
+        np.where(binance_open_ready, binance_open_available, np.datetime64("NaT", "us")),
+    )
+    current_twap_available = np.where(use_chain, chain_latest, binance_latest)
+    twap_feature_available = _maximum_available_at(
+        opening_twap_available, current_twap_available
+    )
+    disagreement_available = _maximum_available_at(chain_latest, binance_latest)
+    disagreement_opening_available = _maximum_available_at(
+        disagreement_available, chain_open_available, binance_open_available
+    )
+    disagreement_opening_available = np.where(
+        disagreement_opening_available <= points,
+        disagreement_opening_available,
+        np.datetime64("NaT", "us"),
+    )
     for horizon in (5, 15, 30, 60):
         result = result.with_columns(
             pl.Series(f"twap30_slope_{horizon}s_bps", np.where(use_chain, chain_slopes[(30, horizon)], b_slopes[(30, horizon)])),
@@ -564,14 +887,37 @@ def attach_causal_twap_features(
         pl.Series("twap_completed_prints_60", completed60),
         pl.Series("twap_max_timestamp_gap_60s", max_gap),
         pl.Series("twap_source_age_seconds", age),
+        _utc_datetime_series("chainlink_twap_max_available_at", chain_latest),
+        _utc_datetime_series("binance_twap_max_available_at", binance_latest),
+        _utc_datetime_series("twap_feature_max_available_at", twap_feature_available),
+        _utc_datetime_series("disagreement_feature_max_available_at", disagreement_available),
+        _utc_datetime_series(
+            "disagreement_opening_feature_max_available_at",
+            disagreement_opening_available,
+        ),
+        _utc_datetime_series("core_source_max_available_at", points),
+        pl.Series("opening_twap30", opening_twap30),
+        pl.Series("opening_twap60", opening_twap60),
     ).with_columns(
-        pl.coalesce("proxy_open_twap30", "binance_open_twap30").alias("opening_twap30"),
-        pl.col("binance_open_twap30")
-        .fill_null(pl.col("binance_open_twap60"))
+        pl.when(pl.col("opening_binance_max_available_at") <= pl.col("observed_at"))
+        .then(pl.col("binance_open_twap30").fill_null(pl.col("binance_open_twap60")))
+        .otherwise(None)
         .alias("opening_binance_twap30"),
-        pl.col("binance_open_twap60").alias("opening_binance_twap60"),
-        (pl.col("binance_open_twap60") / pl.col("proxy_open_price"))
+        pl.when(pl.col("opening_binance_max_available_at") <= pl.col("observed_at"))
+        .then(pl.col("binance_open_twap60"))
+        .otherwise(None)
+        .alias("opening_binance_twap60"),
+        pl.when(
+            (pl.col("opening_binance_max_available_at") <= pl.col("observed_at"))
+            & (pl.col("opening_chainlink_max_available_at") <= pl.col("observed_at"))
+        )
+        .then(pl.col("binance_open_twap60") / pl.col("proxy_open_price"))
+        .otherwise(None)
         .log().mul(10_000).alias("opening_binance_chainlink_basis_bps"),
+        pl.when(pl.col("opening_chainlink_max_available_at") <= pl.col("observed_at"))
+        .then(pl.col("opening_refprice"))
+        .otherwise(None)
+        .alias("opening_refprice"),
     ).with_columns(
         (pl.col("current_twap30") / pl.col("opening_twap30"))
         .log().mul(10_000).alias("twap30_change_from_open_bps"),
@@ -589,9 +935,6 @@ def attach_causal_twap_features(
         .log().mul(-10_000).alias("binance_twap60_minus_chainlink_twap60_bps"),
         (pl.col("chainlink_twap60") / pl.col("binance_twap60"))
         .log().mul(10_000).alias("binance_chainlink_basis_bps"),
-        pl.col("binance_margin_correction_bps").abs().alias(
-            "raw_corrected_synthetic_margin_disagreement_bps"
-        ),
     ).with_columns(
         pl.col("chainlink_ref_boundary_gap_bps").alias("current_refprice_gap_to_opening_twap60_bps"),
         (pl.col("chainlink_ref_boundary_gap_bps") - pl.col("twap30_gap_to_opening_twap60_bps"))
@@ -619,6 +962,27 @@ def attach_causal_twap_features(
         (pl.col("binance_chainlink_basis_bps") - pl.col("opening_binance_chainlink_basis_bps"))
         .alias("binance_chainlink_basis_velocity_5s_bps"),
     )
+    result = result.with_columns(
+        pl.when(pl.col("twap_feature_max_available_at").is_not_null())
+        .then(pl.col(name))
+        .otherwise(None)
+        .alias(name)
+        for name in sorted(_TWAP_INFERENCE_FEATURES)
+        if name in result.columns
+    ).with_columns(
+        pl.when(
+            pl.col(
+                "disagreement_opening_feature_max_available_at"
+                if name == "binance_chainlink_basis_velocity_5s_bps"
+                else "disagreement_feature_max_available_at"
+            ).is_not_null()
+        )
+        .then(pl.col(name))
+        .otherwise(None)
+        .alias(name)
+        for name in BINANCE_DISAGREEMENT_FEATURES
+    )
+    causal_availability_audit(result)
     return result
 
 
@@ -654,6 +1018,14 @@ def build_counterfactual_frame(
     opening_refprice[valid_opening] = canonical_prices[opening_indices[valid_opening]]
     proxy = proxy.with_columns(
         pl.Series("opening_refprice", opening_refprice),
+        _utc_datetime_series(
+            "opening_chainlink_max_available_at",
+            _opening_chainlink_availability(
+                refprice,
+                boundary_times,
+                time_column=convention.time_column,
+            ),
+        ),
         pl.Series(
             "proxy_open_twap30",
             piecewise_average(
@@ -694,7 +1066,8 @@ def build_counterfactual_frame(
         "market_id", "label_up", "base_label_weight", "label_source", "target_margin_bps",
         "authentic_label_up", "authentic_margin_bps", "proxy_label_up", "proxy_margin_bps",
         "binance_raw_margin_bps", "binance_corrected_margin_bps", "binance_margin_correction_bps",
-        "estimated_synthetic_label_error", "opening_twap60", "proxy_open_price",
+        "estimated_synthetic_label_error", "raw_corrected_synthetic_margin_disagreement_bps",
+        "opening_twap60", "proxy_open_price",
         "binance_open_twap60", "official_outcome",
     )
     frame = core.drop("label_up", strict=False).join(selected, on="market_id", how="inner", validate="m:1")
@@ -720,15 +1093,21 @@ def build_counterfactual_frame(
     if official_disagreement.height:
         raise RuntimeError("authentic TWAP labels disagree with current official outcomes")
     manifest = {
-        "schema_version": "btc-counterfactual-twap-state-frame-v1",
+        "schema_version": "btc-counterfactual-twap-state-frame-v2-causal",
         "rows": frame.height,
         "markets": frame["market_id"].n_unique(),
         "label_markets": labels.filter(pl.col("label_up").is_not_null()).height,
         "label_coverage": labels.group_by("label_source").len().sort("label_source").to_dicts(),
+        "label_coverage_by_date_and_source": labels.filter(
+            pl.col("label_up").is_not_null()
+        ).with_columns(pl.col("window_start").dt.date().alias("date")).group_by(
+            "date", "label_source"
+        ).len().sort("date", "label_source").to_dicts(),
         "binance_margin_correction": correction_report,
         "binance_fidelity": binance_fidelity,
         "chainlink_uncertainty_bps": CHAINLINK_UNCERTAINTY_BPS,
         "completed_information_semantics": "[T-W,T)",
+        "causal_availability_audit": causal_availability_audit(frame),
         "database_mutations": False,
         "new_tables": False,
         "new_sources": False,
