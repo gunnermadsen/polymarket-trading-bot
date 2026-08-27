@@ -365,7 +365,7 @@ def _insert_feature(conn, values: tuple) -> None:
         ) VALUES (
           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
           %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-          %s,%s,%s
+          %s,%s,%s,%s
         ) ON CONFLICT DO NOTHING
         """,
         values,
