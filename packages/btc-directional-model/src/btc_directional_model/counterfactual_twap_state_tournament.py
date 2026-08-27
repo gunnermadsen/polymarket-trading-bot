@@ -5,21 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import platform
 import subprocess
+import time
 import tomllib
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import joblib
 import numpy as np
 import polars as pl
 import sklearn
+from joblib import Parallel, delayed
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
+from threadpoolctl import threadpool_limits
 
 from .continuous_edge_training import BOOK_RAW_FEATURES, VWAP_QUANTITIES
 from .core_extract import file_sha256
@@ -64,6 +69,92 @@ CANDIDATE_NAMES = (
     "refprice_dual_twap_margin_calibrated",
     "refprice_dual_twap_uncertainty_guard",
 )
+
+CHECKPOINT_SCHEMA_VERSION = "btc-counterfactual-twap-state-checkpoint-v1"
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class ExecutionSettings:
+    workers: int
+    threads_per_fit: int
+
+
+@dataclass(frozen=True)
+class CheckpointStore:
+    root: Path
+    identity: str
+
+    def load(self, stage: str) -> Any | None:
+        path = self.root / f"{stage}.joblib"
+        if not path.is_file():
+            return None
+        try:
+            payload = joblib.load(path)
+        except Exception as error:  # noqa: BLE001 - invalid caches are safely recomputed
+            print(f"checkpoint: ignoring unreadable {stage}: {error}", flush=True)
+            return None
+        if not isinstance(payload, dict) or payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+            return None
+        if payload.get("identity") != self.identity or payload.get("stage") != stage:
+            return None
+        print(f"checkpoint: resumed {stage}", flush=True)
+        return payload.get("value")
+
+    def save(self, stage: str, value: Any) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{stage}.joblib"
+        temporary = self.root / f"{stage}.{os.getpid()}.partial"
+        joblib.dump(
+            {
+                "schema_version": CHECKPOINT_SCHEMA_VERSION,
+                "identity": self.identity,
+                "stage": stage,
+                "value": value,
+            },
+            temporary,
+            compress=3,
+        )
+        temporary.replace(path)
+        print(f"checkpoint: saved {stage}", flush=True)
+
+
+def execution_settings() -> ExecutionSettings:
+    workers = max(1, int(os.environ.get("BTC_TWAP_TRAINING_WORKERS", "2")))
+    if workers > 2:
+        raise ValueError(
+            "counterfactual TWAP training permits at most two concurrent fits"
+        )
+    default_threads = max(1, (os.cpu_count() or 2) // workers)
+    threads = max(
+        1,
+        int(os.environ.get("BTC_TWAP_TRAINING_THREADS_PER_FIT", str(min(3, default_threads)))),
+    )
+    thread_budget = min(6, os.cpu_count() or 1)
+    if workers * threads > thread_budget:
+        raise ValueError(
+            f"counterfactual TWAP training CPU budget is {thread_budget} total threads"
+        )
+    return ExecutionSettings(workers=workers, threads_per_fit=threads)
+
+
+def _bounded_fit_map(
+    function: Callable[[_T], Any], values: Iterable[_T], settings: ExecutionSettings
+) -> list[Any]:
+    ordered = list(values)
+    if settings.workers == 1:
+        with threadpool_limits(limits=settings.threads_per_fit):
+            return [function(value) for value in ordered]
+    with threadpool_limits(limits=settings.threads_per_fit):
+        return Parallel(n_jobs=settings.workers, prefer="threads")(
+            delayed(function)(value) for value in ordered
+        )
+
+
+def _record_stage_time(timings: dict[str, float], stage: str, started: float) -> None:
+    elapsed = time.perf_counter() - started
+    timings[stage] = elapsed
+    print(f"timing: {stage} completed in {elapsed:.1f}s", flush=True)
 
 
 @dataclass(frozen=True)
@@ -315,13 +406,20 @@ def fit_model(
     source = _arm_frame(frame, history_arm)
     features = feature_names(treatment)
     fit, calibration = _split_fit_calibration(source)
+    fit_matrix = _matrix(fit, features)
+    fit_labels = fit["label_up"].to_numpy()
+    fit_margins = fit["target_margin_bps"].to_numpy()
+    fit_weights = _weights(fit)
+    calibration_matrix = _matrix(calibration, features)
+    calibration_labels = calibration["label_up"].to_numpy()
+    calibration_weights = _weights(calibration)
     classifier = HistGradientBoostingClassifier(
         loss="log_loss", learning_rate=spec.learning_rate, max_iter=spec.max_iter,
         max_leaf_nodes=spec.max_leaf_nodes, min_samples_leaf=spec.min_samples_leaf,
         l2_regularization=spec.l2_regularization, random_state=seed,
         early_stopping=False,
     )
-    classifier.fit(_matrix(fit, features), fit["label_up"].to_numpy(), sample_weight=_weights(fit))
+    classifier.fit(fit_matrix, fit_labels, sample_weight=fit_weights)
 
     def margin_model(quantile: float, offset: int) -> HistGradientBoostingRegressor:
         model = HistGradientBoostingRegressor(
@@ -330,19 +428,17 @@ def fit_model(
             min_samples_leaf=spec.min_samples_leaf, l2_regularization=spec.l2_regularization,
             random_state=seed + offset, early_stopping=False,
         )
-        model.fit(
-            _matrix(fit, features), fit["target_margin_bps"].to_numpy(), sample_weight=_weights(fit)
-        )
+        model.fit(fit_matrix, fit_margins, sample_weight=fit_weights)
         return model
 
     lower = margin_model(0.05, 1)
     median = margin_model(0.50, 2)
     upper = margin_model(0.95, 3)
-    raw = np.clip(classifier.predict_proba(_matrix(calibration, features))[:, 1], 1e-6, 1 - 1e-6)
-    median_prediction = median.predict(_matrix(calibration, features))
+    raw = np.clip(classifier.predict_proba(calibration_matrix)[:, 1], 1e-6, 1 - 1e-6)
+    median_prediction = median.predict(calibration_matrix)
     calibrator_x = np.column_stack((np.log(raw / (1 - raw)), median_prediction)) if margin_calibrated else np.log(raw / (1 - raw)).reshape(-1, 1)
     calibrator = LogisticRegression(C=spec.calibration_c, max_iter=2000, random_state=seed + 4)
-    calibrator.fit(calibrator_x, calibration["label_up"].to_numpy(), sample_weight=_weights(calibration))
+    calibrator.fit(calibrator_x, calibration_labels, sample_weight=calibration_weights)
     return ModelBundle(features, classifier, lower, median, upper, calibrator, spec, treatment, history_arm, margin_calibrated)
 
 
@@ -381,16 +477,28 @@ def probability_metrics(frame: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def _bootstrap_means(values: np.ndarray, *, resamples: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    output = np.empty(resamples)
+    maximum_chunk_elements = 4_000_000
+    chunk_size = max(1, min(64, maximum_chunk_elements // max(len(values), 1)))
+    for start in range(0, resamples, chunk_size):
+        stop = min(start + chunk_size, resamples)
+        output[start:stop] = rng.choice(
+            values,
+            size=(stop - start, len(values)),
+            replace=True,
+        ).mean(axis=1)
+    return output
+
+
 def _paired_bootstrap(candidate: pl.DataFrame, control: pl.DataFrame, seed: int, resamples: int) -> dict[str, float]:
     left = candidate.select("market_id", "label_up", "probability_up").unique("market_id")
     right = control.select("market_id", pl.col("probability_up").alias("control_probability")).unique("market_id")
     joined = left.join(right, on="market_id", how="inner")
     y = joined["label_up"].to_numpy()
     delta = (joined["probability_up"].to_numpy() - y) ** 2 - (joined["control_probability"].to_numpy() - y) ** 2
-    rng = np.random.default_rng(seed)
-    samples = np.empty(resamples)
-    for index in range(resamples):
-        samples[index] = rng.choice(delta, len(delta), replace=True).mean()
+    samples = _bootstrap_means(delta, resamples=resamples, seed=seed)
     return {
         "candidate_minus_control_brier": float(delta.mean()),
         "lower": float(np.quantile(samples, 0.025)),
@@ -453,10 +561,7 @@ def economic_metrics(ledger: pl.DataFrame, scheduled_markets: int, *, resamples:
     pnl = _pnl(ledger)
     wins = pnl[pnl > 0].sum()
     losses = -pnl[pnl < 0].sum()
-    rng = np.random.default_rng(seed)
-    bootstrap = np.empty(resamples)
-    for index in range(resamples):
-        bootstrap[index] = rng.choice(pnl, len(pnl), replace=True).mean()
+    bootstrap = _bootstrap_means(pnl, resamples=resamples, seed=seed)
     capacity = {}
     for quantity in VWAP_QUANTITIES:
         if f"up_ask_vwap_{quantity}" not in ledger.columns:
@@ -505,17 +610,43 @@ def select_policy(frame: pl.DataFrame, config: TournamentConfig, *, strict_guard
     return winner["policy"], attempts
 
 
-def _search(frame: pl.DataFrame, config: TournamentConfig) -> tuple[Hyperparameters, dict[str, Any]]:
+def _development_fold_frames(
+    frame: pl.DataFrame, config: TournamentConfig
+) -> dict[str, tuple[pl.DataFrame, pl.DataFrame]]:
+    return {
+        fold.name: (
+            frame.filter(pl.col("window_start") < fold.test_start),
+            frame.filter(
+                pl.col("window_start").is_between(
+                    fold.test_start, fold.test_end, closed="left"
+                )
+            ),
+        )
+        for fold in config.development_folds
+    }
+
+
+def _search(
+    frame: pl.DataFrame,
+    config: TournamentConfig,
+    settings: ExecutionSettings | None = None,
+) -> tuple[Hyperparameters, dict[str, Any]]:
+    settings = settings or execution_settings()
     train = frame.filter(pl.col("window_start") < _utc("2026-08-07T00:00:00Z"))
     validation = frame.filter(pl.col("window_start").is_between(_utc("2026-08-07T00:00:00Z"), config.current_start, closed="left"))
-    history = []
-    for index, spec in enumerate(predetermined_hyperparameters(config)):
+
+    def evaluate(item: tuple[int, Hyperparameters]) -> dict[str, Any]:
+        index, spec = item
         model = fit_model(
             train, treatment="combined", history_arm="uncertainty_weighted_hybrid",
             spec=spec, seed=config.random_seed + index, margin_calibrated=True,
         )
         metrics = probability_metrics(score_model(validation, model))
-        history.append({"index": index, "hyperparameters": asdict(spec), **metrics})
+        return {"index": index, "hyperparameters": asdict(spec), **metrics}
+
+    history = _bounded_fit_map(
+        evaluate, enumerate(predetermined_hyperparameters(config)), settings
+    )
     winner = min(history, key=lambda row: (row["brier"], row["log_loss"], row["expected_calibration_error"], row["index"]))
     return predetermined_hyperparameters(config)[winner["index"]], {"combinations": 36, "selected": winner, "ledger": history}
 
@@ -526,26 +657,45 @@ def _probability_bakeoff(
     spec: Hyperparameters,
     *,
     dimension: str,
+    fold_frames: dict[str, tuple[pl.DataFrame, pl.DataFrame]] | None = None,
+    settings: ExecutionSettings | None = None,
 ) -> dict[str, Any]:
+    settings = settings or execution_settings()
+    fold_frames = fold_frames or _development_fold_frames(frame, config)
     values = FEATURE_TREATMENTS if dimension == "features" else HISTORY_ARMS
     ledgers: dict[str, pl.DataFrame] = {}
     results: dict[str, Any] = {}
-    for value_index, value in enumerate(values):
-        pieces = []
-        folds = []
+
+    def evaluate(
+        item: tuple[int, str, int, Fold]
+    ) -> tuple[str, int, pl.DataFrame, dict[str, Any]]:
+        value_index, value, fold_index, fold = item
         treatment = value if dimension == "features" else "combined"
         arm = "uncertainty_weighted_hybrid" if dimension == "features" else value
-        for fold_index, fold in enumerate(config.development_folds):
-            fit = frame.filter(pl.col("window_start") < fold.test_start)
-            test = frame.filter(pl.col("window_start").is_between(fold.test_start, fold.test_end, closed="left"))
-            model = fit_model(
-                fit, treatment=treatment, history_arm=arm, spec=spec,
-                seed=config.random_seed + 1000 + value_index * 100 + fold_index,
-                margin_calibrated=False,
-            )
-            scored = score_model(test, model).with_columns(pl.lit(fold.name).alias("fold"))
-            pieces.append(scored)
-            folds.append({"fold": fold.name, **probability_metrics(scored)})
+        fit, test = fold_frames[fold.name]
+        model = fit_model(
+            fit,
+            treatment=treatment,
+            history_arm=arm,
+            spec=spec,
+            seed=config.random_seed + 1000 + value_index * 100 + fold_index,
+            margin_calibrated=False,
+        )
+        scored = score_model(test, model).with_columns(pl.lit(fold.name).alias("fold"))
+        return value, fold_index, scored, {"fold": fold.name, **probability_metrics(scored)}
+
+    tasks = (
+        (value_index, value, fold_index, fold)
+        for value_index, value in enumerate(values)
+        for fold_index, fold in enumerate(config.development_folds)
+    )
+    evaluated = _bounded_fit_map(evaluate, tasks, settings)
+    for value_index, value in enumerate(values):
+        rows = sorted(
+            (row for row in evaluated if row[0] == value), key=lambda row: row[1]
+        )
+        pieces = [row[2] for row in rows]
+        folds = [row[3] for row in rows]
         ledger = pl.concat(pieces, how="diagonal_relaxed")
         ledgers[value] = ledger
         weights = np.array([row["markets"] for row in folds], dtype=float)
@@ -648,11 +798,61 @@ def _qualification(
     }
 
 
-def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> tuple[Path, dict[str, Any]]:
-    source_manifest = extract_counterfactual_sources(
-        config.paths, range_start=config.start, range_end=config.end, force=force_extract
-    )
-    print("build: prioritized labels and causal TWAP-30/60 state", flush=True)
+def _source_commit(config: TournamentConfig) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=config.package_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _checkpoint_store(
+    config: TournamentConfig,
+    source_manifest: dict[str, Any],
+    source_commit: str,
+    settings: ExecutionSettings,
+) -> CheckpointStore:
+    identity_payload = {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "source_commit": source_commit,
+        "config_sha256": file_sha256(config.source_path),
+        "source_manifest": source_manifest,
+        "execution": asdict(settings),
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "polars": pl.__version__,
+            "scikit_learn": sklearn.__version__,
+        },
+    }
+    identity = hashlib.sha256(
+        json.dumps(identity_payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return CheckpointStore(config.runs / "checkpoints" / identity, identity)
+
+
+def _load_or_build_frame(
+    config: TournamentConfig, checkpoints: CheckpointStore
+) -> tuple[pl.DataFrame, pl.DataFrame, Any, dict[str, Any]]:
+    frame_file = config.paths.base.cache / "tournament-frame.parquet"
+    labels_file = config.paths.base.cache / "label-audit.parquet"
+    cached = checkpoints.load("constructed-frame")
+    if (
+        isinstance(cached, dict)
+        and frame_file.is_file()
+        and labels_file.is_file()
+        and file_sha256(frame_file) == cached.get("frame_sha256")
+        and file_sha256(labels_file) == cached.get("label_audit_sha256")
+    ):
+        return (
+            pl.read_parquet(frame_file),
+            pl.read_parquet(labels_file),
+            cached["convention"],
+            cached["frame_manifest"],
+        )
+
     frame, labels, convention, frame_manifest = build_counterfactual_frame(
         config.paths,
         chainlink_start=config.chainlink_start,
@@ -662,21 +862,93 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         correction_validation_end=config.correction_validation_end,
         seed=config.random_seed,
     )
-    frame_file = config.paths.base.cache / "tournament-frame.parquet"
-    labels_file = config.paths.base.cache / "label-audit.parquet"
     frame.write_parquet(frame_file, compression="zstd", statistics=True)
     labels.write_parquet(labels_file, compression="zstd", statistics=True)
-    frame_manifest.update({"frame_sha256": file_sha256(frame_file), "label_audit_sha256": file_sha256(labels_file)})
+    frame_manifest.update(
+        {
+            "frame_sha256": file_sha256(frame_file),
+            "label_audit_sha256": file_sha256(labels_file),
+        }
+    )
+    checkpoints.save(
+        "constructed-frame",
+        {
+            "frame_sha256": frame_manifest["frame_sha256"],
+            "label_audit_sha256": frame_manifest["label_audit_sha256"],
+            "convention": convention,
+            "frame_manifest": frame_manifest,
+        },
+    )
+    return frame, labels, convention, frame_manifest
+
+
+def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> tuple[Path, dict[str, Any]]:
+    run_started = time.perf_counter()
+    stage_timings: dict[str, float] = {}
+    stage_started = time.perf_counter()
+    source_manifest = extract_counterfactual_sources(
+        config.paths, range_start=config.start, range_end=config.end, force=force_extract
+    )
+    _record_stage_time(stage_timings, "source-extraction", stage_started)
+    source_commit = _source_commit(config)
+    settings = execution_settings()
+    checkpoints = _checkpoint_store(config, source_manifest, source_commit, settings)
+    print(
+        f"compute: {settings.workers} concurrent fit, "
+        f"{settings.threads_per_fit} threads per fit",
+        flush=True,
+    )
+    print("build: prioritized labels and causal TWAP-30/60 state", flush=True)
+    stage_started = time.perf_counter()
+    frame, labels, convention, frame_manifest = _load_or_build_frame(config, checkpoints)
+    _record_stage_time(stage_timings, "constructed-frame", stage_started)
     fidelity = _fidelity(labels, config, convention, frame_manifest)
     if not fidelity["binance_extension"]["passed"]:
         frame = frame.filter(pl.col("label_source") != "binance_synthetic_twap60")
         frame_manifest["binance_source_tier_removed"] = True
 
     print("search: 36 predetermined outcome/margin configurations", flush=True)
-    selected_spec, hyperparameter_ledger = _search(frame, config)
+    stage_started = time.perf_counter()
+    search_checkpoint = checkpoints.load("hyperparameter-search")
+    if search_checkpoint is None:
+        selected_spec, hyperparameter_ledger = _search(frame, config, settings)
+        checkpoints.save(
+            "hyperparameter-search",
+            {"selected_spec": selected_spec, "ledger": hyperparameter_ledger},
+        )
+    else:
+        selected_spec = search_checkpoint["selected_spec"]
+        hyperparameter_ledger = search_checkpoint["ledger"]
+    _record_stage_time(stage_timings, "hyperparameter-search", stage_started)
+
+    fold_frames = _development_fold_frames(frame, config)
     print("evaluate: fixed-feature and historical-source bakeoffs", flush=True)
-    feature_bakeoff = _probability_bakeoff(frame, config, selected_spec, dimension="features")
-    history_bakeoff = _probability_bakeoff(frame, config, selected_spec, dimension="history")
+    stage_started = time.perf_counter()
+    feature_bakeoff = checkpoints.load("feature-treatment-bakeoff")
+    if feature_bakeoff is None:
+        feature_bakeoff = _probability_bakeoff(
+            frame,
+            config,
+            selected_spec,
+            dimension="features",
+            fold_frames=fold_frames,
+            settings=settings,
+        )
+        checkpoints.save("feature-treatment-bakeoff", feature_bakeoff)
+    _record_stage_time(stage_timings, "feature-treatment-bakeoff", stage_started)
+    stage_started = time.perf_counter()
+    history_bakeoff = checkpoints.load("historical-source-bakeoff")
+    if history_bakeoff is None:
+        history_bakeoff = _probability_bakeoff(
+            frame,
+            config,
+            selected_spec,
+            dimension="history",
+            fold_frames=fold_frames,
+            settings=settings,
+        )
+        checkpoints.save("historical-source-bakeoff", history_bakeoff)
+    _record_stage_time(stage_timings, "historical-source-bakeoff", stage_started)
 
     calibration_window = frame.filter(
         pl.col("window_start").is_between(config.current_start, config.candidate_freeze, closed="left")
@@ -684,19 +956,39 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
     candidate_results: dict[str, Any] = {}
     candidate_ledgers: dict[str, pl.DataFrame] = {}
     final_models: dict[str, ModelBundle] = {}
-    control_scored_parts: list[pl.DataFrame] = []
+    control_scored_ledger: pl.DataFrame | None = None
     for candidate_index, name in enumerate(CANDIDATE_NAMES):
+        stage_started = time.perf_counter()
         treatment, arm, margin_calibrated, strict_guard = _candidate_contract(name)
-        folds = []
-        scored_parts = []
-        trade_parts = []
-        for fold_index, fold in enumerate(config.development_folds):
-            fit = frame.filter(pl.col("window_start") < fold.test_start)
-            test = frame.filter(pl.col("window_start").is_between(fold.test_start, fold.test_end, closed="left"))
+        stage = f"candidate-{candidate_index:02d}-{name}"
+        candidate_checkpoint = checkpoints.load(stage)
+        if candidate_checkpoint is not None:
+            candidate_results[name] = candidate_checkpoint["result"]
+            candidate_ledgers[name] = candidate_checkpoint["trade_ledger"]
+            final_models[name] = candidate_checkpoint["final_model"]
+            if name == "refprice_state_control":
+                control_scored_ledger = candidate_checkpoint["scored_ledger"]
+            _record_stage_time(stage_timings, stage, stage_started)
+            continue
+
+        def evaluate_fold(
+            item: tuple[int, Fold],
+            *,
+            candidate_treatment: str = treatment,
+            candidate_arm: str = arm,
+            candidate_margin_calibrated: bool = margin_calibrated,
+            candidate_strict_guard: bool = strict_guard,
+            current_candidate_index: int = candidate_index,
+        ) -> tuple[int, dict[str, Any], pl.DataFrame, pl.DataFrame]:
+            fold_index, fold = item
+            fit, test = fold_frames[fold.name]
             model = fit_model(
-                fit, treatment=treatment, history_arm=arm, spec=selected_spec,
-                seed=config.random_seed + 5000 + candidate_index * 100 + fold_index,
-                margin_calibrated=margin_calibrated,
+                fit,
+                treatment=candidate_treatment,
+                history_arm=candidate_arm,
+                spec=selected_spec,
+                seed=config.random_seed + 5000 + current_candidate_index * 100 + fold_index,
+                margin_calibrated=candidate_margin_calibrated,
             )
             scored = score_model(test, model).with_columns(pl.lit(fold.name).alias("fold"))
             prior_economic = score_model(
@@ -708,47 +1000,92 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
                 policy_ledger = []
             else:
                 policy, policy_ledger = select_policy(
-                    economic_prior, config, strict_guard=strict_guard,
-                    seed=config.random_seed + 6000 + candidate_index * 100 + fold_index,
+                    economic_prior,
+                    config,
+                    strict_guard=candidate_strict_guard,
+                    seed=(
+                        config.random_seed
+                        + 6000
+                        + current_candidate_index * 100
+                        + fold_index
+                    ),
                 )
             economics_frame = _economic_frame(scored, config)
-            trades = _apply_admission(economics_frame, policy, strict_guard=strict_guard).with_columns(pl.lit(fold.name).alias("fold"))
+            trades = _apply_admission(
+                economics_frame, policy, strict_guard=candidate_strict_guard
+            ).with_columns(pl.lit(fold.name).alias("fold"))
             fold_economics = economic_metrics(
                 trades, test["market_id"].n_unique(), resamples=500,
-                seed=config.random_seed + 7000 + candidate_index * 100 + fold_index,
+                seed=(
+                    config.random_seed
+                    + 7000
+                    + current_candidate_index * 100
+                    + fold_index
+                ),
             )
-            folds.append({"fold": fold.name, "probability": probability_metrics(scored), "economics": fold_economics, "policy": policy, "policy_attempts": len(policy_ledger)})
-            scored_parts.append(scored)
-            trade_parts.append(trades)
+            fold_result = {
+                "fold": fold.name,
+                "probability": probability_metrics(scored),
+                "economics": fold_economics,
+                "policy": policy,
+                "policy_attempts": len(policy_ledger),
+            }
+            return fold_index, fold_result, scored, trades
+
+        evaluated = sorted(
+            _bounded_fit_map(
+                evaluate_fold, enumerate(config.development_folds), settings
+            ),
+            key=lambda row: row[0],
+        )
+        folds = [row[1] for row in evaluated]
+        scored_parts = [row[2] for row in evaluated]
+        trade_parts = [row[3] for row in evaluated]
         scored_ledger = pl.concat(scored_parts, how="diagonal_relaxed")
         trade_ledger = pl.concat(trade_parts, how="diagonal_relaxed") if trade_parts else pl.DataFrame()
         if name == "refprice_state_control":
-            control_scored_parts = scored_parts
+            control_scored_ledger = scored_ledger
+        if control_scored_ledger is None:
+            raise RuntimeError("refprice control must be evaluated before challengers")
         probability = probability_metrics(scored_ledger)
         economics = economic_metrics(
             trade_ledger, scored_ledger["market_id"].n_unique(),
             resamples=int(config.raw["gates"]["bootstrap_resamples"]),
             seed=config.random_seed + 8000 + candidate_index,
         )
-        control_ledger = pl.concat(control_scored_parts, how="diagonal_relaxed") if control_scored_parts else scored_ledger
-        candidate_results[name] = {
+        result = {
             "contract": {"treatment": treatment, "history_arm": arm, "margin_calibrated": margin_calibrated, "strict_uncertainty_guard": strict_guard},
             "probability": probability,
             "economics": economics,
             "folds": folds,
             "paired_control": _paired_bootstrap(
-                scored_ledger, control_ledger, config.random_seed + 9000 + candidate_index,
+                scored_ledger, control_scored_ledger,
+                config.random_seed + 9000 + candidate_index,
                 int(config.raw["gates"]["bootstrap_resamples"]),
             ),
         }
+        with threadpool_limits(limits=settings.threads_per_fit):
+            final_model = fit_model(
+                frame.filter(pl.col("window_start") < config.candidate_freeze),
+                treatment=treatment, history_arm=arm, spec=selected_spec,
+                seed=config.random_seed + 10000 + candidate_index,
+                margin_calibrated=margin_calibrated,
+            )
+        candidate_results[name] = result
         candidate_ledgers[name] = trade_ledger
-        final_models[name] = fit_model(
-            frame.filter(pl.col("window_start") < config.candidate_freeze),
-            treatment=treatment, history_arm=arm, spec=selected_spec,
-            seed=config.random_seed + 10000 + candidate_index,
-            margin_calibrated=margin_calibrated,
+        final_models[name] = final_model
+        checkpoints.save(
+            stage,
+            {
+                "result": result,
+                "trade_ledger": trade_ledger,
+                "scored_ledger": scored_ledger,
+                "final_model": final_model,
+            },
         )
+        _record_stage_time(stage_timings, stage, stage_started)
 
+    stage_started = time.perf_counter()
     provisional = min(
         CANDIDATE_NAMES[1:],
         key=lambda name: (
@@ -786,6 +1123,7 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         prospective, candidate_results[provisional], fidelity, config
     )
     status = "deployable_challenger_qualified" if qualification["passed"] else "no_deployable_challenger_qualified"
+    _record_stage_time(stage_timings, "final-selection-and-qualification", stage_started)
 
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     temporary = config.runs / f"{run_id}.partial"
@@ -811,10 +1149,6 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
     }
     joblib.dump(artifact, artifact_path, compress=3)
     artifact_sha = file_sha256(artifact_path)
-    source_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=config.package_root,
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
     metrics = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -825,7 +1159,18 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
         "new_data_sources": False, "trading_processes_changed": False,
         "source_commit": source_commit,
         "configuration": {"path": str(config.source_path.relative_to(config.package_root)), "sha256": file_sha256(config.source_path), "candidate_freeze": config.candidate_freeze.isoformat(), "data_watermark": config.end.isoformat()},
-        "runtime": {"python": platform.python_version(), "numpy": np.__version__, "polars": pl.__version__, "scikit_learn": sklearn.__version__},
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "polars": pl.__version__,
+            "scikit_learn": sklearn.__version__,
+            "parallel_fits": settings.workers,
+            "threads_per_fit": settings.threads_per_fit,
+            "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "checkpoint_identity": checkpoints.identity,
+            "stage_seconds": stage_timings,
+            "elapsed_seconds_before_reporting": time.perf_counter() - run_started,
+        },
         "source_manifest": source_manifest,
         "frame_manifest": frame_manifest,
         "fidelity": fidelity,

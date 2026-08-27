@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import joblib
 import numpy as np
 import polars as pl
+import pytest
 
 from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 from btc_directional_model.counterfactual_twap_state_data import (
@@ -14,9 +16,13 @@ from btc_directional_model.counterfactual_twap_state_data import (
 )
 from btc_directional_model.counterfactual_twap_state_tournament import (
     CANDIDATE_NAMES,
+    CHECKPOINT_SCHEMA_VERSION,
     FEATURE_TREATMENTS,
     HISTORY_ARMS,
+    CheckpointStore,
+    _bootstrap_means,
     _economic_frame,
+    execution_settings,
     feature_names,
     load_config,
     predetermined_hyperparameters,
@@ -157,3 +163,56 @@ def test_economic_frame_applies_current_regime_datetime_filter() -> None:
 
     assert result.height == 1
     assert result["label_regime"].item() == "authentic_official_twap60"
+
+
+def test_vectorized_bootstrap_preserves_seeded_legacy_draws() -> None:
+    values = np.linspace(-1.5, 2.5, 1001)
+    legacy_rng = np.random.default_rng(20260826)
+    legacy = np.array(
+        [legacy_rng.choice(values, len(values), replace=True).mean() for _ in range(137)]
+    )
+
+    optimized = _bootstrap_means(values, resamples=137, seed=20260826)
+
+    np.testing.assert_array_equal(optimized, legacy)
+
+
+def test_execution_settings_use_bounded_fit_parallelism(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BTC_TWAP_TRAINING_WORKERS", "2")
+    monkeypatch.setenv("BTC_TWAP_TRAINING_THREADS_PER_FIT", "3")
+
+    settings = execution_settings()
+
+    assert settings.workers == 2
+    assert settings.threads_per_fit == 3
+    assert len(predetermined_hyperparameters(load_config(CONFIG))) == 36
+
+
+def test_execution_settings_reject_unbounded_parallel_histogram_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BTC_TWAP_TRAINING_WORKERS", "3")
+
+    with pytest.raises(ValueError, match="at most two"):
+        execution_settings()
+
+    monkeypatch.setenv("BTC_TWAP_TRAINING_WORKERS", "2")
+    monkeypatch.setenv("BTC_TWAP_TRAINING_THREADS_PER_FIT", "4")
+    with pytest.raises(ValueError, match="CPU budget"):
+        execution_settings()
+
+
+def test_checkpoint_resume_requires_exact_training_identity(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path, "exact-source-config-runtime-identity")
+    value = {"selected_index": 7, "combinations": 36}
+
+    store.save("hyperparameter-search", value)
+
+    assert store.load("hyperparameter-search") == value
+    assert CheckpointStore(tmp_path, "different-identity").load(
+        "hyperparameter-search"
+    ) is None
+    payload = joblib.load(tmp_path / "hyperparameter-search.joblib")
+    assert payload["schema_version"] == CHECKPOINT_SCHEMA_VERSION
