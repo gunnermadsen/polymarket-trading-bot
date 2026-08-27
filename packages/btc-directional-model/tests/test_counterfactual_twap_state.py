@@ -26,11 +26,13 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     FEATURE_TREATMENTS,
     HISTORY_ARMS,
     CheckpointStore,
+    _apply_all_missing_feature_mask,
     _arm_frame,
     _bootstrap_means,
     _development_fold_frames,
     _economic_frame,
     _matrix,
+    _neutralize_all_missing_fit_columns,
     execution_settings,
     feature_names,
     load_config,
@@ -253,6 +255,19 @@ def test_scoring_empty_chronological_window_preserves_scored_schema() -> None:
         "predicted_margin_bps": pl.Float64,
         "predicted_margin_upper_bps": pl.Float64,
     }
+
+
+def test_all_missing_fit_feature_is_neutralized_for_fit_and_scoring() -> None:
+    fit = np.array([[np.nan, 1.0], [np.nan, 2.0], [np.nan, 3.0]])
+    scoring = np.array([[17.0, 4.0], [np.nan, 5.0]])
+
+    normalized_fit, indices = _neutralize_all_missing_fit_columns(fit)
+    normalized_scoring = _apply_all_missing_feature_mask(scoring, indices)
+
+    assert indices == (0,)
+    np.testing.assert_array_equal(normalized_fit[:, 0], np.zeros(3))
+    np.testing.assert_array_equal(normalized_scoring[:, 0], np.zeros(2))
+    np.testing.assert_array_equal(normalized_scoring[:, 1], scoring[:, 1])
 
 
 def test_development_folds_are_market_disjoint_and_chronological() -> None:

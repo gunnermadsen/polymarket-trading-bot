@@ -259,6 +259,7 @@ class TournamentConfig:
 @dataclass
 class ModelBundle:
     feature_names: tuple[str, ...]
+    all_missing_feature_indices: tuple[int, ...]
     classifier: HistGradientBoostingClassifier
     lower_margin: HistGradientBoostingRegressor
     median_margin: HistGradientBoostingRegressor
@@ -496,6 +497,23 @@ def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
     return frame.select(pl.col(name).cast(pl.Float64) for name in features).to_numpy()
 
 
+def _apply_all_missing_feature_mask(
+    matrix: np.ndarray, indices: tuple[int, ...]
+) -> np.ndarray:
+    if not indices:
+        return matrix
+    normalized = matrix.copy()
+    normalized[:, indices] = 0.0
+    return normalized
+
+
+def _neutralize_all_missing_fit_columns(
+    matrix: np.ndarray,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    indices = tuple(int(index) for index in np.flatnonzero(np.isnan(matrix).all(axis=0)))
+    return _apply_all_missing_feature_mask(matrix, indices), indices
+
+
 def _weights(frame: pl.DataFrame) -> np.ndarray:
     return _market_equal_weights(frame) * frame["base_label_weight"].to_numpy()
 
@@ -521,10 +539,13 @@ def fit_model(
     features = feature_names(treatment)
     fit, calibration = _split_fit_calibration(source)
     fit_matrix = _matrix(fit, features)
+    fit_matrix, all_missing_feature_indices = _neutralize_all_missing_fit_columns(fit_matrix)
     fit_labels = fit["label_up"].to_numpy()
     fit_margins = fit["target_margin_bps"].to_numpy()
     fit_weights = _weights(fit)
-    calibration_matrix = _matrix(calibration, features)
+    calibration_matrix = _apply_all_missing_feature_mask(
+        _matrix(calibration, features), all_missing_feature_indices
+    )
     calibration_labels = calibration["label_up"].to_numpy()
     calibration_weights = _weights(calibration)
     classifier = HistGradientBoostingClassifier(
@@ -553,7 +574,10 @@ def fit_model(
     calibrator_x = np.column_stack((np.log(raw / (1 - raw)), median_prediction)) if margin_calibrated else np.log(raw / (1 - raw)).reshape(-1, 1)
     calibrator = LogisticRegression(C=spec.calibration_c, max_iter=2000, random_state=seed + 4)
     calibrator.fit(calibrator_x, calibration_labels, sample_weight=calibration_weights)
-    return ModelBundle(features, classifier, lower, median, upper, calibrator, spec, treatment, history_arm, margin_calibrated)
+    return ModelBundle(
+        features, all_missing_feature_indices, classifier, lower, median, upper,
+        calibrator, spec, treatment, history_arm, margin_calibrated,
+    )
 
 
 def score_model(frame: pl.DataFrame, model: ModelBundle) -> pl.DataFrame:
@@ -564,7 +588,9 @@ def score_model(frame: pl.DataFrame, model: ModelBundle) -> pl.DataFrame:
             pl.Series("predicted_margin_bps", [], dtype=pl.Float64),
             pl.Series("predicted_margin_upper_bps", [], dtype=pl.Float64),
         )
-    x = _matrix(frame, model.feature_names)
+    x = _apply_all_missing_feature_mask(
+        _matrix(frame, model.feature_names), model.all_missing_feature_indices
+    )
     raw = np.clip(model.classifier.predict_proba(x)[:, 1], 1e-6, 1 - 1e-6)
     lower = model.lower_margin.predict(x)
     median = model.median_margin.predict(x)
