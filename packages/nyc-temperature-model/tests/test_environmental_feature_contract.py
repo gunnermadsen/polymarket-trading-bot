@@ -31,6 +31,13 @@ def test_goes_operational_transition_uses_noaa_declaration_instant():
     assert operational_satellite(GOES_TRANSITION) == "G19"
 
 
+def test_required_cloud_top_temperature_uses_available_noaa_full_disk_product():
+    product = next(product for product in PRODUCTS if product.key == "cloud_top_temperature")
+
+    assert product.archive_name == "ABI-L2-ACHTF"
+    assert product.variables == ("TEMP",)
+
+
 def test_goes_scan_selection_is_causal_and_nearest_to_requested_offset():
     decision = datetime(2025, 4, 7, 12, 25, tzinfo=UTC)
     keys = [
@@ -130,6 +137,10 @@ def test_small_hrrr_grib_fixture_fields_are_cropped_to_reproducible_netcdf(
     assert summaries[(0, "all")]["temperature_2m"]["mean"] == 290.0
     assert summaries[(100, "all")]["total_cloud_cover"]["mean"] == pytest.approx(0.4)
     assert units["temperature_2m"] == "fixture"
+
+
+def test_hrrr_shortwave_alias_matches_cfgrib_decoding():
+    assert "sdswrf" in FIELD_ALIASES["downward_shortwave_radiation"]
 
 
 def test_environment_migration_uses_typed_columns_and_versioned_keys():

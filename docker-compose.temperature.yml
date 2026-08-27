@@ -109,6 +109,7 @@ services:
       - ./packages/db-migrate/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:/usr/src/app/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:ro
       - ./packages/db-migrate/src/migrations/weather/1787659200000-AddTemperaturePmxtTradeWindowCoverage.ts:/usr/src/app/src/migrations/weather/1787659200000-AddTemperaturePmxtTradeWindowCoverage.ts:ro
       - ./packages/db-migrate/src/migrations/weather/1787760000000-AddTemperatureEnvironmentalFeatures.ts:/usr/src/app/src/migrations/weather/1787760000000-AddTemperatureEnvironmentalFeatures.ts:ro
+      - ./packages/db-migrate/src/migrations/weather/1787763600000-RequeueEnvironmentalSourceAliasRecovery.ts:/usr/src/app/src/migrations/weather/1787763600000-RequeueEnvironmentalSourceAliasRecovery.ts:ro
     networks:
       - temperature-data
     depends_on:

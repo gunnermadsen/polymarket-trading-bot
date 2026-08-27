@@ -47,7 +47,7 @@ class Product:
 PRODUCTS = (
     Product("infrared_c13", "ABI-L2-CMIPC", 13, ("CMI", "Rad"), True),
     Product("clear_sky_mask", "ABI-L2-ACMC", None, ("BCM", "ACM"), True),
-    Product("cloud_top_temperature", "ABI-L2-ACTPC", None, ("CTT",), True),
+    Product("cloud_top_temperature", "ABI-L2-ACHTF", None, ("TEMP",), True),
     Product("cloud_top_height", "ABI-L2-ACHAC", None, ("HT",), True),
     Product("visible_c02", "ABI-L2-CMIPC", 2, ("CMI", "Rad"), True, noon_only=True),
     Product("cloud_optical_depth", "ABI-L2-CODC", None, ("COD",), False),

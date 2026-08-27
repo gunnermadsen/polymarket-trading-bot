@@ -40,7 +40,7 @@ FIELD_ALIASES = {
     "wind_u_10m": ("u10", "10u", "UGRD"),
     "wind_v_10m": ("v10", "10v", "VGRD"),
     "total_cloud_cover": ("tcc", "TCDC"),
-    "downward_shortwave_radiation": ("dswrf", "DSWRF"),
+    "downward_shortwave_radiation": ("sdswrf", "dswrf", "DSWRF"),
     "boundary_layer_height": ("blh", "HPBL"),
     "accumulated_precipitation": ("tp", "APCP"),
     "composite_reflectivity": ("refc", "REFC"),
