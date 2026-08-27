@@ -354,7 +354,10 @@ def ingest_hrrr_environment(settings: Settings, job: Job) -> dict[str, Any]:
                     artifact_id = insert_immutable_artifact(
                         conn,
                         provider="noaa_hrrr_open_data",
-                        logical_key=f"hrrr-environment:{model_run:%Y%m%dT%H}:f{lead_hours:02d}:v1",
+                        logical_key=(
+                            f"hrrr-environment:{model_run:%Y%m%dT%H}:f{lead_hours:02d}:"
+                            f"{FEATURE_SCHEMA_VERSION}"
+                        ),
                         source_uri=subset.source_uri,
                         sha256=source_sha,
                         compressed_bytes=source_size,
