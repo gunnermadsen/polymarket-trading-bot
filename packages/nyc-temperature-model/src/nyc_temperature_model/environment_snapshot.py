@@ -190,7 +190,12 @@ def audit_environment_coverage(settings: Settings, *, start: date, end: date) ->
                 """
                 SELECT EXTRACT(HOUR FROM decision_time AT TIME ZONE 'America/New_York')::int AS decision_hour,
                        product,count(*)::int AS expected,
-                       count(*) FILTER (WHERE status IN ('complete','valid_zero'))::int AS available
+                       count(*) FILTER (
+                         WHERE status IN ('complete','valid_zero','insufficient_valid_pixels')
+                       )::int AS available,
+                       count(*) FILTER (
+                         WHERE status IN ('complete','valid_zero')
+                       )::int AS quality_qualified
                 FROM weather.goes_abi_window_coverage
                 WHERE process_id=%s AND station_id=%s AND decision_time >= %s AND decision_time < %s
                   AND feature_schema_version=%s
@@ -248,6 +253,9 @@ def audit_environment_coverage(settings: Settings, *, start: date, end: date) ->
     for row in satellite_coverage:
         item = dict(row)
         item["coverage_fraction"] = item["available"] / item["expected"] if item["expected"] else 0
+        item["quality_qualified_fraction"] = (
+            item["quality_qualified"] / item["expected"] if item["expected"] else 0
+        )
         coverage.append(item)
     return {
         "range": {"start": start.isoformat(), "end_exclusive": end.isoformat()},

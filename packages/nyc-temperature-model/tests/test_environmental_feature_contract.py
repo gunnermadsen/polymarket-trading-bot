@@ -194,3 +194,11 @@ def test_temperature_compose_has_exactly_two_restricted_environment_workers():
         'WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"'
     ) == 2
     assert "polymarket-bot:" not in compose
+
+
+def test_causal_coverage_keeps_sparse_processed_products_distinct_from_source_failures():
+    audit_source = Path(__file__).parents[1] / "src/nyc_temperature_model/environment_snapshot.py"
+    text = audit_source.read_text()
+
+    assert "('complete','valid_zero','insufficient_valid_pixels')" in text
+    assert "quality_qualified_fraction" in text
