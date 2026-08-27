@@ -12,6 +12,7 @@ dependencies = [
   "cfgrib>=0.9.15,<0.10",
   "herbie-data>=2025.7,<2027",
   "h5netcdf>=1.5,<2",
+  "h5py>=3.12,<4",
   "httpx>=0.28,<1",
   "joblib>=1.4,<2",
   "numpy>=2.1,<3",
