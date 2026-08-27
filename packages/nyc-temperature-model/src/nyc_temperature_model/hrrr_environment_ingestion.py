@@ -402,7 +402,7 @@ def ingest_hrrr_environment(settings: Settings, job: Job) -> dict[str, Any]:
                     )
             except HrrrDownloadExhausted as error:
                 exhausted.append(f"{model_run:%Y%m%dT%H}:f{lead_hours:02d}:{error}")
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - persist field-level failure evidence.
                 counters["failed"] += 1
                 with connection(settings.database_url) as conn, conn.transaction():
                     _insert_coverage(

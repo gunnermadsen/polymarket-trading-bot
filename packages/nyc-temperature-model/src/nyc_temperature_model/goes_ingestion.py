@@ -485,7 +485,7 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
                         }
                     )
                     offset_scan_ends[offset] = max(offset_scan_ends.get(offset, scan_end), scan_end)
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 - persist product-level failure evidence.
                     status = "download_failure" if "download" in str(error).lower() else "processing_failure"
                     product_results.append(
                         {"product": product, "status": status, "metadata": {"error": str(error)[:1000]}}

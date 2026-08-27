@@ -176,7 +176,7 @@ def export_environment_snapshot(
         )
         os.replace(partial, destination)
         return {**manifest, "path": str(destination)}
-    except Exception:
+    except Exception:  # noqa: TRY203 - preserve a diagnostic partial snapshot.
         # Keep a failed partial snapshot for diagnosis; it can never be mistaken for immutable output.
         raise
 

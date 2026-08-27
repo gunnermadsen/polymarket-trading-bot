@@ -12,19 +12,21 @@ from .benchmark import run_benchmark
 from .challenger_tournament import run_challenger_tournament
 from .config import Settings
 from .database import connection
-from .execution_ingestion import ingest_pmxt_execution
 from .environment_snapshot import audit_environment_coverage, export_environment_snapshot
+from .execution_ingestion import ingest_pmxt_execution
+from .goes_ingestion import FEATURE_SCHEMA_VERSION as GOES_FEATURE_VERSION
+from .goes_ingestion import PRODUCTS as GOES_PRODUCTS
 from .goes_ingestion import (
-    FEATURE_SCHEMA_VERSION as GOES_FEATURE_VERSION,
-    PRODUCTS as GOES_PRODUCTS,
     SCAN_OFFSETS_MINUTES,
     ingest_goes,
 )
-from .hrrr_ingestion import ingest_hrrr
 from .hrrr_environment_ingestion import (
     FEATURE_SCHEMA_VERSION as HRRR_ENVIRONMENT_FEATURE_VERSION,
+)
+from .hrrr_environment_ingestion import (
     ingest_hrrr_environment,
 )
+from .hrrr_ingestion import ingest_hrrr
 from .jobs import (
     SUPPORTED_INGESTERS,
     cancel_job,
