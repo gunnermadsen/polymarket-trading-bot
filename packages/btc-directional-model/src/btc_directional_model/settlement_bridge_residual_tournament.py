@@ -1517,12 +1517,10 @@ def _predictive_selection(
             "improved_folds": fold_improvements,
             "passed": passed,
         }
-        if passed:
+        if passed and (index == 0 or current == left):
             current = right
         elif index == 0:
             current = None
-        else:
-            break
     return {"winner": current, "comparisons": results, "metrics": metrics}
 
 

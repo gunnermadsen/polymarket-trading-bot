@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
+import pytest
 
 from btc_directional_model.settlement_bridge_residual_tournament import (
     BASE_FEATURES,
@@ -15,6 +16,7 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     _attach_capacity,
     _causal_piecewise_average,
     _market_equal_weights,
+    _predictive_selection,
     _render_report,
     base_specs,
     causal_feature_registry,
@@ -132,3 +134,61 @@ def test_report_serializes_numpy_scalar_metrics() -> None:
     report = _render_report(result)
 
     assert '"passed": true' in report
+
+
+def test_predictive_selection_reports_every_required_pair_after_failed_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(CONFIG)
+    probabilities = {
+        CANDIDATES[0]: (0.1, 0.9),
+        CANDIDATES[1]: (0.4, 0.6),
+        CANDIDATES[2]: (0.0, 1.0),
+        CANDIDATES[3]: (0.0, 1.0),
+    }
+    rows = []
+    for candidate, values in probabilities.items():
+        for index, probability in enumerate(values):
+            rows.append(
+                {
+                    "market_id": f"m{index}",
+                    "observed_at": datetime(2026, 8, 14, 0, index, tzinfo=UTC),
+                    "twap_label_up": index,
+                    "probability_up": probability,
+                    "candidate": candidate,
+                    "fold": "f1",
+                    "seconds_elapsed": 60,
+                }
+            )
+    ledger = pl.DataFrame(rows)
+    monkeypatch.setattr(
+        "btc_directional_model.settlement_bridge_residual_tournament._candidate_metrics",
+        lambda _frame: {"ece": 0.01},
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.settlement_bridge_residual_tournament._bootstrap_mean",
+        lambda values, _resamples, _seed: {
+            "lower": float(values.mean() - 0.001),
+            "mean": float(values.mean()),
+            "upper": float(values.mean() + 0.001),
+        },
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.settlement_bridge_residual_tournament._fold_improvement_count",
+        lambda *_args: 2,
+    )
+    monkeypatch.setattr(
+        "btc_directional_model.settlement_bridge_residual_tournament._candidate_coherence",
+        lambda _frame: True,
+    )
+
+    result = _predictive_selection(ledger, [], config)
+
+    assert set(result["comparisons"]) == {
+        "settlement_bridge_is_useful",
+        "non_twap_correction_is_useful",
+        "relative_twap_adds_value",
+        "margin_residual_is_superior",
+    }
+    assert result["comparisons"]["relative_twap_adds_value"]["passed"] is True
+    assert result["winner"] == CANDIDATES[0]
