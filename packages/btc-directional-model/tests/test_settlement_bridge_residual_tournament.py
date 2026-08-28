@@ -15,6 +15,7 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     _attach_capacity,
     _causal_piecewise_average,
     _market_equal_weights,
+    _render_report,
     base_specs,
     causal_feature_registry,
     load_config,
@@ -116,3 +117,18 @@ def test_empty_filtered_capacity_preserves_prediction_rows_as_ineligible() -> No
 
     assert result.height == 1
     assert result["up_ask_vwap_5"].null_count() == 1
+
+
+def test_report_serializes_numpy_scalar_metrics() -> None:
+    result = {
+        "run_id": "test-run",
+        "model_family": "btc-5m-settlement-bridge-residual",
+        "source_commit": "deadbeef",
+        "deployment_status": "not_deployed",
+        "conclusion": "no settlement bridge is justified",
+        "predictive_selection": {"passed": np.bool_(True)},
+    }
+
+    report = _render_report(result)
+
+    assert '"passed": true' in report
