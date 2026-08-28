@@ -1742,6 +1742,7 @@ def run_tournament(
             },
             "probability": attribution_results["results"][name],
             "economics": (economics_checkpoint["economics"] if name == provisional else None),
+            "economic_folds": (economics_checkpoint["folds"] if name == provisional else None),
         }
         for name in CANDIDATE_NAMES
     }
@@ -2089,6 +2090,26 @@ def _render_report(metrics: dict[str, Any]) -> str:
                 f"${economics['maximum_drawdown']:,.2f} | "
                 f"${economics['cvar_5pct']:,.2f} |"
             )
+    selected_result = metrics["candidate_results"][selection["provisional_candidate"]]
+    rows.extend(
+        [
+            "",
+            "## Selected-treatment economic folds",
+            "",
+            "| Fold | Trades | Coverage | Stressed PnL | Profit factor | Bootstrap lower | UP | DOWN |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for fold in selected_result["economic_folds"] or []:
+        economics = fold["economics"]
+        rows.append(
+            f"| `{fold['fold']}` | {economics['trades']} | "
+            f"{economics['coverage']:.2%} | "
+            f"${economics['stressed_pnl']:,.2f} | "
+            f"{economics['profit_factor']:.2f} | "
+            f"${economics['bootstrap_lower']:,.3f} | "
+            f"{economics['up_trades']} | {economics['down_trades']} |"
+        )
     rows.extend(
         [
             "",
