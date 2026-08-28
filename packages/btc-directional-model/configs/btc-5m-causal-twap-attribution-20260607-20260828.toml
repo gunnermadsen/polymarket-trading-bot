@@ -1,0 +1,108 @@
+[training]
+profile = "btc_5m_counterfactual_twap_state"
+model_family = "btc-5m-counterfactual-twap-state"
+paper_only = true
+training_only = true
+live_capital_allowed = false
+random_seed = 20260828
+data_watermark = "2026-08-28T00:00:00Z"
+candidate_freeze = "2026-08-28T00:00:00Z"
+
+[regimes]
+binance_start = "2026-03-21T00:00:00Z"
+chainlink_start = "2026-06-07T00:00:00Z"
+authentic_counterfactual_start = "2026-08-01T00:00:00Z"
+official_twap60_start = "2026-08-14T00:00:00Z"
+end = "2026-08-28T00:00:00Z"
+
+[correction]
+fit_end = "2026-07-16T00:00:00Z"
+validation_end = "2026-08-01T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_exclusive = 180
+cadence_seconds = 5
+cells = [[60, 90], [90, 120], [120, 150], [150, 180]]
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[model]
+hyperparameter_combinations = 36
+calibration_cs = [0.10, 0.25, 0.50, 1.00]
+historical_weights = [0.25, 0.50, 0.75]
+quantiles = [0.05, 0.50, 0.95]
+
+[policy]
+minimum_probability_edges = [0.01, 0.02, 0.03, 0.05]
+minimum_stressed_edges = [0.00, 0.005, 0.01, 0.02, 0.03]
+minimum_margin_bounds_bps = [0.0, 0.25, 0.50, 1.0]
+price_bucket_edges = [0.00, 0.65, 0.75, 0.85, 1.01]
+
+[gates]
+chainlink_minimum_agreement = 0.99
+chainlink_outside_band_minimum_agreement = 0.995
+binance_minimum_agreement = 0.99
+maximum_ece = 0.03
+maximum_slice_brier_degradation = 0.0025
+minimum_non_degrading_slice_ratio = 0.50
+minimum_profit_factor = 1.25
+minimum_market_coverage = 0.10
+minimum_profitable_fold_ratio = 0.70
+minimum_prospective_markets = 2500
+minimum_prospective_days = 10
+minimum_prospective_folds = 5
+bootstrap_resamples = 2000
+bootstrap_confidence = 0.95
+
+[[development_folds]]
+name = "official_20260814_15"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-16T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260816_17"
+test_start = "2026-08-16T00:00:00Z"
+test_end = "2026-08-18T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260818_19"
+test_start = "2026-08-18T00:00:00Z"
+test_end = "2026-08-20T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260820_21"
+test_start = "2026-08-20T00:00:00Z"
+test_end = "2026-08-22T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260822_23"
+test_start = "2026-08-22T00:00:00Z"
+test_end = "2026-08-24T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260824_25"
+test_start = "2026-08-24T00:00:00Z"
+test_end = "2026-08-26T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260826_27"
+test_start = "2026-08-26T00:00:00Z"
+test_end = "2026-08-28T00:00:00Z"
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+binance_source_sql = "sql/btc-counterfactual-twap-binance-source.sql"
+cache = "data/btc-causal-twap-attribution-20260607-20260828"
+runs = "runs/btc-causal-twap-attribution-20260607-20260828"
+committed_results = "training-results/btc-5m-causal-twap-attribution-20260607-20260828"
