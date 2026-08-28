@@ -1377,7 +1377,9 @@ def _fit_residual_models(
     spec: BoostSpec,
     seed: int,
 ) -> dict[str, Any]:
-    eligible = frame.drop_nulls(list(features) + ["margin_residual_bps"])
+    eligible = frame.drop_nulls(list(features) + ["margin_residual_bps"]).filter(
+        pl.col("margin_residual_bps").is_finite()
+    )
     names = _variable_features(eligible, features)
     weights = _market_equal_weights(eligible) * eligible["label_weight"].to_numpy()
     models: dict[str, HistGradientBoostingRegressor] = {}
@@ -2106,6 +2108,15 @@ def _probability_metrics(frame: pl.DataFrame) -> dict[str, Any]:
 
 def _margin_metrics(frame: pl.DataFrame) -> dict[str, Any]:
     eligible = frame.drop_nulls(["twap_margin_bps", "adjusted_margin_median", "adjusted_margin_lower", "adjusted_margin_upper"])
+    eligible = eligible.filter(
+        pl.all_horizontal(
+            pl.col(name).is_finite()
+            for name in (
+                "twap_margin_bps", "adjusted_margin_median",
+                "adjusted_margin_lower", "adjusted_margin_upper",
+            )
+        )
+    )
     if eligible.is_empty():
         return {"margin_markets": 0, "margin_mae": None, "interval_coverage": None}
     weights = _market_equal_weights(eligible)
