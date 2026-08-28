@@ -2,5 +2,6 @@
 
 mod api;
 mod error;
+mod metrics;
 
 pub use api::{ControlApi, ControlReadiness};
