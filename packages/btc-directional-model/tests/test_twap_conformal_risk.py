@@ -23,6 +23,7 @@ from btc_directional_model.twap_conformal_risk import (
 from btc_directional_model.twap_conformal_risk_tournament import (
     FoldLedger,
     candidate_metrics,
+    development_checks,
     load_config,
     persist_daily_ledgers,
     validate_prediction_frame,
@@ -237,3 +238,9 @@ def test_zero_trade_report_retains_every_required_metric_group() -> None:
         "above_0.80",
     }
     assert set(metrics["loss_distribution"]) == {"average", "median", "p90", "worst"}
+    paired = {"bootstrap_improvement": {"lower": None}}
+    checks = development_checks(
+        DIRECTION_TIME_PRICE, metrics, metrics, paired, config
+    )
+    assert checks["average_loss_recovery"] is False
+    assert checks["average_entry"] is False

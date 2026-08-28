@@ -1180,7 +1180,10 @@ def development_checks(
         "overall_accuracy": (row.get("accuracy") or 0.0) >= gates["minimum_accuracy"],
         "up_accuracy": (row.get("up_accuracy") or 0.0) >= gates["minimum_accuracy"],
         "down_accuracy": (row.get("down_accuracy") or 0.0) >= gates["minimum_accuracy"],
-        "average_loss_recovery": row.get("wins_to_recover_average_loss", math.inf) <= 3.0,
+        "average_loss_recovery": _metric_value(
+            row, "wins_to_recover_average_loss", math.inf
+        )
+        <= 3.0,
         "every_quote_recovery": row.get("all_quotes_pass_recovery", False),
         "positive_stressed_pnl": row.get("stressed_pnl", 0.0) > 0.0,
         "positive_stressed_expectancy": (row.get("stressed_expectancy") or -math.inf) > 0.0,
@@ -1188,7 +1191,7 @@ def development_checks(
         "positive_bootstrap_lower": _interval_lower(row) > 0.0,
         "positive_each_two_day_fold": bool(row.get("two_day_folds"))
         and all(value["stressed_pnl"] > 0.0 for value in row["two_day_folds"].values()),
-        "average_entry": row.get("mean_entry_second", math.inf) <= 90.0,
+        "average_entry": _metric_value(row, "mean_entry_second", math.inf) <= 90.0,
         "coverage": row.get("coverage", 0.0) >= gates["minimum_coverage"],
         "trade_support": row.get("trades", 0) >= gates["minimum_trades"],
         "both_directions_represented": min(
@@ -1196,7 +1199,9 @@ def development_checks(
         )
         >= gates["minimum_direction_share"],
         "direction_economics": all(direction_checks),
-        "pnl_concentration": row.get("maximum_positive_pnl_day_share", math.inf)
+        "pnl_concentration": _metric_value(
+            row, "maximum_positive_pnl_day_share", math.inf
+        )
         <= gates["maximum_positive_pnl_day_share"],
         "positive_five_share_capacity": row.get("capacity", {}).get("5", {}).get(
             "stressed_pnl", 0.0
@@ -1236,9 +1241,12 @@ def apply_test_qualification(
         "positive_stressed_expectancy": (row.get("stressed_expectancy") or -math.inf) > 0.0,
         "profit_factor": (row.get("profit_factor") or 0.0) >= gates["minimum_profit_factor"],
         "positive_bootstrap_lower": _interval_lower(row) > 0.0,
-        "average_loss_recovery": row.get("wins_to_recover_average_loss", math.inf) <= 3.0,
+        "average_loss_recovery": _metric_value(
+            row, "wins_to_recover_average_loss", math.inf
+        )
+        <= 3.0,
         "every_quote_recovery": row.get("all_quotes_pass_recovery", False),
-        "average_entry": row.get("mean_entry_second", math.inf) <= 90.0,
+        "average_entry": _metric_value(row, "mean_entry_second", math.inf) <= 90.0,
         "positive_each_two_day_fold": bool(row.get("two_day_folds"))
         and all(value["stressed_pnl"] > 0.0 for value in row["two_day_folds"].values()),
         "both_directions_represented": min(
@@ -1246,7 +1254,9 @@ def apply_test_qualification(
         )
         >= gates["minimum_direction_share"],
         "direction_economics": all(direction_valid),
-        "pnl_concentration": row.get("maximum_positive_pnl_day_share", math.inf)
+        "pnl_concentration": _metric_value(
+            row, "maximum_positive_pnl_day_share", math.inf
+        )
         <= gates["maximum_positive_pnl_day_share"],
         "positive_five_share_capacity": row.get("capacity", {}).get("5", {}).get(
             "stressed_pnl", 0.0
@@ -1314,8 +1324,8 @@ def selection_key(row: dict[str, Any]) -> tuple[float, int, float, float]:
     return (
         _interval_lower(row),
         int(row.get("trades", 0)),
-        -float(row.get("mean_entry_second") or math.inf),
-        -float(row.get("maximum_drawdown") or math.inf),
+        -_metric_value(row, "mean_entry_second", math.inf),
+        -_metric_value(row, "maximum_drawdown", math.inf),
     )
 
 
@@ -1477,6 +1487,11 @@ def _interval_lower(row: dict[str, Any]) -> float:
 def _cvar_value(row: dict[str, Any]) -> float:
     value = row.get("cvar_10")
     return float(value) if value is not None else -math.inf
+
+
+def _metric_value(row: dict[str, Any], key: str, default: float) -> float:
+    value = row.get(key)
+    return float(value) if value is not None else default
 
 
 def _frame_identity(frame: pl.DataFrame) -> str:
