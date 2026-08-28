@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import joblib
@@ -31,6 +31,9 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     _bootstrap_means,
     _development_fold_frames,
     _economic_frame,
+    _json_default,
+    _json_safe,
+    _margin_conditioned_agreement,
     _matrix,
     _neutralize_all_missing_fit_columns,
     execution_settings,
@@ -268,6 +271,36 @@ def test_all_missing_fit_feature_is_neutralized_for_fit_and_scoring() -> None:
     np.testing.assert_array_equal(normalized_fit[:, 0], np.zeros(3))
     np.testing.assert_array_equal(normalized_scoring[:, 0], np.zeros(2))
     np.testing.assert_array_equal(normalized_scoring[:, 1], scoring[:, 1])
+
+
+def test_json_default_serializes_date_values() -> None:
+    assert _json_default(date(2026, 8, 26)) == "2026-08-26"
+
+
+def test_json_safe_normalizes_nested_non_finite_values() -> None:
+    assert _json_safe({"values": [float("inf"), np.float64(-np.inf)]}) == {
+        "values": ["inf", "-inf"]
+    }
+
+
+def test_margin_conditioned_agreement_uses_left_closed_bands() -> None:
+    frame = pl.DataFrame(
+        {
+            "observed": [1, 1, 0, 0, 1],
+            "reconstructed": [1, 0, 0, 1, 1],
+            "margin": [0.0, 0.526, 1.0, 2.0, 5.0],
+        }
+    )
+
+    result = _margin_conditioned_agreement(
+        frame,
+        observed_label="observed",
+        reconstructed_label="reconstructed",
+        margin="margin",
+    )
+
+    assert [row["markets"] for row in result["bands"]] == [1, 1, 1, 1, 1]
+    assert [row["agreement"] for row in result["bands"]] == [1.0, 0.0, 1.0, 0.0, 1.0]
 
 
 def test_development_folds_are_market_disjoint_and_chronological() -> None:

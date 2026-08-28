@@ -12,7 +12,7 @@ import time
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -1156,6 +1156,53 @@ def _probability_bakeoff(
     }
 
 
+def _margin_conditioned_agreement(
+    frame: pl.DataFrame,
+    *,
+    observed_label: str,
+    reconstructed_label: str,
+    margin: str,
+) -> dict[str, Any]:
+    bands = (
+        (0.0, 0.526),
+        (0.526, 1.0),
+        (1.0, 2.0),
+        (2.0, 5.0),
+        (5.0, None),
+    )
+    eligible = frame.filter(
+        pl.col(observed_label).is_not_null()
+        & pl.col(reconstructed_label).is_not_null()
+        & pl.col(margin).is_finite()
+    ).with_columns(pl.col(margin).abs().alias("absolute_margin_bps"))
+    rows = []
+    for lower, upper in bands:
+        predicate = pl.col("absolute_margin_bps") >= lower
+        if upper is not None:
+            predicate &= pl.col("absolute_margin_bps") < upper
+        block = eligible.filter(predicate)
+        rows.append(
+            {
+                "minimum_absolute_margin_bps": lower,
+                "maximum_absolute_margin_bps_exclusive": upper,
+                "markets": block.height,
+                "agreement": (
+                    float(
+                        (
+                            block[observed_label] == block[reconstructed_label]
+                        ).mean()
+                    )
+                    if block.height
+                    else None
+                ),
+            }
+        )
+    return {
+        "conditioning_margin": f"absolute_{margin}",
+        "bands": rows,
+    }
+
+
 def _fidelity(labels: pl.DataFrame, config: TournamentConfig, convention: Any, frame_manifest: dict[str, Any]) -> dict[str, Any]:
     overlap = labels.filter(pl.col("authentic_label_up").is_not_null() & pl.col("proxy_label_up").is_not_null())
     outside = overlap.filter(pl.col("proxy_margin_bps").abs() >= 0.526)
@@ -1164,12 +1211,24 @@ def _fidelity(labels: pl.DataFrame, config: TournamentConfig, convention: Any, f
         "overall_agreement": float((overlap["authentic_label_up"] == overlap["proxy_label_up"]).mean()) if overlap.height else None,
         "outside_uncertainty_agreement": float((outside["authentic_label_up"] == outside["proxy_label_up"]).mean()) if outside.height else None,
         "p99_price_error_bps": float(convention.calibration_p99_bps),
+        "margin_conditioned_agreement": _margin_conditioned_agreement(
+            overlap,
+            observed_label="authentic_label_up",
+            reconstructed_label="proxy_label_up",
+            margin="authentic_margin_bps",
+        ),
     }
     chainlink["passed"] = bool(
         (chainlink["overall_agreement"] or 0) >= float(config.raw["gates"]["chainlink_minimum_agreement"])
         and (chainlink["outside_uncertainty_agreement"] or 0) >= float(config.raw["gates"]["chainlink_outside_band_minimum_agreement"])
     )
     binance = dict(frame_manifest["binance_fidelity"])
+    binance["margin_conditioned_agreement"] = _margin_conditioned_agreement(
+        labels,
+        observed_label="authentic_label_up",
+        reconstructed_label="binance_corrected_label_up",
+        margin="authentic_margin_bps",
+    )
     weekly_values = [float(row["agreement"]) for row in binance["weekly"] if row["markets"] >= 20]
     binance["passed"] = bool(
         (binance.get("authentic_agreement") or 0) >= float(config.raw["gates"]["binance_minimum_agreement"])
@@ -1880,14 +1939,34 @@ def run_tournament(config: TournamentConfig, *, force_extract: bool = False) -> 
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n")
+    path.write_text(
+        json.dumps(
+            _json_safe(payload),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    return _json_default(value) if isinstance(value, (date, datetime, Path)) else value
 
 
 def _json_default(value: Any) -> Any:
-    if isinstance(value, (datetime, Path)):
+    if isinstance(value, (date, datetime, Path)):
         return str(value)
     if isinstance(value, np.generic):
-        return value.item()
+        return _json_safe(value.item())
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     raise TypeError(type(value).__name__)

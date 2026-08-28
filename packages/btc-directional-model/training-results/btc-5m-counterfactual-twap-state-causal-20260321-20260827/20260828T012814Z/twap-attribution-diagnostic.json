@@ -1,0 +1,224 @@
+{
+  "decisive_comparison": "refprice_non_twap_basis_vs_refprice_relative_twap",
+  "dimension": "attribution",
+  "non_qualifying": true,
+  "results": {
+    "refprice_absolute_twap": {
+      "brier": 0.1710909397376033,
+      "expected_calibration_error": 0.0379902854909287,
+      "folds": [
+        {
+          "brier": 0.1837741864112734,
+          "expected_calibration_error": 0.03777331577692372,
+          "fold": "official_20260814_15",
+          "log_loss": 0.5470666749098959,
+          "markets": 576
+        },
+        {
+          "brier": 0.17687848616010107,
+          "expected_calibration_error": 0.03948733769508266,
+          "fold": "official_20260816_17",
+          "log_loss": 0.528210417983913,
+          "markets": 573
+        },
+        {
+          "brier": 0.15617925633707794,
+          "expected_calibration_error": 0.026148108495432674,
+          "fold": "official_20260818_19",
+          "log_loss": 0.47692720265020966,
+          "markets": 575
+        },
+        {
+          "brier": 0.17557146164810786,
+          "expected_calibration_error": 0.05808080202479232,
+          "fold": "official_20260820_21",
+          "log_loss": 0.5286823143391094,
+          "markets": 574
+        },
+        {
+          "brier": 0.15509448731563077,
+          "expected_calibration_error": 0.014818915792367483,
+          "fold": "official_20260822_23",
+          "log_loss": 0.4749318800017646,
+          "markets": 576
+        },
+        {
+          "brier": 0.18704420636817073,
+          "expected_calibration_error": 0.06539017393061758,
+          "fold": "official_20260824",
+          "log_loss": 0.5574413902564211,
+          "markets": 288
+        }
+      ],
+      "log_loss": 0.5153623173568207,
+      "paired_brier_bootstrap": {
+        "candidate_minus_control_brier": -0.0005610751359802938,
+        "lower": -0.0025760461215778695,
+        "upper": 0.0016006054987507674
+      }
+    },
+    "refprice_non_twap_basis": {
+      "brier": 0.17088822201455578,
+      "expected_calibration_error": 0.03954957584433593,
+      "folds": [
+        {
+          "brier": 0.18185335322880444,
+          "expected_calibration_error": 0.03134319294752721,
+          "fold": "official_20260814_15",
+          "log_loss": 0.5431640800107367,
+          "markets": 576
+        },
+        {
+          "brier": 0.1769261699592898,
+          "expected_calibration_error": 0.03700133961828228,
+          "fold": "official_20260816_17",
+          "log_loss": 0.5283816234441424,
+          "markets": 573
+        },
+        {
+          "brier": 0.15767344578455955,
+          "expected_calibration_error": 0.03426866613660996,
+          "fold": "official_20260818_19",
+          "log_loss": 0.4809859584888904,
+          "markets": 575
+        },
+        {
+          "brier": 0.17597041343736555,
+          "expected_calibration_error": 0.05589826613719914,
+          "fold": "official_20260820_21",
+          "log_loss": 0.5305617460119305,
+          "markets": 574
+        },
+        {
+          "brier": 0.1551614749710296,
+          "expected_calibration_error": 0.026328588275918226,
+          "fold": "official_20260822_23",
+          "log_loss": 0.474888690782632,
+          "markets": 576
+        },
+        {
+          "brier": 0.18465303104541098,
+          "expected_calibration_error": 0.06543388000870437,
+          "fold": "official_20260824",
+          "log_loss": 0.5500438468046123,
+          "markets": 288
+        }
+      ],
+      "log_loss": 0.5150800323947382,
+      "paired_brier_bootstrap": {
+        "candidate_minus_control_brier": -0.0012341041176096362,
+        "lower": -0.002859330420121511,
+        "upper": 0.0004044647005557118
+      }
+    },
+    "refprice_only": {
+      "brier": 0.17223261705478335,
+      "expected_calibration_error": 0.042291066921771855,
+      "folds": [
+        {
+          "brier": 0.18392918724386897,
+          "expected_calibration_error": 0.026234148481448023,
+          "fold": "official_20260814_15",
+          "log_loss": 0.5484474214711157,
+          "markets": 576
+        },
+        {
+          "brier": 0.17835127794608574,
+          "expected_calibration_error": 0.04352748982372056,
+          "fold": "official_20260816_17",
+          "log_loss": 0.5317017237881418,
+          "markets": 573
+        },
+        {
+          "brier": 0.15942617388943622,
+          "expected_calibration_error": 0.03743408680841891,
+          "fold": "official_20260818_19",
+          "log_loss": 0.4855778119699692,
+          "markets": 575
+        },
+        {
+          "brier": 0.1768782999738371,
+          "expected_calibration_error": 0.057205611452934076,
+          "fold": "official_20260820_21",
+          "log_loss": 0.5341974538510124,
+          "markets": 574
+        },
+        {
+          "brier": 0.15630684859063582,
+          "expected_calibration_error": 0.03616250191512135,
+          "fold": "official_20260822_23",
+          "log_loss": 0.4776392794746516,
+          "markets": 576
+        },
+        {
+          "brier": 0.1848267432362316,
+          "expected_calibration_error": 0.06417364729306162,
+          "fold": "official_20260824",
+          "log_loss": 0.549884497046919,
+          "markets": 288
+        }
+      ],
+      "log_loss": 0.5186256619285557,
+      "paired_brier_bootstrap": {
+        "candidate_minus_control_brier": 0.0,
+        "lower": 0.0,
+        "upper": 0.0
+      }
+    },
+    "refprice_relative_twap": {
+      "brier": 0.17081855483529573,
+      "expected_calibration_error": 0.039635550737157146,
+      "folds": [
+        {
+          "brier": 0.18162209448944017,
+          "expected_calibration_error": 0.0283093547658288,
+          "fold": "official_20260814_15",
+          "log_loss": 0.5425246746868676,
+          "markets": 576
+        },
+        {
+          "brier": 0.17662122333542504,
+          "expected_calibration_error": 0.0379734532340708,
+          "fold": "official_20260816_17",
+          "log_loss": 0.5272803342352944,
+          "markets": 573
+        },
+        {
+          "brier": 0.1566849705871871,
+          "expected_calibration_error": 0.03240912791392133,
+          "fold": "official_20260818_19",
+          "log_loss": 0.47881009885059583,
+          "markets": 575
+        },
+        {
+          "brier": 0.17674198282378392,
+          "expected_calibration_error": 0.05639487393782101,
+          "fold": "official_20260820_21",
+          "log_loss": 0.5330498788228725,
+          "markets": 574
+        },
+        {
+          "brier": 0.15492235441153981,
+          "expected_calibration_error": 0.03197384444169064,
+          "fold": "official_20260822_23",
+          "log_loss": 0.47350948169296053,
+          "markets": 576
+        },
+        {
+          "brier": 0.18587135632832488,
+          "expected_calibration_error": 0.061943728449385733,
+          "fold": "official_20260824",
+          "log_loss": 0.5538119632530127,
+          "markets": 288
+        }
+      ],
+      "log_loss": 0.5149119507564497,
+      "paired_brier_bootstrap": {
+        "candidate_minus_control_brier": -0.0015130098306383555,
+        "lower": -0.003180315693571162,
+        "upper": 0.00013562794878989846
+      }
+    }
+  },
+  "selection": null
+}

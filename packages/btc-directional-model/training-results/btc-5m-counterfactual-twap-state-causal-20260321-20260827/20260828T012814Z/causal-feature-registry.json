@@ -1,0 +1,1705 @@
+{
+  "features": {
+    "binance_chainlink_basis_bps": {
+      "candidate_membership": [
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) and causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "current_binance_chainlink_twap",
+      "source_availability_timestamp": [
+        "disagreement_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and open_timestamp",
+      "treatment_membership": [
+        "combined_disagreement"
+      ]
+    },
+    "binance_chainlink_basis_velocity_5s_bps": {
+      "candidate_membership": [
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) and causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "current_binance_chainlink_twap",
+      "source_availability_timestamp": [
+        "disagreement_opening_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and open_timestamp",
+      "treatment_membership": [
+        "combined_disagreement"
+      ]
+    },
+    "binance_twap30_minus_chainlink_twap30_bps": {
+      "candidate_membership": [
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) and causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "current_binance_chainlink_twap",
+      "source_availability_timestamp": [
+        "disagreement_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and open_timestamp",
+      "treatment_membership": [
+        "combined_disagreement"
+      ]
+    },
+    "binance_twap60_minus_chainlink_twap60_bps": {
+      "candidate_membership": [
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) and causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "current_binance_chainlink_twap",
+      "source_availability_timestamp": [
+        "disagreement_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and open_timestamp",
+      "treatment_membership": [
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_age_seconds": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_binance_basis_bps": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_binance_basis_velocity_5s_bps": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_binance_direction_agreement_30s": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_binance_disagreement_30s": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_boundary_cross_count_60s": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_boundary_gap_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_max_gap_60s": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_path_efficiency_60s": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_realized_volatility_30s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_realized_volatility_60s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_return_15s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_return_1s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_return_30s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_return_5s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_return_60s_bps": {
+      "candidate_membership": [
+        "refprice_state_control",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_only",
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": [
+        "refprice_control",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "chainlink_ref_source_skew_seconds": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_spread_bps": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "chainlink_ref_spread_change_30s_bps": {
+      "candidate_membership": [],
+      "diagnostic_membership": [
+        "refprice_non_twap_basis",
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "chainlink_refprice_and_current_binance",
+      "source_availability_timestamp": [
+        "chainlink_twap_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp and observed_at",
+      "treatment_membership": []
+    },
+    "current_refprice_gap_to_opening_twap60_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "current_twap30": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "current_twap60": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_binance_chainlink_basis_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_binance_twap30": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_binance_twap60": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_refprice": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_twap30": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "opening_twap60": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "refprice_minus_twap30_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "refprice_minus_twap60_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "refprice_pressure_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "refprice_twap_directional_agreement": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "settlement_margin_volatility_z": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_change_from_open_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_gap_to_opening_twap60_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_minus_twap60_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_slope_15s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_slope_30s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_slope_5s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap30_slope_60s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap30",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_change_from_open_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_gap_to_opening_twap60_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_slope_15s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_slope_30s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_slope_5s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap60_slope_60s_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "twap60",
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_acceleration_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_boundary_cross_count": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_completed_prints_30": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_completed_prints_60": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_convergence_velocity_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_directional_agreement": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_max_timestamp_gap_60s": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_path_efficiency": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_realized_volatility_bps": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_reversal_state": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_seconds_since_boundary_cross": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    },
+    "twap_source_age_seconds": {
+      "candidate_membership": [
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard"
+      ],
+      "diagnostic_membership": [
+        "refprice_relative_twap",
+        "refprice_absolute_twap"
+      ],
+      "feature_as_of_timestamp": "observed_at",
+      "live_computable": true,
+      "lookback_interval": "[T-W,T) or causal trailing window ending at feature_as_of",
+      "role": "inference",
+      "source": "causal_rolling_twap_state",
+      "source_availability_timestamp": [
+        "twap_feature_max_available_at"
+      ],
+      "source_event_timestamp": "source_timestamp or open_timestamp",
+      "treatment_membership": [
+        "dual_twap",
+        "combined",
+        "combined_disagreement"
+      ]
+    }
+  },
+  "schema_version": "btc-causal-feature-registry-v1",
+  "supervision_only_fields": [
+    "authentic_label_up",
+    "authentic_margin_bps",
+    "binance_corrected_margin_bps",
+    "binance_margin_correction_bps",
+    "binance_raw_margin_bps",
+    "estimated_synthetic_label_error",
+    "label_source",
+    "label_up",
+    "official_outcome",
+    "proxy_label_up",
+    "proxy_margin_bps",
+    "raw_corrected_synthetic_margin_disagreement_bps",
+    "target_margin_bps"
+  ],
+  "supervision_registry": {
+    "authentic_label_up": {
+      "role": "target",
+      "source": "authentic completed TWAP-60"
+    },
+    "authentic_margin_bps": {
+      "role": "target",
+      "source": "authentic completed TWAP-60"
+    },
+    "base_label_weight": {
+      "role": "weight",
+      "source": "frozen label-source confidence"
+    },
+    "binance_corrected_margin_bps": {
+      "role": "target",
+      "source": "offline corrected completed Binance TWAP-60"
+    },
+    "binance_margin_correction_bps": {
+      "role": "diagnostic",
+      "source": "offline Binance terminal-margin correction"
+    },
+    "binance_raw_margin_bps": {
+      "role": "target",
+      "source": "completed Binance TWAP-60"
+    },
+    "estimated_synthetic_label_error": {
+      "permitted_use": "Binance synthetic sample weighting only",
+      "role": "weight",
+      "source": "offline Binance synthetic-label reliability"
+    },
+    "label_source": {
+      "role": "diagnostic",
+      "source": "priority label assignment"
+    },
+    "label_up": {
+      "role": "target",
+      "source": "priority terminal label"
+    },
+    "official_outcome": {
+      "role": "diagnostic",
+      "source": "completed official market outcome"
+    },
+    "proxy_label_up": {
+      "role": "target",
+      "source": "completed Chainlink reconstruction"
+    },
+    "proxy_margin_bps": {
+      "role": "target",
+      "source": "completed Chainlink reconstruction"
+    },
+    "raw_corrected_synthetic_margin_disagreement_bps": {
+      "permitted_use": "offline leakage-impact reporting only",
+      "role": "diagnostic",
+      "source": "completed Binance terminal margins"
+    },
+    "target_margin_bps": {
+      "role": "target",
+      "source": "priority terminal margin"
+    }
+  }
+}
