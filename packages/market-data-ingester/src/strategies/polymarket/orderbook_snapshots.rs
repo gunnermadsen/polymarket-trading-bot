@@ -1493,14 +1493,23 @@ impl BookState {
         best_ask: Option<Decimal>,
     ) -> Result<(), StrategyError> {
         validate_advertised_top(best_bid, best_ask)?;
-        let bid_matches =
-            best_bid.is_none_or(|expected| self.best_bid().unwrap_or(Decimal::ZERO) == expected);
-        let ask_matches =
-            best_ask.is_none_or(|expected| self.best_ask().unwrap_or(Decimal::ONE) == expected);
+        let reconstructed_bid = self.best_bid().unwrap_or(Decimal::ZERO);
+        let reconstructed_ask = self.best_ask().unwrap_or(Decimal::ONE);
+        let bid_matches = best_bid.is_none_or(|expected| reconstructed_bid == expected);
+        let ask_matches = best_ask.is_none_or(|expected| reconstructed_ask == expected);
         if !bid_matches || !ask_matches {
             return Err(source_error(
                 "polymarket_clob_top_mismatch",
-                "CLOB advertised top did not match the reconstructed book",
+                format!(
+                    "CLOB advertised top did not match the reconstructed book: token_id={}, advertised_bid={}, reconstructed_bid={}, advertised_ask={}, reconstructed_ask={}, bid_levels={}, ask_levels={}",
+                    self.token_id,
+                    best_bid.map_or_else(|| "none".to_owned(), decimal_string),
+                    decimal_string(reconstructed_bid),
+                    best_ask.map_or_else(|| "none".to_owned(), decimal_string),
+                    decimal_string(reconstructed_ask),
+                    self.bids.len(),
+                    self.asks.len(),
+                ),
             ));
         }
         Ok(())
@@ -1617,6 +1626,19 @@ impl BookRegistry {
 
     fn all_bootstrapped(&self) -> bool {
         !self.books.is_empty() && self.books.values().all(|book| book.bootstrapped)
+    }
+
+    fn await_authoritative_books<'a>(&mut self, token_ids: impl IntoIterator<Item = &'a str>) {
+        for token_id in token_ids {
+            if let Some(book) = self.books.get_mut(token_id) {
+                book.bids.clear();
+                book.asks.clear();
+                book.bootstrapped = false;
+                book.received_at = None;
+                book.source_hash = None;
+                book.ingest_sequence = 0;
+            }
+        }
     }
 
     fn apply(
@@ -3990,19 +4012,36 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         };
         for message in messages {
             let source_timestamp = message_source_timestamp(&message);
-            if let Err(error) =
-                registry.apply(message, received_at, self.config.max_levels_per_side)
-            {
-                self.record_frame_gap(
-                    persistence_sender,
-                    continuity,
-                    connection_epoch,
-                    "book_integrity",
-                    &error,
-                    source_timestamp,
-                )
-                .await?;
-                return Err(error);
+            let changed_tokens = match &message {
+                ClobMessage::PriceChange { changes, .. } => changes
+                    .iter()
+                    .map(|change| change.token_id.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            match registry.apply(message, received_at, self.config.max_levels_per_side) {
+                Ok(_) => {}
+                Err(error) => {
+                    self.record_frame_gap(
+                        persistence_sender,
+                        continuity,
+                        connection_epoch,
+                        "book_integrity",
+                        &error,
+                        source_timestamp,
+                    )
+                    .await?;
+                    if error.code == "polymarket_clob_top_mismatch" && !changed_tokens.is_empty() {
+                        // With custom CLOB events enabled, the venue follows the
+                        // delta with authoritative full books at the same source
+                        // timestamp. Keep the affected tokens fail closed until
+                        // those snapshots arrive instead of discarding the session.
+                        registry
+                            .await_authoritative_books(changed_tokens.iter().map(String::as_str));
+                        continue;
+                    }
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -4451,7 +4490,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_timestamp_is_ignored_and_invalid_books_fail_closed_without_mutation() {
+    fn stale_timestamp_is_ignored_and_top_mismatch_awaits_authoritative_book() {
         let mut registry = bootstrapped_registry();
         let market = fixture_market();
         let before = registry
@@ -4513,7 +4552,7 @@ mod tests {
         assert_eq!(error.code, "polymarket_clob_crossed_book");
 
         let mismatched = ClobMessage::PriceChange {
-            market_id: market.condition_id,
+            market_id: market.condition_id.clone(),
             source_timestamp: at(1_783_902_601_600),
             changes: vec![PriceChange {
                 token_id: market.up_token_id.clone(),
@@ -4529,9 +4568,52 @@ mod tests {
             .apply(mismatched, at(1_783_902_601_610), 100)
             .expect_err("top mismatch");
         assert_eq!(error.code, "polymarket_clob_top_mismatch");
+        assert!(error
+            .message
+            .contains(&format!("token_id={}", market.up_token_id)));
+        assert!(error.message.contains("advertised_bid=0.49"));
+        assert!(error.message.contains("reconstructed_bid=0.48"));
         let after = registry.books.get(&market.up_token_id).expect("Up book");
         assert_eq!(after.bids, before.bids);
         assert_eq!(after.asks, before.asks);
+
+        registry.await_authoritative_books([market.up_token_id.as_str()]);
+        assert!(
+            !registry
+                .books
+                .get(&market.up_token_id)
+                .expect("Up book")
+                .bootstrapped
+        );
+        assert!(registry
+            .samples(20)
+            .iter()
+            .all(|sample| { sample.token_id != market.up_token_id }));
+
+        let authoritative = ClobMessage::Book {
+            market_id: market.condition_id,
+            token_id: market.up_token_id.clone(),
+            bids: vec![PriceLevel {
+                price: Decimal::new(49, 2),
+                size: Decimal::new(10, 0),
+            }],
+            asks: vec![PriceLevel {
+                price: Decimal::new(52, 2),
+                size: Decimal::new(10, 0),
+            }],
+            source_timestamp: at(1_783_902_601_600),
+            source_hash: Some("authoritative".to_owned()),
+        };
+        assert_eq!(
+            registry
+                .apply(authoritative, at(1_783_902_601_620), 100)
+                .expect("authoritative book repairs mismatch"),
+            ApplyOutcome::Applied
+        );
+        let repaired = registry.books.get(&market.up_token_id).expect("Up book");
+        assert!(repaired.bootstrapped);
+        assert_eq!(repaired.best_bid(), Some(Decimal::new(49, 2)));
+        assert_eq!(repaired.best_ask(), Some(Decimal::new(52, 2)));
     }
 
     #[test]
