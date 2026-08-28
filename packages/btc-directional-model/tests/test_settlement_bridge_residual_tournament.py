@@ -13,8 +13,10 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     INFERENCE_FEATURES,
     RELATIVE_TWAP_FEATURES,
     SUPERVISION_FIELDS,
+    VWAP_QUANTITIES,
     _attach_capacity,
     _candidate_metrics,
+    _capacity_curve,
     _causal_piecewise_average,
     _market_equal_weights,
     _predictive_selection,
@@ -246,3 +248,23 @@ def test_economic_rows_fill_null_classification_intervals_from_base() -> None:
     assert result.select(
         "adjusted_margin_lower", "adjusted_margin_median", "adjusted_margin_upper"
     ).row(0) == (1.0, 2.0, 3.0)
+
+
+def test_capacity_curve_includes_contract_fees() -> None:
+    config = load_config(CONFIG)
+    row = {
+        "predicted_up": True,
+        "direction_correct": True,
+        "fee_rate": 0.02,
+    }
+    for quantity in VWAP_QUANTITIES:
+        row[f"up_ask_vwap_{quantity}"] = 0.4
+        row[f"down_ask_vwap_{quantity}"] = 0.6
+    trades = pl.DataFrame([row])
+
+    result = _capacity_curve(trades, config)
+
+    reserve = float(config.raw["execution"]["liquidity_reserve_per_share"])
+    slippage = float(config.raw["execution"]["stress_slippage_per_share"])
+    expected = 5 * (1 - (0.4 + 0.02 * 0.4 * 0.6 + reserve + slippage))
+    assert np.isclose(result["5"]["stressed_pnl"], expected)

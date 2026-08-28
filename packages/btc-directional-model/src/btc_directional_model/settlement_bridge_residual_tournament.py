@@ -1904,7 +1904,9 @@ def _capacity_curve(trades: pl.DataFrame, config: TournamentConfig) -> dict[str,
             result[str(quantity)] = {"trades": 0, "stressed_pnl": 0.0}
             continue
         cost = np.where(available["predicted_up"].to_numpy(), available[up].to_numpy(), available[down].to_numpy())
-        stressed = cost + reserve + slippage
+        fee_rate = available["fee_rate"].fill_null(0.0).to_numpy()
+        fee = fee_rate * cost * (1 - cost)
+        stressed = cost + fee + reserve + slippage
         correct = available["direction_correct"].to_numpy()
         pnl = np.where(correct, quantity * (1 - stressed), -quantity * stressed)
         result[str(quantity)] = {"trades": available.height, "stressed_pnl": float(pnl.sum()), "expectancy": float(pnl.mean())}
