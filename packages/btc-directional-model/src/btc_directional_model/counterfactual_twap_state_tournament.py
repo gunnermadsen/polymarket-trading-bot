@@ -1013,6 +1013,40 @@ def _development_fold_frames(
     return folds
 
 
+def _complete_utc_day_audit(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty():
+        return {"complete_dates": [], "days": []}
+    days = (
+        frame.select("market_id", "window_start")
+        .unique("market_id")
+        .with_columns(
+            pl.col("window_start").dt.date().alias("date"),
+            (
+                pl.col("window_start").dt.hour().cast(pl.Int32) * 60
+                + pl.col("window_start").dt.minute().cast(pl.Int32)
+            ).alias("minute_of_day"),
+        )
+        .group_by("date")
+        .agg(
+            pl.len().alias("markets"),
+            pl.col("minute_of_day").min().alias("first_minute"),
+            pl.col("minute_of_day").max().alias("last_minute"),
+        )
+        .sort("date")
+        .with_columns(
+            (
+                (pl.col("markets") >= 250)
+                & (pl.col("first_minute") <= 5)
+                & (pl.col("last_minute") >= 23 * 60 + 55)
+            ).alias("complete")
+        )
+    )
+    return {
+        "complete_dates": days.filter(pl.col("complete"))["date"].to_list(),
+        "days": days.to_dicts(),
+    }
+
+
 def _integrity_preflight(
     frame: pl.DataFrame,
     config: TournamentConfig,
@@ -1727,9 +1761,17 @@ def run_tournament(
             )
         checkpoints.save("selected-final-model", provisional_model)
     final_models = {provisional: provisional_model}
-    prospective_frame = frame.filter(
+    prospective_available = frame.filter(
         pl.col("window_start").is_between(config.candidate_freeze, config.end, closed="left")
         & (pl.col("label_source") == "authentic_official_twap60")
+    )
+    prospective_day_audit = _complete_utc_day_audit(prospective_available)
+    prospective_frame = (
+        prospective_available.filter(
+            pl.col("window_start").dt.date().is_in(prospective_day_audit["complete_dates"])
+        )
+        if prospective_day_audit["complete_dates"]
+        else prospective_available.head(0)
     )
     prospective_scored = score_model(prospective_frame, provisional_model)
     prospective_economic = _economic_frame(prospective_scored, config)
@@ -1762,6 +1804,7 @@ def run_tournament(
         ),
         "policy": frozen_policy,
         "post_freeze_tuning": False,
+        "complete_day_audit": prospective_day_audit,
     }
     qualification = _qualification(prospective, selected_development, fidelity, config)
     if prospective["probability"]["markets"] == 0:

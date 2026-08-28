@@ -26,6 +26,7 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     CheckpointStore,
     _apply_all_missing_feature_mask,
     _bootstrap_means,
+    _complete_utc_day_audit,
     _development_fold_frames,
     _economic_frame,
     _matrix,
@@ -51,7 +52,7 @@ def test_contract_is_new_training_only_family_with_exact_schedule() -> None:
     assert config.chainlink_start == datetime(2026, 6, 7, tzinfo=UTC)
     assert config.authentic_start == datetime(2026, 8, 1, tzinfo=UTC)
     assert config.current_start == datetime(2026, 8, 14, tzinfo=UTC)
-    assert config.candidate_freeze == datetime(2026, 8, 28, tzinfo=UTC)
+    assert config.candidate_freeze == datetime(2026, 8, 26, tzinfo=UTC)
     assert config.end == datetime(2026, 8, 28, tzinfo=UTC)
     assert config.raw["training"]["training_only"] is True
     assert config.raw["training"]["live_capital_allowed"] is False
@@ -263,6 +264,30 @@ def test_development_folds_are_market_disjoint_and_chronological() -> None:
 
     assert fit["market_id"].to_list() == ["before"]
     assert test["market_id"].to_list() == ["test"]
+
+
+def test_complete_day_audit_rejects_partial_post_freeze_days() -> None:
+    complete = datetime(2026, 8, 25, tzinfo=UTC)
+    partial = datetime(2026, 8, 26, tzinfo=UTC)
+    rows = [
+        {
+            "market_id": f"complete-{index}",
+            "window_start": complete + timedelta(minutes=5 * index),
+        }
+        for index in range(288)
+    ]
+    rows.extend(
+        {
+            "market_id": f"partial-{index}",
+            "window_start": partial + timedelta(minutes=5 * index),
+        }
+        for index in range(239)
+    )
+
+    audit = _complete_utc_day_audit(pl.DataFrame(rows))
+
+    assert audit["complete_dates"] == [complete.date()]
+    assert audit["days"][1]["complete"] is False
 
 
 def test_economic_frame_applies_current_regime_datetime_filter() -> None:

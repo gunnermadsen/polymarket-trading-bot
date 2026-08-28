@@ -6,7 +6,7 @@ training_only = true
 live_capital_allowed = false
 random_seed = 20260828
 data_watermark = "2026-08-28T00:00:00Z"
-candidate_freeze = "2026-08-28T00:00:00Z"
+candidate_freeze = "2026-08-26T00:00:00Z"
 
 [regimes]
 binance_start = "2026-03-21T00:00:00Z"
@@ -89,11 +89,6 @@ test_end = "2026-08-24T00:00:00Z"
 name = "official_20260824_25"
 test_start = "2026-08-24T00:00:00Z"
 test_end = "2026-08-26T00:00:00Z"
-
-[[development_folds]]
-name = "official_20260826_27"
-test_start = "2026-08-26T00:00:00Z"
-test_end = "2026-08-28T00:00:00Z"
 
 [paths]
 label_source_sql = "sql/btc-twap60-label-source.sql"
