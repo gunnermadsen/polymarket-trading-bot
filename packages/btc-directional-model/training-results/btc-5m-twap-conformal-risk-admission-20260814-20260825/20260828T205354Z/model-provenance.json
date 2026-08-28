@@ -1,0 +1,18 @@
+{
+  "calibration_dates": "2026-08-14/2026-08-17",
+  "candidate": "global_market_block_conformal",
+  "conformal_artifact_sha256": "2131c92dec045ac01fb8cae1be8eb10509162d2a3673e348ea9d32fa35ca3b35",
+  "deployment_status": "not_deployed_training_only",
+  "development_dates": "2026-08-18/2026-08-21",
+  "feature_registry_sha256": "d0c7251bdb3f203d964214cc491bca76df186d564a064292c32dbf12c9f1d70b",
+  "model_family": "btc-5m-twap-conformal-risk-admission",
+  "prediction_ledger_sha256": "37191769a5260a7641595865789fb7bfd641b3136592a2754f901e36bb11773e",
+  "producing_commit": "91205b064acd64e4a2109e8534232e91b5a95f90",
+  "qualification_status": "unqualified_on_untouched_test",
+  "schema_version": "btc-model-provenance-v1",
+  "source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4",
+  "test_dates": "2026-08-22/2026-08-25",
+  "training_run_id": "20260828T205354Z",
+  "upstream_artifact_sha256": "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80",
+  "upstream_model_tag": "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+}
