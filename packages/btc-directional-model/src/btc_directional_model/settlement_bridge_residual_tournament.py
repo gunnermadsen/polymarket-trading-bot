@@ -672,6 +672,8 @@ def _attach_capacity(frame: pl.DataFrame, capacity: pl.DataFrame, freshness_seco
             >= pl.col("observed_at") - pl.duration(seconds=freshness_seconds)
         )
     ).unique(["market_id", "observed_at"], keep="last")
+    if selected.is_empty():
+        return _empty_capacity(frame)
     columns = [
         "market_id", "observed_at", "fee_rate",
         "up_provider_received_at", "down_provider_received_at",

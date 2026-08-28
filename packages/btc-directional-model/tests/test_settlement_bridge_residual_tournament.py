@@ -12,6 +12,7 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     INFERENCE_FEATURES,
     RELATIVE_TWAP_FEATURES,
     SUPERVISION_FIELDS,
+    _attach_capacity,
     _causal_piecewise_average,
     _market_equal_weights,
     base_specs,
@@ -95,3 +96,23 @@ def test_read_only_queries_are_bounded_and_have_no_mutations() -> None:
 def test_relative_twap_roster_is_complete_and_contains_no_absolute_price() -> None:
     assert len(RELATIVE_TWAP_FEATURES) == 13
     assert not any(name in {"price", "btc_price", "twap30", "twap60"} for name in RELATIVE_TWAP_FEATURES)
+
+
+def test_empty_filtered_capacity_preserves_prediction_rows_as_ineligible() -> None:
+    instant = datetime(2026, 8, 26, tzinfo=UTC)
+    frame = pl.DataFrame({"market_id": ["m"], "observed_at": [instant]})
+    capacity = pl.DataFrame(
+        {
+            "market_id": ["m"],
+            "observed_at": [instant],
+            "seconds_elapsed": [60],
+            "quality_flags": [1],
+            "up_provider_received_at": [instant],
+            "down_provider_received_at": [instant],
+        }
+    )
+
+    result = _attach_capacity(frame, capacity, 10)
+
+    assert result.height == 1
+    assert result["up_ask_vwap_5"].null_count() == 1
