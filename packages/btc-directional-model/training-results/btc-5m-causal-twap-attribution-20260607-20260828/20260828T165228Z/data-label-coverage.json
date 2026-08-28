@@ -1,0 +1,1207 @@
+{
+  "fidelity": {
+    "binance_extension": {
+      "authentic_agreement": 0.9991340491860062,
+      "authentic_overlap_markets": 5774,
+      "eligible_markets": 19781,
+      "passed": true,
+      "weekly": [
+        {
+          "agreement": 1.0,
+          "markets": 399,
+          "week": "2026-07-27 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9978134110787172,
+          "markets": 1372,
+          "week": "2026-08-03 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9993060374739764,
+          "markets": 1441,
+          "week": "2026-08-10 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9994469026548672,
+          "markets": 1808,
+          "week": "2026-08-17 00:00:00+00:00"
+        },
+        {
+          "agreement": 1.0,
+          "markets": 754,
+          "week": "2026-08-24 00:00:00+00:00"
+        }
+      ]
+    },
+    "chainlink_reconstruction": {
+      "markets": 7091,
+      "outside_uncertainty_agreement": 1.0,
+      "overall_agreement": 0.9939359751798054,
+      "p99_price_error_bps": 0.46302091288729064,
+      "passed": true
+    }
+  },
+  "frame_manifest": {
+    "binance_fidelity": {
+      "authentic_agreement": 0.9991340491860062,
+      "authentic_overlap_markets": 5774,
+      "eligible_markets": 19781,
+      "weekly": [
+        {
+          "agreement": 1.0,
+          "markets": 399,
+          "week": "2026-07-27 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9978134110787172,
+          "markets": 1372,
+          "week": "2026-08-03 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9993060374739764,
+          "markets": 1441,
+          "week": "2026-08-10 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9994469026548672,
+          "markets": 1808,
+          "week": "2026-08-17 00:00:00+00:00"
+        },
+        {
+          "agreement": 1.0,
+          "markets": 754,
+          "week": "2026-08-24 00:00:00+00:00"
+        }
+      ]
+    },
+    "binance_margin_correction": {
+      "authentic_confirmation": {
+        "agreement": 0.9988888888888889,
+        "margin_mae_bps": null,
+        "markets": 2700
+      },
+      "features": [
+        "binance_raw_margin_bps",
+        "binance_open_twap60"
+      ],
+      "fit": {
+        "end": "2026-07-16T00:00:00+00:00",
+        "markets": 11162,
+        "start": "2026-06-07T00:00:00+00:00"
+      },
+      "residual_p90_bps": 0.9105689512670824,
+      "target": "five_minute_twap_margin_residual_bps",
+      "validation": {
+        "agreement": 0.9984689971931615,
+        "margin_mae_bps": 0.33433614800077,
+        "markets": 3919
+      }
+    },
+    "causal_availability_audit": {
+      "availability_columns": [
+        "chainlink_twap_max_available_at",
+        "binance_twap_max_available_at",
+        "twap_feature_max_available_at",
+        "disagreement_feature_max_available_at",
+        "disagreement_opening_feature_max_available_at",
+        "core_source_max_available_at"
+      ],
+      "feature_as_of": "observed_at",
+      "feature_violations": {
+        "binance_chainlink_basis_bps": 0,
+        "binance_chainlink_basis_velocity_5s_bps": 0,
+        "binance_twap30_minus_chainlink_twap30_bps": 0,
+        "binance_twap60_minus_chainlink_twap60_bps": 0,
+        "chainlink_ref_age_seconds": 0,
+        "chainlink_ref_binance_basis_bps": 0,
+        "chainlink_ref_binance_basis_velocity_5s_bps": 0,
+        "chainlink_ref_binance_direction_agreement_30s": 0,
+        "chainlink_ref_binance_disagreement_30s": 0,
+        "chainlink_ref_boundary_cross_count_60s": 0,
+        "chainlink_ref_boundary_gap_bps": 0,
+        "chainlink_ref_max_gap_60s": 0,
+        "chainlink_ref_path_efficiency_60s": 0,
+        "chainlink_ref_realized_volatility_30s_bps": 0,
+        "chainlink_ref_realized_volatility_60s_bps": 0,
+        "chainlink_ref_return_15s_bps": 0,
+        "chainlink_ref_return_1s_bps": 0,
+        "chainlink_ref_return_30s_bps": 0,
+        "chainlink_ref_return_5s_bps": 0,
+        "chainlink_ref_return_60s_bps": 0,
+        "chainlink_ref_source_skew_seconds": 0,
+        "chainlink_ref_spread_bps": 0,
+        "chainlink_ref_spread_change_30s_bps": 0,
+        "current_refprice_gap_to_opening_twap60_bps": 0,
+        "current_twap30": 0,
+        "current_twap60": 0,
+        "opening_binance_chainlink_basis_bps": 0,
+        "opening_binance_twap30": 0,
+        "opening_binance_twap60": 0,
+        "opening_refprice": 0,
+        "opening_twap30": 0,
+        "opening_twap60": 0,
+        "refprice_minus_twap30_bps": 0,
+        "refprice_minus_twap60_bps": 0,
+        "refprice_pressure_bps": 0,
+        "refprice_twap_directional_agreement": 0,
+        "settlement_margin_volatility_z": 0,
+        "twap30_change_from_open_bps": 0,
+        "twap30_gap_to_opening_twap60_bps": 0,
+        "twap30_minus_twap60_bps": 0,
+        "twap30_slope_15s_bps": 0,
+        "twap30_slope_30s_bps": 0,
+        "twap30_slope_5s_bps": 0,
+        "twap30_slope_60s_bps": 0,
+        "twap60_change_from_open_bps": 0,
+        "twap60_gap_to_opening_twap60_bps": 0,
+        "twap60_slope_15s_bps": 0,
+        "twap60_slope_30s_bps": 0,
+        "twap60_slope_5s_bps": 0,
+        "twap60_slope_60s_bps": 0,
+        "twap_acceleration_bps": 0,
+        "twap_boundary_cross_count": 0,
+        "twap_completed_prints_30": 0,
+        "twap_completed_prints_60": 0,
+        "twap_convergence_velocity_bps": 0,
+        "twap_directional_agreement": 0,
+        "twap_max_timestamp_gap_60s": 0,
+        "twap_path_efficiency": 0,
+        "twap_realized_volatility_bps": 0,
+        "twap_reversal_state": 0,
+        "twap_seconds_since_boundary_cross": 0,
+        "twap_source_age_seconds": 0
+      },
+      "features_audited": 62,
+      "passed": true,
+      "rows": 1003536,
+      "violations": {
+        "binance_twap_max_available_at": 0,
+        "chainlink_twap_max_available_at": 0,
+        "core_source_max_available_at": 0,
+        "disagreement_feature_max_available_at": 0,
+        "disagreement_opening_feature_max_available_at": 0,
+        "twap_feature_max_available_at": 0
+      }
+    },
+    "chainlink_uncertainty_bps": 0.526,
+    "completed_information_semantics": "[T-W,T)",
+    "database_mutations": false,
+    "frame_sha256": "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26",
+    "label_audit_sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130",
+    "label_coverage": [
+      {
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 3423
+      },
+      {
+        "label_source": "authentic_official_twap60",
+        "len": 3668
+      },
+      {
+        "label_source": "binance_synthetic_twap60",
+        "len": 19781
+      },
+      {
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 15013
+      },
+      {
+        "label_source": "excluded",
+        "len": 4142
+      }
+    ],
+    "label_coverage_by_date_and_source": [
+      {
+        "date": "2026-03-21",
+        "label_source": "binance_synthetic_twap60",
+        "len": 241
+      },
+      {
+        "date": "2026-03-22",
+        "label_source": "binance_synthetic_twap60",
+        "len": 252
+      },
+      {
+        "date": "2026-03-23",
+        "label_source": "binance_synthetic_twap60",
+        "len": 267
+      },
+      {
+        "date": "2026-03-24",
+        "label_source": "binance_synthetic_twap60",
+        "len": 269
+      },
+      {
+        "date": "2026-03-25",
+        "label_source": "binance_synthetic_twap60",
+        "len": 267
+      },
+      {
+        "date": "2026-03-26",
+        "label_source": "binance_synthetic_twap60",
+        "len": 262
+      },
+      {
+        "date": "2026-03-27",
+        "label_source": "binance_synthetic_twap60",
+        "len": 261
+      },
+      {
+        "date": "2026-03-28",
+        "label_source": "binance_synthetic_twap60",
+        "len": 242
+      },
+      {
+        "date": "2026-03-29",
+        "label_source": "binance_synthetic_twap60",
+        "len": 245
+      },
+      {
+        "date": "2026-03-30",
+        "label_source": "binance_synthetic_twap60",
+        "len": 262
+      },
+      {
+        "date": "2026-03-31",
+        "label_source": "binance_synthetic_twap60",
+        "len": 268
+      },
+      {
+        "date": "2026-04-01",
+        "label_source": "binance_synthetic_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-04-02",
+        "label_source": "binance_synthetic_twap60",
+        "len": 256
+      },
+      {
+        "date": "2026-04-03",
+        "label_source": "binance_synthetic_twap60",
+        "len": 242
+      },
+      {
+        "date": "2026-04-04",
+        "label_source": "binance_synthetic_twap60",
+        "len": 217
+      },
+      {
+        "date": "2026-04-05",
+        "label_source": "binance_synthetic_twap60",
+        "len": 234
+      },
+      {
+        "date": "2026-04-06",
+        "label_source": "binance_synthetic_twap60",
+        "len": 259
+      },
+      {
+        "date": "2026-04-07",
+        "label_source": "binance_synthetic_twap60",
+        "len": 256
+      },
+      {
+        "date": "2026-04-08",
+        "label_source": "binance_synthetic_twap60",
+        "len": 262
+      },
+      {
+        "date": "2026-04-09",
+        "label_source": "binance_synthetic_twap60",
+        "len": 270
+      },
+      {
+        "date": "2026-04-10",
+        "label_source": "binance_synthetic_twap60",
+        "len": 260
+      },
+      {
+        "date": "2026-04-11",
+        "label_source": "binance_synthetic_twap60",
+        "len": 240
+      },
+      {
+        "date": "2026-04-12",
+        "label_source": "binance_synthetic_twap60",
+        "len": 251
+      },
+      {
+        "date": "2026-04-13",
+        "label_source": "binance_synthetic_twap60",
+        "len": 259
+      },
+      {
+        "date": "2026-04-14",
+        "label_source": "binance_synthetic_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-04-15",
+        "label_source": "binance_synthetic_twap60",
+        "len": 264
+      },
+      {
+        "date": "2026-04-16",
+        "label_source": "binance_synthetic_twap60",
+        "len": 269
+      },
+      {
+        "date": "2026-04-17",
+        "label_source": "binance_synthetic_twap60",
+        "len": 262
+      },
+      {
+        "date": "2026-04-18",
+        "label_source": "binance_synthetic_twap60",
+        "len": 253
+      },
+      {
+        "date": "2026-04-19",
+        "label_source": "binance_synthetic_twap60",
+        "len": 253
+      },
+      {
+        "date": "2026-04-20",
+        "label_source": "binance_synthetic_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-04-21",
+        "label_source": "binance_synthetic_twap60",
+        "len": 267
+      },
+      {
+        "date": "2026-04-22",
+        "label_source": "binance_synthetic_twap60",
+        "len": 253
+      },
+      {
+        "date": "2026-04-23",
+        "label_source": "binance_synthetic_twap60",
+        "len": 261
+      },
+      {
+        "date": "2026-04-24",
+        "label_source": "binance_synthetic_twap60",
+        "len": 257
+      },
+      {
+        "date": "2026-04-25",
+        "label_source": "binance_synthetic_twap60",
+        "len": 209
+      },
+      {
+        "date": "2026-04-26",
+        "label_source": "binance_synthetic_twap60",
+        "len": 232
+      },
+      {
+        "date": "2026-04-27",
+        "label_source": "binance_synthetic_twap60",
+        "len": 259
+      },
+      {
+        "date": "2026-04-28",
+        "label_source": "binance_synthetic_twap60",
+        "len": 251
+      },
+      {
+        "date": "2026-04-29",
+        "label_source": "binance_synthetic_twap60",
+        "len": 254
+      },
+      {
+        "date": "2026-04-30",
+        "label_source": "binance_synthetic_twap60",
+        "len": 236
+      },
+      {
+        "date": "2026-05-01",
+        "label_source": "binance_synthetic_twap60",
+        "len": 245
+      },
+      {
+        "date": "2026-05-02",
+        "label_source": "binance_synthetic_twap60",
+        "len": 224
+      },
+      {
+        "date": "2026-05-03",
+        "label_source": "binance_synthetic_twap60",
+        "len": 242
+      },
+      {
+        "date": "2026-05-04",
+        "label_source": "binance_synthetic_twap60",
+        "len": 269
+      },
+      {
+        "date": "2026-05-05",
+        "label_source": "binance_synthetic_twap60",
+        "len": 250
+      },
+      {
+        "date": "2026-05-06",
+        "label_source": "binance_synthetic_twap60",
+        "len": 262
+      },
+      {
+        "date": "2026-05-07",
+        "label_source": "binance_synthetic_twap60",
+        "len": 256
+      },
+      {
+        "date": "2026-05-08",
+        "label_source": "binance_synthetic_twap60",
+        "len": 252
+      },
+      {
+        "date": "2026-05-09",
+        "label_source": "binance_synthetic_twap60",
+        "len": 228
+      },
+      {
+        "date": "2026-05-10",
+        "label_source": "binance_synthetic_twap60",
+        "len": 234
+      },
+      {
+        "date": "2026-05-11",
+        "label_source": "binance_synthetic_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-05-12",
+        "label_source": "binance_synthetic_twap60",
+        "len": 249
+      },
+      {
+        "date": "2026-05-13",
+        "label_source": "binance_synthetic_twap60",
+        "len": 252
+      },
+      {
+        "date": "2026-05-14",
+        "label_source": "binance_synthetic_twap60",
+        "len": 261
+      },
+      {
+        "date": "2026-05-15",
+        "label_source": "binance_synthetic_twap60",
+        "len": 252
+      },
+      {
+        "date": "2026-05-16",
+        "label_source": "binance_synthetic_twap60",
+        "len": 223
+      },
+      {
+        "date": "2026-05-17",
+        "label_source": "binance_synthetic_twap60",
+        "len": 237
+      },
+      {
+        "date": "2026-05-18",
+        "label_source": "binance_synthetic_twap60",
+        "len": 263
+      },
+      {
+        "date": "2026-05-19",
+        "label_source": "binance_synthetic_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-05-20",
+        "label_source": "binance_synthetic_twap60",
+        "len": 243
+      },
+      {
+        "date": "2026-05-21",
+        "label_source": "binance_synthetic_twap60",
+        "len": 260
+      },
+      {
+        "date": "2026-05-22",
+        "label_source": "binance_synthetic_twap60",
+        "len": 236
+      },
+      {
+        "date": "2026-05-23",
+        "label_source": "binance_synthetic_twap60",
+        "len": 230
+      },
+      {
+        "date": "2026-05-24",
+        "label_source": "binance_synthetic_twap60",
+        "len": 237
+      },
+      {
+        "date": "2026-05-25",
+        "label_source": "binance_synthetic_twap60",
+        "len": 223
+      },
+      {
+        "date": "2026-05-26",
+        "label_source": "binance_synthetic_twap60",
+        "len": 259
+      },
+      {
+        "date": "2026-05-27",
+        "label_source": "binance_synthetic_twap60",
+        "len": 250
+      },
+      {
+        "date": "2026-05-28",
+        "label_source": "binance_synthetic_twap60",
+        "len": 267
+      },
+      {
+        "date": "2026-05-29",
+        "label_source": "binance_synthetic_twap60",
+        "len": 248
+      },
+      {
+        "date": "2026-05-30",
+        "label_source": "binance_synthetic_twap60",
+        "len": 215
+      },
+      {
+        "date": "2026-05-31",
+        "label_source": "binance_synthetic_twap60",
+        "len": 246
+      },
+      {
+        "date": "2026-06-01",
+        "label_source": "binance_synthetic_twap60",
+        "len": 257
+      },
+      {
+        "date": "2026-06-02",
+        "label_source": "binance_synthetic_twap60",
+        "len": 266
+      },
+      {
+        "date": "2026-06-03",
+        "label_source": "binance_synthetic_twap60",
+        "len": 272
+      },
+      {
+        "date": "2026-06-04",
+        "label_source": "binance_synthetic_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-06-05",
+        "label_source": "binance_synthetic_twap60",
+        "len": 277
+      },
+      {
+        "date": "2026-06-06",
+        "label_source": "binance_synthetic_twap60",
+        "len": 266
+      },
+      {
+        "date": "2026-06-07",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-06-07",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 283
+      },
+      {
+        "date": "2026-06-08",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-06-08",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-06-09",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 280
+      },
+      {
+        "date": "2026-06-10",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-06-10",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 281
+      },
+      {
+        "date": "2026-06-11",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 279
+      },
+      {
+        "date": "2026-06-12",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 273
+      },
+      {
+        "date": "2026-06-13",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-06-13",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 256
+      },
+      {
+        "date": "2026-06-14",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 272
+      },
+      {
+        "date": "2026-06-15",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 278
+      },
+      {
+        "date": "2026-06-16",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-06-17",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-06-18",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-06-18",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-06-19",
+        "label_source": "binance_synthetic_twap60",
+        "len": 17
+      },
+      {
+        "date": "2026-06-19",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 260
+      },
+      {
+        "date": "2026-06-20",
+        "label_source": "binance_synthetic_twap60",
+        "len": 3
+      },
+      {
+        "date": "2026-06-20",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 263
+      },
+      {
+        "date": "2026-06-21",
+        "label_source": "binance_synthetic_twap60",
+        "len": 6
+      },
+      {
+        "date": "2026-06-21",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-06-22",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-06-22",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-06-23",
+        "label_source": "binance_synthetic_twap60",
+        "len": 4
+      },
+      {
+        "date": "2026-06-23",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-06-24",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-06-24",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 272
+      },
+      {
+        "date": "2026-06-25",
+        "label_source": "binance_synthetic_twap60",
+        "len": 5
+      },
+      {
+        "date": "2026-06-25",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 268
+      },
+      {
+        "date": "2026-06-26",
+        "label_source": "binance_synthetic_twap60",
+        "len": 4
+      },
+      {
+        "date": "2026-06-26",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-06-27",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-06-27",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 266
+      },
+      {
+        "date": "2026-06-28",
+        "label_source": "binance_synthetic_twap60",
+        "len": 16
+      },
+      {
+        "date": "2026-06-28",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 252
+      },
+      {
+        "date": "2026-06-29",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-06-29",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 270
+      },
+      {
+        "date": "2026-06-30",
+        "label_source": "binance_synthetic_twap60",
+        "len": 6
+      },
+      {
+        "date": "2026-06-30",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 270
+      },
+      {
+        "date": "2026-07-01",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 274
+      },
+      {
+        "date": "2026-07-02",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 280
+      },
+      {
+        "date": "2026-07-03",
+        "label_source": "binance_synthetic_twap60",
+        "len": 14
+      },
+      {
+        "date": "2026-07-03",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 253
+      },
+      {
+        "date": "2026-07-04",
+        "label_source": "binance_synthetic_twap60",
+        "len": 7
+      },
+      {
+        "date": "2026-07-04",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 267
+      },
+      {
+        "date": "2026-07-05",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-05",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 260
+      },
+      {
+        "date": "2026-07-06",
+        "label_source": "binance_synthetic_twap60",
+        "len": 12
+      },
+      {
+        "date": "2026-07-06",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 265
+      },
+      {
+        "date": "2026-07-07",
+        "label_source": "binance_synthetic_twap60",
+        "len": 5
+      },
+      {
+        "date": "2026-07-07",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-07-08",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 283
+      },
+      {
+        "date": "2026-07-09",
+        "label_source": "binance_synthetic_twap60",
+        "len": 4
+      },
+      {
+        "date": "2026-07-09",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-07-10",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-10",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-07-11",
+        "label_source": "binance_synthetic_twap60",
+        "len": 3
+      },
+      {
+        "date": "2026-07-11",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-07-12",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-07-12",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 255
+      },
+      {
+        "date": "2026-07-13",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 272
+      },
+      {
+        "date": "2026-07-14",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-14",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-07-15",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-07-16",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 278
+      },
+      {
+        "date": "2026-07-17",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 270
+      },
+      {
+        "date": "2026-07-18",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 238
+      },
+      {
+        "date": "2026-07-19",
+        "label_source": "binance_synthetic_twap60",
+        "len": 3
+      },
+      {
+        "date": "2026-07-19",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 254
+      },
+      {
+        "date": "2026-07-20",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 275
+      },
+      {
+        "date": "2026-07-21",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 269
+      },
+      {
+        "date": "2026-07-22",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 272
+      },
+      {
+        "date": "2026-07-23",
+        "label_source": "binance_synthetic_twap60",
+        "len": 7
+      },
+      {
+        "date": "2026-07-23",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 265
+      },
+      {
+        "date": "2026-07-24",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-24",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 268
+      },
+      {
+        "date": "2026-07-25",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-25",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 246
+      },
+      {
+        "date": "2026-07-26",
+        "label_source": "binance_synthetic_twap60",
+        "len": 2
+      },
+      {
+        "date": "2026-07-26",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 258
+      },
+      {
+        "date": "2026-07-27",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 270
+      },
+      {
+        "date": "2026-07-28",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 277
+      },
+      {
+        "date": "2026-07-29",
+        "label_source": "binance_synthetic_twap60",
+        "len": 1
+      },
+      {
+        "date": "2026-07-29",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-07-30",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 271
+      },
+      {
+        "date": "2026-07-31",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 263
+      },
+      {
+        "date": "2026-08-01",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 256
+      },
+      {
+        "date": "2026-08-01",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 25
+      },
+      {
+        "date": "2026-08-02",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-03",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-04",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-05",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 287
+      },
+      {
+        "date": "2026-08-06",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-07",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-08",
+        "label_source": "binance_synthetic_twap60",
+        "len": 3
+      },
+      {
+        "date": "2026-08-08",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 186
+      },
+      {
+        "date": "2026-08-09",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-10",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-11",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-12",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-13",
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-14",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-15",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-16",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-17",
+        "label_source": "authentic_official_twap60",
+        "len": 285
+      },
+      {
+        "date": "2026-08-18",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-19",
+        "label_source": "authentic_official_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-08-19",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 11
+      },
+      {
+        "date": "2026-08-20",
+        "label_source": "authentic_official_twap60",
+        "len": 276
+      },
+      {
+        "date": "2026-08-20",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 10
+      },
+      {
+        "date": "2026-08-21",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-22",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-23",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-24",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-25",
+        "label_source": "authentic_official_twap60",
+        "len": 288
+      },
+      {
+        "date": "2026-08-26",
+        "label_source": "authentic_official_twap60",
+        "len": 239
+      },
+      {
+        "date": "2026-08-27",
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 1
+      }
+    ],
+    "label_markets": 41885,
+    "markets": 41814,
+    "new_sources": false,
+    "new_tables": false,
+    "rows": 1003536,
+    "schema_version": "btc-counterfactual-twap-state-frame-v2-causal"
+  }
+}
