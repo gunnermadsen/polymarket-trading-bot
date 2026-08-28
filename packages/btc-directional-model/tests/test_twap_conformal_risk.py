@@ -9,7 +9,9 @@ import pytest
 
 from btc_directional_model.twap_conformal_risk import (
     CHECKPOINT_SECONDS,
+    DIRECTION_PRICE,
     DIRECTION_TIME_PRICE,
+    GLOBAL,
     ConformalArtifact,
     apply_admission_contract,
     apply_conformal_bounds,
@@ -23,9 +25,11 @@ from btc_directional_model.twap_conformal_risk import (
 from btc_directional_model.twap_conformal_risk_tournament import (
     FoldLedger,
     candidate_metrics,
+    conformal_coverage_metrics,
     development_checks,
     load_config,
     persist_daily_ledgers,
+    render_report,
     validate_prediction_frame,
 )
 
@@ -211,6 +215,34 @@ def test_daily_prediction_checkpoint_resumes_only_identical_inputs(tmp_path) -> 
         persist_daily_ledgers(frame, tmp_path / "ledgers", "input-b")
 
 
+def test_coverage_uses_the_candidate_applicable_market_block() -> None:
+    frame = _calibration_frame(2).with_columns(
+        pl.when((pl.col("seconds_elapsed") // 5) % 2 == 0)
+        .then(pl.lit(0.96))
+        .otherwise(pl.lit(0.04))
+        .alias("probability_up")
+    )
+    bounded = apply_conformal_bounds(frame, _artifact(_calibration_frame()))
+    global_decisions = bounded.with_columns(pl.lit("global").alias("conformal_fallback"))
+    direction_price_decisions = bounded.with_columns(
+        pl.lit("direction_price").alias("conformal_fallback")
+    )
+    direction_time_price_decisions = bounded.with_columns(
+        pl.lit("direction_time_price").alias("conformal_fallback")
+    )
+
+    assert conformal_coverage_metrics(global_decisions, GLOBAL)["market_blocks"] == 2
+    assert (
+        conformal_coverage_metrics(direction_price_decisions, DIRECTION_PRICE)["market_blocks"] == 4
+    )
+    assert (
+        conformal_coverage_metrics(direction_time_price_decisions, DIRECTION_TIME_PRICE)[
+            "market_blocks"
+        ]
+        == 12
+    )
+
+
 def test_zero_trade_report_retains_every_required_metric_group() -> None:
     frame = _calibration_frame(2)
     artifact = _artifact(_calibration_frame())
@@ -228,7 +260,7 @@ def test_zero_trade_report_retains_every_required_metric_group() -> None:
         Path(__file__).parents[1]
         / "configs/btc-5m-twap-conformal-risk-admission-20260814-20260825.toml"
     )
-    metrics = candidate_metrics(frame, decisions, trades, config)
+    metrics = candidate_metrics(frame, decisions, trades, config, DIRECTION_TIME_PRICE)
     assert metrics["trades"] == 0
     assert set(metrics["entry_time_bands"]) == {"30-59", "60-89", "90-120"}
     assert set(metrics["executable_price_bands"]) == {
@@ -244,3 +276,36 @@ def test_zero_trade_report_retains_every_required_metric_group() -> None:
     )
     assert checks["average_loss_recovery"] is False
     assert checks["average_entry"] is False
+
+    report = render_report(
+        {
+            "run_id": "test-run",
+            "source_commit": "test-commit",
+            "selected_artifact": {"sha256": "test-artifact"},
+            "conclusion": {"outcome": "no_conformal_admission_candidate_qualifies"},
+            "calibration": {
+                DIRECTION_TIME_PRICE: {
+                    "candidate": DIRECTION_TIME_PRICE,
+                    "coverage": metrics["conformal"],
+                    "cells": {},
+                }
+            },
+            "development": {
+                "candidates": {DIRECTION_TIME_PRICE: metrics},
+                "paired_against_control": {
+                    DIRECTION_TIME_PRICE: {"bootstrap_improvement": {"lower": None}}
+                },
+                "selection": {"selected_candidate": DIRECTION_TIME_PRICE},
+            },
+            "untouched_test": {
+                "candidate": DIRECTION_TIME_PRICE,
+                "metrics": metrics,
+                "qualification": {"status": "unqualified_on_untouched_test", "reasons": []},
+            },
+        }
+    )
+    assert "## Calibration" in report
+    assert "## Development detailed records" in report
+    assert '"abstention_reasons"' in report
+    assert '"capacity"' in report
+    assert "### Complete untouched-test metric record" in report

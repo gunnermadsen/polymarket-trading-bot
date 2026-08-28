@@ -37,7 +37,7 @@ from .twap_conformal_risk import (
     write_artifact,
 )
 
-SCHEMA_VERSION = "btc-twap-conformal-risk-tournament-v1"
+SCHEMA_VERSION = "btc-twap-conformal-risk-tournament-v2"
 EXPECTED_FEATURE_REGISTRY = {
     "upstream_candidate": "twap_single_regime",
     "sensor_names": ["twap30_margin_bps", "twap60_margin_bps"],
@@ -446,6 +446,10 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
     ledger_root.mkdir()
     for candidate in CANDIDATES:
         _write_parquet_atomic(
+            ledger_root / f"development-{candidate}-decisions.parquet",
+            development_decisions[candidate],
+        )
+        _write_parquet_atomic(
             ledger_root / f"development-{candidate}-trades.parquet",
             development_trades[candidate],
         )
@@ -682,7 +686,7 @@ def split_audit(
 
 def calibration_report(frame: pl.DataFrame, artifact: ConformalArtifact) -> dict[str, Any]:
     bounded = apply_conformal_bounds(frame, artifact)
-    coverage = conformal_coverage_metrics(bounded)
+    coverage = conformal_coverage_metrics(bounded, artifact.candidate)
     cells = {
         level: {
             key: {
@@ -713,7 +717,7 @@ def evaluate_candidate(
         evaluation_quantity=int(config.raw["execution"]["evaluation_quantity"]),
     )
     trades = earliest_admitted_trades(decisions)
-    metrics = candidate_metrics(frame, decisions, trades, config)
+    metrics = candidate_metrics(frame, decisions, trades, config, artifact.candidate)
     return decisions, trades, metrics
 
 
@@ -722,10 +726,11 @@ def candidate_metrics(
     decisions: pl.DataFrame,
     trades: pl.DataFrame,
     config: TournamentConfig,
+    candidate: str,
 ) -> dict[str, Any]:
     markets = frame["market_id"].n_unique()
     predictive_all = probability_metrics(frame)
-    coverage = conformal_coverage_metrics(decisions)
+    coverage = conformal_coverage_metrics(decisions, candidate)
     abstention = {
         str(row["abstention_reason"]): int(row["count"])
         for row in decisions.group_by("abstention_reason").len(name="count").sort(
@@ -933,7 +938,9 @@ def probability_metrics(frame: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def conformal_coverage_metrics(frame: pl.DataFrame) -> dict[str, Any]:
+def conformal_coverage_metrics(frame: pl.DataFrame, candidate: str) -> dict[str, Any]:
+    if candidate not in CANDIDATES:
+        raise ValueError(candidate)
     if frame.is_empty():
         return {
             "empirical_conformal_coverage": None,
@@ -951,25 +958,53 @@ def conformal_coverage_metrics(frame: pl.DataFrame) -> dict[str, Any]:
             "error_risk_bound_calibration": {},
             "market_blocks": 0,
         }
-    blocks = eligible.with_columns(
-        (
-            (pl.col("predicted_up") == pl.col("label_up")).cast(pl.Float64)
-            >= pl.col("correctness_lower_bound")
-        ).alias("probability_covered"),
-        pl.col("target_margin_bps").is_between(
-            pl.col("conformal_margin_lower"), pl.col("conformal_margin_upper"), closed="both"
-        ).alias("margin_covered"),
-        (pl.col("conformal_margin_upper") - pl.col("conformal_margin_lower")).alias(
-            "margin_width"
-        ),
-    ).group_by(["market_id", "direction_price_group"]).agg(
-        pl.col("probability_covered").all(),
-        pl.col("margin_covered").all(),
-        pl.col("margin_width").mean(),
-        pl.col("error_risk_upper_bound").mean(),
-        (~(pl.col("predicted_up") == pl.col("label_up"))).cast(pl.Float64).mean().alias(
-            "actual_error"
-        ),
+    if candidate in (CONTROL, GLOBAL):
+        coverage_group = pl.lit("global")
+    elif candidate == DIRECTION_PRICE:
+        coverage_group = (
+            pl.when(pl.col("conformal_fallback") == "direction_price")
+            .then(pl.concat_str([pl.lit("direction_price|"), pl.col("direction_price_group")]))
+            .otherwise(pl.lit("global|global"))
+        )
+    else:
+        coverage_group = (
+            pl.when(pl.col("conformal_fallback") == "direction_time_price")
+            .then(
+                pl.concat_str(
+                    [pl.lit("direction_time_price|"), pl.col("direction_time_price_group")]
+                )
+            )
+            .when(pl.col("conformal_fallback") == "direction_price")
+            .then(pl.concat_str([pl.lit("direction_price|"), pl.col("direction_price_group")]))
+            .otherwise(pl.lit("global|global"))
+        )
+    blocks = (
+        eligible.with_columns(
+            coverage_group.alias("coverage_group"),
+            (
+                (pl.col("predicted_up") == pl.col("label_up")).cast(pl.Float64)
+                >= pl.col("correctness_lower_bound")
+            ).alias("probability_covered"),
+            pl.col("target_margin_bps")
+            .is_between(
+                pl.col("conformal_margin_lower"), pl.col("conformal_margin_upper"), closed="both"
+            )
+            .alias("margin_covered"),
+            (pl.col("conformal_margin_upper") - pl.col("conformal_margin_lower")).alias(
+                "margin_width"
+            ),
+        )
+        .group_by(["market_id", "coverage_group"])
+        .agg(
+            pl.col("probability_covered").all(),
+            pl.col("margin_covered").all(),
+            pl.col("margin_width").mean(),
+            pl.col("error_risk_upper_bound").mean(),
+            (~(pl.col("predicted_up") == pl.col("label_up")))
+            .cast(pl.Float64)
+            .mean()
+            .alias("actual_error"),
+        )
     )
     actual_error = float(blocks["actual_error"].mean())
     risk_bound = float(blocks["error_risk_upper_bound"].mean())
@@ -1408,11 +1443,34 @@ def render_report(metrics: dict[str, Any]) -> str:
         f"Conclusion: **{metrics['conclusion']['outcome']}**  ",
         "Deployment: **not deployed; training only**",
         "",
-        "## Development candidate comparison",
+        "## Calibration",
         "",
-        "| Candidate | Trades | Coverage | Accuracy | UP | DOWN | Stressed PnL | Expectancy | PF | Bootstrap lower | Avg entry | Qualified |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Candidate | Market blocks | Correctness coverage | Margin coverage | Mean interval width (bps) |",
+        "|---|---:|---:|---:|---:|",
     ]
+    for name, row in metrics["calibration"].items():
+        coverage = row["coverage"]
+        lines.append(
+            f"| {name} | {coverage.get('market_blocks', 0)} | "
+            f"{_pct(coverage.get('empirical_conformal_coverage'))} | "
+            f"{_pct(coverage.get('margin_interval_coverage'))} | "
+            f"{_fmt(coverage.get('mean_margin_interval_width_bps'))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### Complete calibration records",
+            "",
+            "```json",
+            _report_json(metrics["calibration"]),
+            "```",
+            "",
+            "## Development candidate comparison",
+            "",
+            "| Candidate | Trades | Coverage | Accuracy | UP | DOWN | Stressed PnL | Expectancy | PF | Bootstrap lower | Avg entry | Qualified |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
     for name, row in development["candidates"].items():
         lines.append(
             f"| {name} | {row.get('trades', 0)} | {_pct(row.get('coverage'))} | "
@@ -1423,6 +1481,35 @@ def render_report(metrics: dict[str, Any]) -> str:
             f"{_fmt(row.get('mean_entry_second'))} | "
             f"{row.get('qualification', {}).get('passed', False)} |"
         )
+    lines.extend(["", "## Development detailed records", ""])
+    for name, row in development["candidates"].items():
+        lines.extend(
+            [
+                f"### {name}",
+                "",
+                "Complete candidate metric record:",
+                "",
+                "```json",
+                _report_json(row),
+                "```",
+                "",
+                "Paired comparison against the frozen control:",
+                "",
+                "```json",
+                _report_json(development["paired_against_control"][name]),
+                "```",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "### Development selection record",
+            "",
+            "```json",
+            _report_json(development["selection"]),
+            "```",
+        ]
+    )
     selected = test["candidate"]
     row = test["metrics"]
     lines.extend(
@@ -1439,9 +1526,19 @@ def render_report(metrics: dict[str, Any]) -> str:
             f"Bootstrap 95% interval: `{json.dumps(row.get('bootstrap_stressed_expectancy', {}), sort_keys=True)}`  ",
             f"Failed gates: {', '.join(test['qualification']['reasons']) or 'none'}",
             "",
-            "## Full metric inventory",
+            "### Complete untouched-test metric record",
             "",
-            "`metrics.json` contains every candidate's predictive scores, conformal coverage, risk-bound calibration, interval widths, loss distribution, economics, bootstrap intervals, drawdown, CVaR, entries, day/fold/direction/band breakdowns, calibration-cell support, fallback counts, abstention reasons, 5–200 share capacity, concentration, and paired control comparison.",
+            "```json",
+            _report_json(row),
+            "```",
+            "",
+            "### Untouched-test qualification record",
+            "",
+            "```json",
+            _report_json(test["qualification"]),
+            "```",
+            "",
+            "The complete machine-readable metric inventory is also preserved in `metrics.json`.",
             "",
             "## Integrity",
             "",
@@ -1452,6 +1549,16 @@ def render_report(metrics: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _report_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        indent=2,
+        sort_keys=True,
+        default=_json_default,
+        allow_nan=False,
+    )
 
 
 def _assert_decision_columns_equal(left: pl.DataFrame, right: pl.DataFrame) -> None:
