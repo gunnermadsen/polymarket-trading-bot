@@ -1264,7 +1264,9 @@ def _cross_fitted_base_predictions(
             pl.lit(start).alias("base_prediction_block_start"),
             pl.lit(train_end).alias("base_train_end"),
         )
-        if scored.filter(pl.col("base_train_end") >= pl.col("base_prediction_block_start")).height:
+        # train_end is an exclusive boundary. Equality means every fitted
+        # market is strictly earlier than the prediction block.
+        if scored.filter(pl.col("base_train_end") > pl.col("base_prediction_block_start")).height:
             raise RuntimeError("in-sample base predictions entered bridge training")
         predictions.append(scored.select(
             "market_id", "observed_at", "base_probability_up", "base_log_odds",
