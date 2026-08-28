@@ -1,0 +1,194 @@
+[
+  {
+    "brier": 0.18869505688714544,
+    "ece": 0.016230919323043845,
+    "fold_brier_std": 0.002281049132836418,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5576140780405657,
+    "margin_mae": 5.972334328537333,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.03,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.1887428797271291,
+    "ece": 0.01624276415781353,
+    "fold_brier_std": 0.0023389674713674914,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5577125566575346,
+    "margin_mae": 5.97453948899283,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.03,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 160
+    }
+  },
+  {
+    "brier": 0.18838410969178865,
+    "ece": 0.015430105122422327,
+    "fold_brier_std": 0.0024438174529829923,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5562544520132519,
+    "margin_mae": 5.980362588262605,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.03,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.18852154999344028,
+    "ece": 0.016652061430056,
+    "fold_brier_std": 0.002645263926695195,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5565825580141982,
+    "margin_mae": 5.988010827932956,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.03,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 160
+    }
+  },
+  {
+    "brier": 0.18848113071265968,
+    "ece": 0.012642607503023633,
+    "fold_brier_std": 0.002302257846793759,
+    "interval_coverage": 0.0,
+    "log_loss": 0.556638754240617,
+    "margin_mae": 5.979606468945878,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.05,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.1884282550487328,
+    "ece": 0.012348012333048436,
+    "fold_brier_std": 0.0022045035377168914,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5564922315842715,
+    "margin_mae": 5.978357630947469,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.05,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 160
+    }
+  },
+  {
+    "brier": 0.18839957674456512,
+    "ece": 0.012974198058877609,
+    "fold_brier_std": 0.0026258035990086915,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5559786678876462,
+    "margin_mae": 5.982804666590736,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.05,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.188587029621783,
+    "ece": 0.013895377790545355,
+    "fold_brier_std": 0.002952791572999995,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5563842472700109,
+    "margin_mae": 5.985941109768833,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.05,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 160
+    }
+  },
+  {
+    "brier": 0.18863497122114353,
+    "ece": 0.011812799285075769,
+    "fold_brier_std": 0.0026464960386093756,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5567981775831459,
+    "margin_mae": 5.9986500482147385,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.08,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.1883749661790253,
+    "ece": 0.011173371843624673,
+    "fold_brier_std": 0.002404287417363532,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5561390122943971,
+    "margin_mae": 5.984760943279438,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.08,
+      "max_iter": 140,
+      "max_leaf_nodes": 7,
+      "min_samples_leaf": 160
+    }
+  },
+  {
+    "brier": 0.189545017074062,
+    "ece": 0.01542055980784239,
+    "fold_brier_std": 0.004519528780230805,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5585527602707553,
+    "margin_mae": 5.996667995231339,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.08,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 80
+    }
+  },
+  {
+    "brier": 0.1901394228319256,
+    "ece": 0.013972085825406462,
+    "fold_brier_std": 0.005458083393635331,
+    "interval_coverage": 0.0,
+    "log_loss": 0.5597566291640607,
+    "margin_mae": 6.000472450114118,
+    "markets": 26168,
+    "spec": {
+      "l2_regularization": 2.0,
+      "learning_rate": 0.08,
+      "max_iter": 140,
+      "max_leaf_nodes": 15,
+      "min_samples_leaf": 160
+    }
+  }
+]
