@@ -29,6 +29,7 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     _complete_utc_day_audit,
     _development_fold_frames,
     _economic_frame,
+    _json_default,
     _matrix,
     _neutralize_all_missing_fit_columns,
     _paired_bootstrap,
@@ -288,6 +289,10 @@ def test_complete_day_audit_rejects_partial_post_freeze_days() -> None:
 
     assert audit["complete_dates"] == [complete.date()]
     assert audit["days"][1]["complete"] is False
+
+
+def test_report_serializer_handles_complete_day_dates() -> None:
+    assert _json_default(datetime(2026, 8, 25, tzinfo=UTC).date()) == "2026-08-25"
 
 
 def test_economic_frame_applies_current_regime_datetime_filter() -> None:

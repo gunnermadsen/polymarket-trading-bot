@@ -12,7 +12,7 @@ import time
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -1996,7 +1996,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def _json_default(value: Any) -> Any:
-    if isinstance(value, (datetime, Path)):
+    if isinstance(value, (date, datetime, Path)):
         return str(value)
     if isinstance(value, np.generic):
         return value.item()
