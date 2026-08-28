@@ -1459,6 +1459,9 @@ def _official_development_evaluation(
             selected = correction_selection["selected"][candidate]
             model = _fit_logistic(fit, tuple(selected["features"]), float(selected["c"]), config.random_seed + fold_index)
             scored = _score_logistic(test, model).with_columns(
+                pl.col("base_margin_lower").alias("adjusted_margin_lower"),
+                pl.col("base_margin_median").alias("adjusted_margin_median"),
+                pl.col("base_margin_upper").alias("adjusted_margin_upper"),
                 pl.lit(candidate).alias("candidate"),
                 pl.lit(fold_rows["fold"]).alias("fold"),
             )
@@ -1685,12 +1688,18 @@ def _prepare_economic_rows(frame: pl.DataFrame, config: TournamentConfig) -> pl.
         & pl.col("down_ask_vwap_5").is_not_null()
         & pl.col("probability_up").is_not_null()
     )
-    if "adjusted_margin_lower" not in available.columns:
-        available = available.with_columns(
-            pl.col("base_margin_lower").alias("adjusted_margin_lower"),
-            pl.col("base_margin_median").alias("adjusted_margin_median"),
-            pl.col("base_margin_upper").alias("adjusted_margin_upper"),
-        )
+    margin_columns = (
+        ("adjusted_margin_lower", "base_margin_lower"),
+        ("adjusted_margin_median", "base_margin_median"),
+        ("adjusted_margin_upper", "base_margin_upper"),
+    )
+    for adjusted, base in margin_columns:
+        if adjusted in available.columns:
+            available = available.with_columns(
+                pl.coalesce(adjusted, base).alias(adjusted)
+            )
+        else:
+            available = available.with_columns(pl.col(base).alias(adjusted))
     predicted_up = available["probability_up"].to_numpy() >= 0.5
     probability = np.where(predicted_up, available["probability_up"].to_numpy(), 1 - available["probability_up"].to_numpy())
     cost = np.where(predicted_up, available["up_ask_vwap_5"].to_numpy(), available["down_ask_vwap_5"].to_numpy())

@@ -18,6 +18,7 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     _causal_piecewise_average,
     _market_equal_weights,
     _predictive_selection,
+    _prepare_economic_rows,
     _render_report,
     base_specs,
     causal_feature_registry,
@@ -214,3 +215,34 @@ def test_candidate_metrics_derive_price_buckets_from_executable_side() -> None:
     metrics = _candidate_metrics(frame)
 
     assert set(metrics["by_price_bucket"]) == {"<0.65", "0.65-0.75"}
+
+
+def test_economic_rows_fill_null_classification_intervals_from_base() -> None:
+    config = load_config(CONFIG)
+    frame = pl.DataFrame(
+        {
+            "market_id": ["m"],
+            "up_ask_vwap_5": [0.4],
+            "down_ask_vwap_5": [0.7],
+            "probability_up": [0.8],
+            "fee_rate": [0.0],
+            "twap_label_up": [1],
+            "base_margin_lower": [1.0],
+            "base_margin_median": [2.0],
+            "base_margin_upper": [3.0],
+            "adjusted_margin_lower": [None],
+            "adjusted_margin_median": [None],
+            "adjusted_margin_upper": [None],
+        },
+        schema_overrides={
+            "adjusted_margin_lower": pl.Float64,
+            "adjusted_margin_median": pl.Float64,
+            "adjusted_margin_upper": pl.Float64,
+        },
+    )
+
+    result = _prepare_economic_rows(frame, config)
+
+    assert result.select(
+        "adjusted_margin_lower", "adjusted_margin_median", "adjusted_margin_upper"
+    ).row(0) == (1.0, 2.0, 3.0)
