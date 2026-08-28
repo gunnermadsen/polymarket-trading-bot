@@ -739,6 +739,22 @@ def candidate_metrics(
         ).iter_rows(named=True)
     }
     if trades.is_empty():
+        empty_group = group_metrics(trades, config)
+        days = sorted(str(value) for value in frame["window_start"].dt.date().unique())
+        folds = sorted(str(value) for value in frame["fold"].unique())
+        entry_bands = {
+            name: dict(empty_group) for name in ("30-59", "60-89", "90-120")
+        }
+        price_bands = {
+            name: dict(empty_group)
+            for name in ("below_0.60", "0.60-0.70", "0.70-0.80", "above_0.80")
+        }
+        margin_edges = tuple(
+            float(value) for value in config.raw["reporting"]["predicted_margin_bands_bps"]
+        )
+        margin_names = [
+            f"{lower:g}-{upper:g}" for lower, upper in pairwise(margin_edges)
+        ] + [f"above_{margin_edges[-1]:g}"]
         return {
             "markets": markets,
             "trades": 0,
@@ -746,25 +762,49 @@ def candidate_metrics(
             "accuracy": None,
             "up_accuracy": None,
             "down_accuracy": None,
+            "up_trade_share": 0.0,
+            "down_trade_share": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "average_win": None,
+            "average_loss": None,
+            "wins_to_recover_average_loss": None,
+            "loss_distribution": {
+                "average": None,
+                "median": None,
+                "p90": None,
+                "worst": None,
+            },
             "gross_pnl": 0.0,
+            "fee_adjusted_pnl": 0.0,
             "net_pnl": 0.0,
             "stressed_pnl": 0.0,
             "stressed_expectancy": None,
             "profit_factor": None,
             "maximum_drawdown": 0.0,
             "cvar_10": None,
+            "mean_entry_second": None,
+            "median_entry_second": None,
+            "p10_entry_second": None,
+            "p50_entry_second": None,
+            "p90_entry_second": None,
             "predictive_all": predictive_all,
             "admitted_probability_metrics": probability_metrics(trades),
             "conformal": coverage,
             "abstention_reasons": abstention,
             "fallback_frequency": fallback,
-            "daily": {},
-            "two_day_folds": {},
-            "by_direction": {"UP": group_metrics(trades), "DOWN": group_metrics(trades)},
-            "entry_time_bands": {},
-            "executable_price_bands": {},
-            "predicted_margin_bands": {},
+            "daily": {day: dict(empty_group) for day in days},
+            "two_day_folds": {fold: dict(empty_group) for fold in folds},
+            "by_direction": {"UP": dict(empty_group), "DOWN": dict(empty_group)},
+            "entry_time_bands": entry_bands,
+            "executable_price_bands": price_bands,
+            "predicted_margin_bands": {
+                name: dict(empty_group) for name in margin_names
+            },
             "capacity": capacity_metrics(trades, config),
+            "maximum_positive_pnl_day_share": None,
+            "maximum_quote_loss_recovery_ratio": None,
+            "all_quotes_pass_recovery": False,
             "bootstrap_stressed_expectancy": empty_interval(
                 int(config.raw["qualification"]["bootstrap_resamples"])
             ),

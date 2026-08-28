@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -21,6 +22,8 @@ from btc_directional_model.twap_conformal_risk import (
 )
 from btc_directional_model.twap_conformal_risk_tournament import (
     FoldLedger,
+    candidate_metrics,
+    load_config,
     persist_daily_ledgers,
     validate_prediction_frame,
 )
@@ -205,3 +208,32 @@ def test_daily_prediction_checkpoint_resumes_only_identical_inputs(tmp_path) -> 
     assert first == second
     with pytest.raises(RuntimeError, match="checkpoint changed"):
         persist_daily_ledgers(frame, tmp_path / "ledgers", "input-b")
+
+
+def test_zero_trade_report_retains_every_required_metric_group() -> None:
+    frame = _calibration_frame(2)
+    artifact = _artifact(_calibration_frame())
+    decisions = apply_admission_contract(
+        apply_conformal_bounds(frame, artifact),
+        reserve_per_share=0.005,
+        stress_slippage_per_share=0.01,
+        minimum_correctness=1.0,
+        maximum_error_risk=0.0,
+        maximum_recovery_ratio=0.0,
+        evaluation_quantity=5,
+    )
+    trades = earliest_admitted_trades(decisions)
+    config = load_config(
+        Path(__file__).parents[1]
+        / "configs/btc-5m-twap-conformal-risk-admission-20260814-20260825.toml"
+    )
+    metrics = candidate_metrics(frame, decisions, trades, config)
+    assert metrics["trades"] == 0
+    assert set(metrics["entry_time_bands"]) == {"30-59", "60-89", "90-120"}
+    assert set(metrics["executable_price_bands"]) == {
+        "below_0.60",
+        "0.60-0.70",
+        "0.70-0.80",
+        "above_0.80",
+    }
+    assert set(metrics["loss_distribution"]) == {"average", "median", "p90", "worst"}
