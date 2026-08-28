@@ -14,6 +14,7 @@ from btc_directional_model.settlement_bridge_residual_tournament import (
     RELATIVE_TWAP_FEATURES,
     SUPERVISION_FIELDS,
     _attach_capacity,
+    _candidate_metrics,
     _causal_piecewise_average,
     _market_equal_weights,
     _predictive_selection,
@@ -192,3 +193,24 @@ def test_predictive_selection_reports_every_required_pair_after_failed_advance(
     }
     assert result["comparisons"]["relative_twap_adds_value"]["passed"] is True
     assert result["winner"] == CANDIDATES[0]
+
+
+def test_candidate_metrics_derive_price_buckets_from_executable_side() -> None:
+    frame = pl.DataFrame(
+        {
+            "market_id": ["up", "down"],
+            "window_start": [
+                datetime(2026, 8, 14, tzinfo=UTC),
+                datetime(2026, 8, 14, tzinfo=UTC),
+            ],
+            "seconds_elapsed": [60, 90],
+            "probability_up": [0.8, 0.2],
+            "twap_label_up": [1, 0],
+            "up_ask_vwap_5": [0.7, 0.9],
+            "down_ask_vwap_5": [0.4, 0.6],
+        }
+    )
+
+    metrics = _candidate_metrics(frame)
+
+    assert set(metrics["by_price_bucket"]) == {"<0.65", "0.65-0.75"}

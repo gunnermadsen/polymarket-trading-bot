@@ -890,9 +890,14 @@ def run_tournament(
     economic: dict[str, Any]
     prospective: dict[str, Any]
     trade_ledger = pl.DataFrame()
+    development_abstentions = pl.DataFrame()
+    prospective_abstentions = pl.DataFrame()
     if winner:
         winner_rows = official_ledger.filter(pl.col("candidate") == winner)
         policy, trade_ledger, economic = _select_economic_policy(winner_rows, config)
+        development_abstentions = _abstention_ledger(
+            winner_rows, trade_ledger, policy, config
+        )
         prospective_rows = _score_final_prospective(
             frame, final_base, final_models[winner], winner, config
         )
@@ -905,11 +910,20 @@ def run_tournament(
         prospective_trades.write_parquet(
             temporary / "prospective-trade-ledger.parquet", compression="zstd"
         )
+        prospective_abstentions = _abstention_ledger(
+            prospective_rows, prospective_trades, policy, config
+        )
         artifact_payload["economic_policy"] = policy
     else:
         economic = {"status": "not_run_no_predictive_winner"}
         prospective = {"status": "failed_no_predictive_winner", "deployable": False}
     trade_ledger.write_parquet(temporary / "development-trade-ledger.parquet", compression="zstd")
+    development_abstentions.write_parquet(
+        temporary / "development-abstention-ledger.parquet", compression="zstd"
+    )
+    prospective_abstentions.write_parquet(
+        temporary / "prospective-abstention-ledger.parquet", compression="zstd"
+    )
 
     transition = settlement_transition_report(correction_frame, official_ledger)
     source_manifest = _source_query_manifest(config, manifest)
@@ -1720,11 +1734,29 @@ def _economic_metrics(
     config: TournamentConfig,
 ) -> dict[str, Any]:
     if trades.is_empty():
+        checks = {
+            "positive_stressed_pnl": False,
+            "positive_expectancy": False,
+            "profit_factor": False,
+            "positive_bootstrap_lower": False,
+            "profitable_folds": False,
+            "market_coverage": False,
+            "both_directions": False,
+            "maximum_day_contribution": False,
+            "positive_five_share_capacity": False,
+        }
         return {
             "trades": 0, "coverage": 0.0, "stressed_pnl_5": 0.0,
             "stressed_expectancy": 0.0, "profit_factor": 0.0,
             "bootstrap_lower": -math.inf, "profitable_fold_ratio": 0.0,
-            "maximum_day_contribution": math.inf, "passed": False, "gate_count": 0,
+            "maximum_day_contribution": math.inf, "maximum_drawdown": 0.0,
+            "cvar_5": None, "capacity_curve": {
+                str(quantity): {"trades": 0, "stressed_pnl": 0.0}
+                for quantity in VWAP_QUANTITIES
+            },
+            "checks": checks, "gate_count": 0, "passed": False,
+            "per_fold": {}, "pnl_waterfall": [], "by_direction": {},
+            "by_entry_band": {}, "by_price_bucket": {},
         }
     pnl = trades["stressed_pnl_5"].to_numpy()
     gains = pnl[pnl > 0].sum()
@@ -1743,6 +1775,19 @@ def _economic_metrics(
     coverage = trades.height / max(scheduled_markets, 1)
     profit_factor = float(gains / losses) if losses > 0 else math.inf
     profitable_ratio = float((fold["pnl"] > 0).mean())
+    fold_metrics = {
+        str(index): {"stressed_pnl": float(value), "profitable": bool(value > 0)}
+        for index, value in enumerate(fold["pnl"].to_list())
+    }
+    running = 0.0
+    waterfall = []
+    for row in daily.iter_rows(named=True):
+        running += float(row["pnl"])
+        waterfall.append({
+            "date": str(row["date"]),
+            "stressed_pnl_5": float(row["pnl"]),
+            "cumulative_stressed_pnl_5": running,
+        })
     checks = {
         "positive_stressed_pnl": float(pnl.sum()) > 0,
         "positive_expectancy": float(pnl.mean()) > 0,
@@ -1768,6 +1813,8 @@ def _economic_metrics(
         "maximum_drawdown": float(drawdown.max(initial=0.0)),
         "cvar_5": float(np.sort(pnl)[:tail_count].mean()),
         "capacity_curve": capacity,
+        "per_fold": fold_metrics,
+        "pnl_waterfall": waterfall,
         "checks": checks,
         "gate_count": sum(checks.values()),
         "passed": all(checks.values()),
@@ -1775,6 +1822,66 @@ def _economic_metrics(
         "by_entry_band": _economic_slice(trades.with_columns(_entry_band_expr().alias("entry_band")), "entry_band"),
         "by_price_bucket": _economic_slice(trades.with_columns(_price_bucket_expr().alias("price_bucket")), "price_bucket"),
     }
+
+
+def _abstention_ledger(
+    rows: pl.DataFrame,
+    trades: pl.DataFrame,
+    policy: dict[str, Any],
+    config: TournamentConfig,
+) -> pl.DataFrame:
+    schema = {
+        "market_id": pl.String,
+        "window_start": pl.Datetime("us", "UTC"),
+        "abstention_reason": pl.String,
+    }
+    if rows.is_empty():
+        return pl.DataFrame(schema=schema)
+    prepared = _prepare_economic_rows(rows, config)
+    summaries: dict[str, dict[str, Any]] = {}
+    if not prepared.is_empty():
+        evaluated = prepared.with_columns(
+            (pl.col("selected_probability") >= policy["confidence"]).alias("confidence_ok"),
+            (pl.col("stressed_edge_5") >= policy["stressed_edge"]).alias("edge_ok"),
+            (pl.col("selected_probability") >= pl.col("break_even_probability") + 0.02).alias("break_even_ok"),
+            (
+                (pl.col("predicted_up") & (pl.col("adjusted_margin_lower") > 0))
+                | (~pl.col("predicted_up") & (pl.col("adjusted_margin_upper") < 0))
+            ).alias("margin_ok"),
+        ).with_columns(
+            pl.all_horizontal("confidence_ok", "edge_ok", "break_even_ok", "margin_ok").alias("all_ok")
+        )
+        summaries = {
+            row["market_id"]: row
+            for row in evaluated.group_by("market_id").agg(
+                pl.col("confidence_ok").any(), pl.col("edge_ok").any(),
+                pl.col("break_even_ok").any(), pl.col("margin_ok").any(),
+                pl.col("all_ok").any(),
+            ).iter_rows(named=True)
+        }
+    traded = set(trades["market_id"].to_list()) if "market_id" in trades.columns else set()
+    records = []
+    for market in rows.sort("observed_at").group_by("market_id", maintain_order=True).first().iter_rows(named=True):
+        market_id = market["market_id"]
+        if market_id in traded:
+            continue
+        evidence = summaries.get(market_id)
+        if evidence is None:
+            reason = "no_fresh_executable_orderbook"
+        elif not evidence["confidence_ok"]:
+            reason = "confidence_below_policy"
+        elif not evidence["edge_ok"]:
+            reason = "stressed_edge_below_policy"
+        elif not evidence["break_even_ok"]:
+            reason = "break_even_buffer_not_met"
+        elif not evidence["margin_ok"]:
+            reason = "margin_interval_crosses_zero"
+        elif not evidence["all_ok"]:
+            reason = "combined_admission_gates_not_met"
+        else:
+            reason = "not_selected_before_one_trade_limit"
+        records.append((market_id, market["window_start"], reason))
+    return pl.DataFrame(records, schema=schema, orient="row")
 
 
 def _capacity_curve(trades: pl.DataFrame, config: TournamentConfig) -> dict[str, Any]:
@@ -2157,7 +2264,26 @@ def _candidate_metrics(frame: pl.DataFrame) -> dict[str, Any]:
     result["by_date"] = _probability_slice(frame.with_columns(pl.col("window_start").dt.date().alias("date")), "date")
     result["by_direction"] = _probability_slice(frame, "twap_label_up")
     result["by_entry_band"] = _probability_slice(frame.with_columns(_entry_band_expr().alias("entry_band")), "entry_band")
-    result["by_price_bucket"] = _probability_slice(frame.with_columns(_price_bucket_expr().alias("price_bucket")), "price_bucket") if "selected_cost_5" in frame.columns else {}
+    priced = frame
+    if "selected_cost_5" not in priced.columns and {
+        "up_ask_vwap_5", "down_ask_vwap_5"
+    }.issubset(priced.columns):
+        priced = priced.with_columns(
+            pl.when(pl.col("probability_up") >= 0.5)
+            .then(pl.col("up_ask_vwap_5"))
+            .otherwise(pl.col("down_ask_vwap_5"))
+            .alias("selected_cost_5")
+        )
+    result["by_price_bucket"] = (
+        _probability_slice(
+            priced.filter(pl.col("selected_cost_5").is_not_null()).with_columns(
+                _price_bucket_expr().alias("price_bucket")
+            ),
+            "price_bucket",
+        )
+        if "selected_cost_5" in priced.columns
+        else {}
+    )
     result["by_volatility"] = _volatility_slices(frame)
     return result
 
