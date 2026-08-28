@@ -1,0 +1,86 @@
+[training]
+profile = "btc_5m_settlement_bridge_residual"
+model_family = "btc-5m-settlement-bridge-residual"
+paper_only = true
+live_capital_allowed = false
+runtime_exported = false
+random_seed = 20260828
+candidate_freeze = "2026-08-28T00:00:00Z"
+
+[windows]
+data_start = "2026-03-21T00:00:00Z"
+reconstruction_start = "2026-06-07T00:00:00Z"
+paired_training_end = "2026-08-01T00:00:00Z"
+authentic_validation_end = "2026-08-14T00:00:00Z"
+official_development_end = "2026-08-28T00:00:00Z"
+prospective_end = "2026-08-29T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second = 175
+cadence_seconds = 5
+bands = [[60, 90], [90, 120], [120, 150], [150, 180]]
+
+[base_model]
+learning_rates = [0.03, 0.05, 0.08]
+max_leaf_nodes = [7, 15]
+min_samples_leaf = [80, 160]
+l2_regularization = [2.0]
+max_iter = 140
+quantiles = [0.05, 0.50, 0.95]
+bootstrap_resamples = 2000
+
+[corrections]
+logistic_cs = [0.05, 0.10, 0.25, 0.50, 1.00]
+
+[[residual_specs]]
+learning_rate = 0.03
+max_leaf_nodes = 7
+min_samples_leaf = 80
+l2_regularization = 2.0
+max_iter = 160
+
+[[residual_specs]]
+learning_rate = 0.04
+max_leaf_nodes = 15
+min_samples_leaf = 120
+l2_regularization = 4.0
+max_iter = 180
+
+[[residual_specs]]
+learning_rate = 0.05
+max_leaf_nodes = 15
+min_samples_leaf = 160
+l2_regularization = 6.0
+max_iter = 180
+
+[[residual_specs]]
+learning_rate = 0.06
+max_leaf_nodes = 31
+min_samples_leaf = 200
+l2_regularization = 8.0
+max_iter = 200
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+liquidity_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+confidence_thresholds = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+edge_thresholds = [0.00, 0.01, 0.02, 0.03, 0.05]
+break_even_probability_buffer = 0.02
+
+[gates]
+maximum_ece = 0.03
+minimum_profit_factor = 1.25
+minimum_market_coverage = 0.10
+minimum_profitable_fold_ratio = 0.70
+maximum_day_contribution = 0.50
+prospective_markets = 2500
+prospective_days = 10
+prospective_folds = 5
+
+[paths]
+data = "data/btc-settlement-bridge-residual-20260321-20260828"
+runs = "runs/btc-settlement-bridge-residual-20260321-20260828"
+committed_results = "training-results/btc-5m-settlement-bridge-residual-20260321-20260828"
