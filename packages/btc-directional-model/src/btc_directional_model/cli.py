@@ -109,6 +109,12 @@ from .runtime_export import (
     export_runtime_model,
     promote_runtime_model_for_live_pilot,
 )
+from .settlement_bridge_residual_tournament import (
+    load_config as load_settlement_bridge_config,
+)
+from .settlement_bridge_residual_tournament import (
+    run_tournament as run_settlement_bridge_tournament,
+)
 from .spot_l2_chainlink_benchmark import run_spot_l2_chainlink_benchmark
 from .spot_l2_chainlink_config import load_spot_l2_chainlink_config
 from .train import train_models
@@ -231,6 +237,11 @@ def main() -> None:
     twap60_run = subparsers.add_parser("twap60-challenger-tournament-run")
     twap60_run.add_argument("--config", type=Path, required=True)
     twap60_run.add_argument("--force", action="store_true")
+    settlement_bridge_run = subparsers.add_parser(
+        "settlement-bridge-residual-tournament-run"
+    )
+    settlement_bridge_run.add_argument("--config", type=Path, required=True)
+    settlement_bridge_run.add_argument("--force", action="store_true")
     causal_twap_attribution = subparsers.add_parser(
         "causal-twap-attribution-tournament-run"
     )
@@ -597,6 +608,16 @@ def main() -> None:
             "provisional challenger: "
             f"{result['tournament']['selection']['provisional_challenger'] or 'none'}"
         )
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "settlement-bridge-residual-tournament-run":
+        config = load_settlement_bridge_config(args.config)
+        run_dir, result = run_settlement_bridge_tournament(
+            config, force_data=args.force
+        )
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"conclusion: {result['conclusion']}")
+        print(f"deployment status: {result['deployment_status']}")
         print("runtime/database/trading processes changed: false")
         return
     if args.command == "causal-twap-attribution-tournament-run":
