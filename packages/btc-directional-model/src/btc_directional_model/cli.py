@@ -28,6 +28,12 @@ from .asymmetric_value_config import load_asymmetric_value_config
 from .benchmark_config import load_entry_benchmark_config
 from .capacity_training import extract_capacity_evidence, run_capacity_training
 from .capacity_training_config import load_capacity_training_config
+from .causal_twap_attribution_tournament import (
+    load_config as load_causal_twap_attribution_config,
+)
+from .causal_twap_attribution_tournament import (
+    run_tournament as run_causal_twap_attribution_tournament,
+)
 from .chainlink_oi_benchmark import run_chainlink_oi_benchmark
 from .chainlink_oi_config import load_chainlink_oi_benchmark_config
 from .chainlink_oi_forward_score import run_chainlink_oi_forward_score
@@ -48,12 +54,6 @@ from .counterfactual_twap_state_tournament import (
 )
 from .counterfactual_twap_state_tournament import (
     run_tournament as run_counterfactual_twap_state_tournament,
-)
-from .causal_twap_attribution_tournament import (
-    load_config as load_causal_twap_attribution_config,
-)
-from .causal_twap_attribution_tournament import (
-    run_tournament as run_causal_twap_attribution_tournament,
 )
 from .early_entry_settlement_consensus_tournament import (
     load_config as load_early_entry_consensus_config,

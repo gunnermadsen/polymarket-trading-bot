@@ -8,7 +8,6 @@ import numpy as np
 import polars as pl
 import pytest
 
-from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 from btc_directional_model.causal_twap_attribution_data import (
     CAUSAL_AVAILABILITY_COLUMNS,
     CHAINLINK_UNCERTAINTY_BPS,
@@ -40,6 +39,7 @@ from btc_directional_model.causal_twap_attribution_tournament import (
     score_model,
     select_policy,
 )
+from btc_directional_model.continuous_edge_training import BOOK_RAW_FEATURES
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / "configs/btc-5m-causal-twap-attribution-20260607-20260828.toml"
