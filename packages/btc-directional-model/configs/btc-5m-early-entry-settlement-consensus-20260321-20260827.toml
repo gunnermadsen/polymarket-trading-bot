@@ -1,0 +1,204 @@
+[training]
+profile = "btc_5m_early_entry_settlement_consensus"
+model_family = "btc-5m-early-entry-settlement-consensus"
+random_seed = 20260829
+training_only = true
+paper_only = true
+live_capital_allowed = false
+runtime_exported = false
+data_watermark = "2026-08-28T00:00:00+00:00"
+candidate_freeze = "2026-08-27T00:00:00+00:00"
+historical_source_end = "2026-08-27T00:00:00+00:00"
+prospective_end = "2026-08-28T00:00:00+00:00"
+observation_seconds = [60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180]
+candidates = [
+  "frozen_bridge_control",
+  "bridge_latent_equal_logit_pool",
+  "three_family_nonnegative_logit_stack",
+  "bridge_latent_uncertainty_margin_stack",
+]
+history_arms = [
+  "authentic_only",
+  "chainlink_reconstructed",
+  "binance_synthetic_extension",
+  "uncertainty_weighted_hybrid",
+]
+primary_history_arm = "uncertainty_weighted_hybrid"
+
+[regimes]
+binance_start = "2026-03-21T00:00:00+00:00"
+chainlink_start = "2026-06-07T00:00:00+00:00"
+authentic_counterfactual_start = "2026-08-01T00:00:00+00:00"
+twap30_transition_start = "2026-08-07T00:00:00+00:00"
+official_twap60_start = "2026-08-14T00:00:00+00:00"
+
+[paths]
+runs = "runs/btc-5m-early-entry-settlement-consensus-20260321-20260827"
+committed_results = "training-results/btc-5m-early-entry-settlement-consensus-20260321-20260827"
+historical_source_worktree = "target/worktrees/btc-counterfactual-twap-state-tournament"
+historical_source_cache = "packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827"
+prospective_source_worktree = "target/worktrees/btc-causal-twap-attribution"
+prospective_source_cache = "packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828"
+source_code_worktree = "target/worktrees/btc-causal-twap-attribution"
+source_code_module = "packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_data.py"
+history_reference_worktree = "target/worktrees/btc-counterfactual-twap-state-tournament"
+history_reference = "packages/btc-directional-model/training-results/btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z/historical-source-bakeoff.json"
+
+[source_identity]
+historical_manifest_sha256 = "3ff80d230820756760eae6fb5cb254ecb85acc391fb7479303af7e45eaab4e94"
+historical_binance_manifest_sha256 = "e8fd4c39830f6d4c778fc415be38952d0434200a8d45ded4d72dbce793140fab"
+historical_frame_sha256 = "bdb1e49e640758fb64643304435f7b77613187c815cfb6f5e5cb350108f42f55"
+historical_label_audit_sha256 = "991d58ff265334528a7b61748ae77ddc07fa36b2933b136dd76ad88f7b578379"
+prospective_manifest_sha256 = "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+prospective_binance_manifest_sha256 = "1a20cc7bec77c85eb65b432a3db5835f3a16da412f22ff5bbac030cb2f2ce137"
+prospective_frame_sha256 = "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26"
+source_code_sha256 = "584db15c135554b5f0355a5765addb13c5f1b46cd706f2f1f64f866ae63ea4c1"
+history_reference_sha256 = "02a83a229110987b2d56092ba1df62f9d2a68ce5ef12bf7b4dceff650eadca67"
+
+[constituents.bridge]
+tag = "model/btc-5m-settlement-bridge-residual-freeze-20260828-run-20260828T204616Z"
+recording_commit = "ab38546a71a127c6ee015f9ef6d34acb92a21eb2"
+artifact_worktree = "target/worktrees/btc-settlement-bridge-residual-tournament"
+artifact_path = "packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/tournament.joblib"
+artifact_sha256 = "6f7936a7bc830321fa5cf0740bb9ccd101002c33e54752d4648ac993a7dca027"
+source_path = "packages/btc-directional-model/src/btc_directional_model/settlement_bridge_residual_tournament.py"
+source_sha256 = "ccb3bc2a9cfb241043b712731dff349c37fae4d1a26fd45d8295cda3c7848407"
+selected_specification = "refprice_bridge_baseline"
+learning_rate = 0.08
+max_leaf_nodes = 7
+min_samples_leaf = 160
+l2_regularization = 2.0
+max_iter = 140
+calibration_c = 1.0
+
+[constituents.latent]
+tag = "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+recording_commit = "e1eb28d68999503b34cad5344ddb40b33036520f"
+artifact_worktree = "target/worktrees/btc-latent-twap-settlement-risk"
+artifact_path = "packages/btc-directional-model/training-results/btc-5m-latent-twap-settlement-risk-20260607-20260828/20260828T174703Z/model-family.joblib"
+artifact_sha256 = "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80"
+source_path = "packages/btc-directional-model/src/btc_directional_model/latent_twap_state_space.py"
+source_sha256 = "7a2243736debfb3f38eb5d32b6eb1fe0efb6a0a4358eb75dee092ab88bcbbd78"
+selected_specification = "twap_refprice_regime_switching"
+configuration = "state_12"
+velocity_decay = 0.92
+process_margin_scale = 2.0
+process_velocity_scale = 2.0
+initial_variance_scale = 1.5
+regime_stickiness = 20.0
+
+[constituents.causal]
+tag = "model/btc-5m-counterfactual-twap-state-causal-attribution-20260607-20260826-20260828T165228Z"
+recording_commit = "ab634723e12c8d916921ec694e8d18b250095cd2"
+artifact_worktree = "target/worktrees/btc-causal-twap-attribution"
+artifact_path = "packages/btc-directional-model/training-results/btc-5m-causal-twap-attribution-20260607-20260828/20260828T165228Z/tournament.joblib"
+artifact_sha256 = "bfbb7ddfd77a947f2d17cb5258b6a18e60094b14f19748e4cb732ad56bd0349d"
+source_path = "packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_tournament.py"
+source_sha256 = "d659c53818851cae578c41cc1009683c37fe7af370994ca76cd2e73a948dc81e"
+selected_specification = "refprice_only"
+learning_rate = 0.06
+max_leaf_nodes = 15
+min_samples_leaf = 80
+l2_regularization = 16.0
+max_iter = 120
+calibration_c = 0.25
+
+[[oof_folds]]
+name = "counterfactual_20260801_06"
+test_start = "2026-08-01T00:00:00+00:00"
+test_end = "2026-08-07T00:00:00+00:00"
+official = false
+
+[[oof_folds]]
+name = "transition_20260807_13"
+test_start = "2026-08-07T00:00:00+00:00"
+test_end = "2026-08-14T00:00:00+00:00"
+official = false
+
+[[oof_folds]]
+name = "official_20260814_15"
+test_start = "2026-08-14T00:00:00+00:00"
+test_end = "2026-08-16T00:00:00+00:00"
+official = true
+
+[[oof_folds]]
+name = "official_20260816_17"
+test_start = "2026-08-16T00:00:00+00:00"
+test_end = "2026-08-18T00:00:00+00:00"
+official = true
+
+[[oof_folds]]
+name = "official_20260818_19"
+test_start = "2026-08-18T00:00:00+00:00"
+test_end = "2026-08-20T00:00:00+00:00"
+official = true
+
+[[oof_folds]]
+name = "official_20260820_21"
+test_start = "2026-08-20T00:00:00+00:00"
+test_end = "2026-08-22T00:00:00+00:00"
+official = true
+
+[[oof_folds]]
+name = "official_20260822_23"
+test_start = "2026-08-22T00:00:00+00:00"
+test_end = "2026-08-24T00:00:00+00:00"
+official = true
+
+[[oof_folds]]
+name = "official_20260824_26"
+test_start = "2026-08-24T00:00:00+00:00"
+test_end = "2026-08-27T00:00:00+00:00"
+official = true
+
+[reliability]
+minimum_fit_markets = 250
+near_boundary_bps = 1.0
+minimum_admitted_probability = 0.55
+high_reliability_probability = 0.85
+
+[ensemble]
+strong_l2_regularization = 12.0
+calibration_c = 0.20
+minimum_meta_markets = 500
+quantiles = [0.05, 0.50, 0.95]
+
+[[policies]]
+name = "probability_edge_control"
+minimum_stressed_edge = 0.055
+maximum_debit = 1.0
+slippage_reserve = 0.010
+uncertainty_reserve_scale = 0.0
+require_margin_excludes_zero = false
+minimum_consensus = 0.0
+maximum_loss_recovery_wins = 100.0
+
+[[policies]]
+name = "edge_maximum_debit"
+minimum_stressed_edge = 0.045
+maximum_debit = 0.72
+slippage_reserve = 0.010
+uncertainty_reserve_scale = 0.0
+require_margin_excludes_zero = false
+minimum_consensus = 0.0
+maximum_loss_recovery_wins = 100.0
+
+[[policies]]
+name = "edge_uncertainty_margin"
+minimum_stressed_edge = 0.035
+maximum_debit = 0.75
+slippage_reserve = 0.010
+uncertainty_reserve_scale = 0.0025
+require_margin_excludes_zero = true
+minimum_consensus = 0.6666666666666666
+maximum_loss_recovery_wins = 100.0
+
+[[policies]]
+name = "edge_loss_compensation_tail_risk"
+minimum_stressed_edge = 0.030
+maximum_debit = 0.62
+slippage_reserve = 0.015
+uncertainty_reserve_scale = 0.0035
+require_margin_excludes_zero = true
+minimum_consensus = 0.6666666666666666
+maximum_loss_recovery_wins = 2.5

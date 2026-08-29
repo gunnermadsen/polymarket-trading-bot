@@ -43,6 +43,12 @@ from .core_extract import extract_core_source, snapshot_residual_admission_sourc
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
+from .early_entry_settlement_consensus_tournament import (
+    load_config as load_early_entry_consensus_config,
+)
+from .early_entry_settlement_consensus_tournament import (
+    run_tournament as run_early_entry_consensus_tournament,
+)
 from .early_value_benchmark import run_early_value_benchmark
 from .early_value_config import load_early_value_config
 from .entry_benchmark import run_entry_benchmark
@@ -213,6 +219,10 @@ def main() -> None:
     twap60_run = subparsers.add_parser("twap60-challenger-tournament-run")
     twap60_run.add_argument("--config", type=Path, required=True)
     twap60_run.add_argument("--force", action="store_true")
+    early_entry_consensus_run = subparsers.add_parser(
+        "early-entry-settlement-consensus-tournament-run"
+    )
+    early_entry_consensus_run.add_argument("--config", type=Path, required=True)
     chainlink_oi_run = subparsers.add_parser(
         "chainlink-oi-champion-benchmark-run"
     )
@@ -565,6 +575,14 @@ def main() -> None:
             "provisional challenger: "
             f"{result['tournament']['selection']['provisional_challenger'] or 'none'}"
         )
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "early-entry-settlement-consensus-tournament-run":
+        config = load_early_entry_consensus_config(args.config)
+        run_dir, result = run_early_entry_consensus_tournament(config)
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"qualification status: {result['qualification_status']}")
+        print(f"top candidate: {result['ranking'][0]}")
         print("runtime/database/trading processes changed: false")
         return
     if args.command == "chainlink-oi-champion-benchmark-run":
