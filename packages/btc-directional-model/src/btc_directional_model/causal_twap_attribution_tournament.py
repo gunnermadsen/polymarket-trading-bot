@@ -26,8 +26,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 from threadpoolctl import threadpool_limits
 
-from .continuous_edge_training import BOOK_RAW_FEATURES, VWAP_QUANTITIES
-from .core_extract import file_sha256
 from .causal_twap_attribution_data import (
     BINANCE_DISAGREEMENT_FEATURES,
     CAUSAL_BASIS_FEATURES,
@@ -41,6 +39,8 @@ from .causal_twap_attribution_data import (
     inference_feature_registry,
     validate_inference_features,
 )
+from .continuous_edge_training import BOOK_RAW_FEATURES, VWAP_QUANTITIES
+from .core_extract import file_sha256
 from .twap60_challenger_tournament import _decision_columns, _ece, _market_equal_weights
 from .twap60_training_data import DataPaths
 
