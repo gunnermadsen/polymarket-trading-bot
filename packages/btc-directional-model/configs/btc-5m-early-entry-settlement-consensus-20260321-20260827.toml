@@ -6,6 +6,10 @@ training_only = true
 paper_only = true
 live_capital_allowed = false
 runtime_exported = false
+corrected_historical_rerun = true
+historical_evidence_consumed = true
+weight_normalization = "mean_one_market_band_equal_v1"
+prior_defective_model_tag = "model/btc-5m-early-entry-settlement-consensus-20260321-20260827-run-20260829T022324Z"
 data_watermark = "2026-08-28T00:00:00+00:00"
 candidate_freeze = "2026-08-27T00:00:00+00:00"
 historical_source_end = "2026-08-27T00:00:00+00:00"
@@ -61,6 +65,8 @@ recording_commit = "ab38546a71a127c6ee015f9ef6d34acb92a21eb2"
 artifact_worktree = "target/worktrees/btc-settlement-bridge-residual-tournament"
 artifact_path = "packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/tournament.joblib"
 artifact_sha256 = "6f7936a7bc830321fa5cf0740bb9ccd101002c33e54752d4648ac993a7dca027"
+reference_metrics_path = "packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/metrics.json"
+reference_metrics_sha256 = "1b22f6dfd93418dd26b3fd96b9ba80f8edc0cc5d4ece2701d1ac2bd4f5c2c5ff"
 source_path = "packages/btc-directional-model/src/btc_directional_model/settlement_bridge_residual_tournament.py"
 source_sha256 = "ccb3bc2a9cfb241043b712731dff349c37fae4d1a26fd45d8295cda3c7848407"
 selected_specification = "refprice_bridge_baseline"
@@ -69,6 +75,7 @@ max_leaf_nodes = 7
 min_samples_leaf = 160
 l2_regularization = 2.0
 max_iter = 140
+max_bins = 127
 calibration_c = 1.0
 
 [constituents.latent]
@@ -101,6 +108,7 @@ max_leaf_nodes = 15
 min_samples_leaf = 80
 l2_regularization = 16.0
 max_iter = 120
+max_bins = 255
 calibration_c = 0.25
 
 [[oof_folds]]
@@ -162,6 +170,19 @@ strong_l2_regularization = 12.0
 calibration_c = 0.20
 minimum_meta_markets = 500
 quantiles = [0.05, 0.50, 0.95]
+
+[integrity_gates]
+minimum_prediction_std = 0.02
+minimum_fold_prediction_std = 0.01
+minimum_brier_advantage_vs_prior = 0.005
+maximum_fold_brier = 0.24
+minimum_directional_accuracy = 0.60
+maximum_bridge_reference_brier_degradation = 0.02
+maximum_causal_reference_brier_degradation = 0.02
+minimum_causal_calibration_coefficient = 0.05
+minimum_incremental_brier_effect = 0.0005
+paired_bootstrap_iterations = 2000
+minimum_improving_folds = 4
 
 [[policies]]
 name = "probability_edge_control"

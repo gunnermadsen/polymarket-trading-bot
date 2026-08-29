@@ -35,10 +35,11 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import log_loss
 from sklearn.preprocessing import StandardScaler
 
-SCHEMA_VERSION = "btc-early-entry-settlement-consensus-tournament-v1"
-ARTIFACT_SCHEMA_VERSION = "btc-early-entry-settlement-consensus-model-v1"
+SCHEMA_VERSION = "btc-early-entry-settlement-consensus-tournament-v2"
+ARTIFACT_SCHEMA_VERSION = "btc-early-entry-settlement-consensus-model-v2"
 SOURCE_PANEL_SCHEMA_VERSION = "btc-early-entry-settlement-consensus-panel-v1"
 CHECKPOINT_SCHEMA_VERSION = "btc-early-entry-settlement-consensus-checkpoint-v1"
+WEIGHT_NORMALIZATION = "mean_one_market_band_equal_v1"
 
 ENTRY_SECONDS = tuple(range(60, 181, 5))
 CANDIDATE_NAMES = (
@@ -182,6 +183,7 @@ class TreeSpec:
     min_samples_leaf: int
     l2_regularization: float
     max_iter: int
+    max_bins: int
     calibration_c: float
 
 
@@ -261,6 +263,8 @@ class TreeBundle:
     spec: TreeSpec
     fit_end: datetime
     history_arm: str
+    fit_weight_audit: dict[str, Any]
+    calibration_weight_audit: dict[str, Any]
 
     def score_arrays(self, frame: pl.DataFrame) -> dict[str, np.ndarray]:
         matrix = _matrix(frame, self.feature_names, self.all_missing_indices)
@@ -289,6 +293,8 @@ class ProbabilityTreeBundle:
     spec: TreeSpec
     fit_end: datetime
     history_arm: str
+    fit_weight_audit: dict[str, Any]
+    calibration_weight_audit: dict[str, Any]
 
     def predict(self, frame: pl.DataFrame) -> np.ndarray:
         matrix = _matrix(frame, self.feature_names, self.all_missing_indices)
@@ -375,6 +381,8 @@ class CandidateBundle:
     residual_lower: float
     residual_upper: float
     fit_end: datetime
+    fit_weight_audit: dict[str, Any] | None = None
+    calibration_weight_audit: dict[str, Any] | None = None
 
     def score_arrays(self, frame: pl.DataFrame) -> dict[str, np.ndarray]:
         constituent = _constituent_arrays(frame)
@@ -524,6 +532,7 @@ def _tree_spec(row: dict[str, Any]) -> TreeSpec:
         min_samples_leaf=int(row["min_samples_leaf"]),
         l2_regularization=float(row["l2_regularization"]),
         max_iter=int(row["max_iter"]),
+        max_bins=int(row["max_bins"]),
         calibration_c=float(row["calibration_c"]),
     )
 
@@ -547,6 +556,10 @@ def _validate_config(config: TournamentConfig) -> None:
         raise ValueError("frozen history-arm roster changed")
     if training["primary_history_arm"] != "uncertainty_weighted_hybrid":
         raise ValueError("primary history arm changed")
+    if training.get("weight_normalization") != WEIGHT_NORMALIZATION:
+        raise ValueError("frozen training-weight normalization changed")
+    if config.bridge_spec.max_bins != 127 or config.causal_spec.max_bins != 255:
+        raise ValueError("frozen constituent estimator bin specifications changed")
     if not (
         config.regimes["binance_start"]
         < config.regimes["chainlink_start"]
@@ -834,6 +847,18 @@ def _verify_frozen_inputs(config: TournamentConfig) -> dict[str, Any]:
             "abandoned": False,
             "passed": True,
         }
+        reference_metrics_path = row.get("reference_metrics_path")
+        if reference_metrics_path is not None:
+            reference_metrics = worktree / reference_metrics_path
+            reference_sha = file_sha256(reference_metrics)
+            if reference_sha != row["reference_metrics_sha256"]:
+                raise RuntimeError(f"{name} reference metrics hash mismatch")
+            checks[f"constituent_{name}"]["reference_metrics_path"] = str(
+                reference_metrics
+            )
+            checks[f"constituent_{name}"]["reference_metrics_sha256"] = (
+                reference_sha
+            )
 
     historical_contract = json.loads(
         (config.historical_source_cache / "source-manifest.json").read_text()
@@ -1338,7 +1363,71 @@ def _market_band_weights(frame: pl.DataFrame, base_column: str = "history_weight
     total = float(weights.sum())
     if not math.isfinite(total) or total <= 0:
         raise RuntimeError("market/band weights have no positive support")
-    return weights / total
+    weights *= joined.height / total
+    _assert_training_weights(joined, weights)
+    return weights
+
+
+def _assert_training_weights(frame: pl.DataFrame, weights: np.ndarray) -> None:
+    values = np.asarray(weights, dtype=float)
+    if len(values) != frame.height:
+        raise RuntimeError("training weight row count does not match the training frame")
+    if not np.all(np.isfinite(values)) or np.any(values < 0):
+        raise RuntimeError("training weights must be finite and nonnegative")
+    expected = float(frame.height)
+    tolerance = max(1e-9, expected * 1e-10)
+    if not math.isclose(float(values.sum()), expected, rel_tol=1e-10, abs_tol=tolerance):
+        raise RuntimeError(
+            "training weights violate the frozen mean-one normalization contract"
+        )
+
+
+def _training_weight_audit(frame: pl.DataFrame, weights: np.ndarray) -> dict[str, Any]:
+    values = np.asarray(weights, dtype=float)
+    _assert_training_weights(frame, values)
+    audited = frame.with_columns(
+        _entry_band_expression().alias("_entry_band"),
+        pl.Series("_training_weight", values),
+    )
+    total = float(values.sum())
+    squared = float(np.square(values).sum())
+
+    def shares(column: str) -> list[dict[str, Any]]:
+        if column not in audited.columns:
+            return []
+        rows = (
+            audited.group_by(column)
+            .agg(
+                pl.len().alias("rows"),
+                pl.col("market_id").n_unique().alias("markets"),
+                pl.col("_training_weight").sum().alias("weight"),
+            )
+            .sort(column)
+        )
+        return [
+            {
+                column: row[column],
+                "rows": int(row["rows"]),
+                "markets": int(row["markets"]),
+                "weight": float(row["weight"]),
+                "weight_share": float(row["weight"]) / total,
+            }
+            for row in rows.iter_rows(named=True)
+        ]
+
+    return {
+        "normalization": WEIGHT_NORMALIZATION,
+        "passed": True,
+        "rows": frame.height,
+        "markets": frame["market_id"].n_unique(),
+        "minimum": float(values.min()),
+        "maximum": float(values.max()),
+        "mean": float(values.mean()),
+        "total": total,
+        "effective_sample_size": total * total / squared,
+        "by_label_source": shares("label_source"),
+        "by_entry_band": shares("_entry_band"),
+    }
 
 
 def _reliability_feature_matrix(frame: pl.DataFrame) -> np.ndarray:
@@ -1545,7 +1634,7 @@ def _new_classifier(spec: TreeSpec, seed: int) -> HistGradientBoostingClassifier
         max_leaf_nodes=spec.max_leaf_nodes,
         min_samples_leaf=spec.min_samples_leaf,
         l2_regularization=spec.l2_regularization,
-        max_bins=127,
+        max_bins=spec.max_bins,
         early_stopping=False,
         random_state=seed,
     )
@@ -1560,7 +1649,7 @@ def _new_quantile(spec: TreeSpec, quantile: float, seed: int) -> HistGradientBoo
         max_leaf_nodes=spec.max_leaf_nodes,
         min_samples_leaf=spec.min_samples_leaf,
         l2_regularization=spec.l2_regularization,
-        max_bins=127,
+        max_bins=spec.max_bins,
         early_stopping=False,
         random_state=seed,
     )
@@ -1589,6 +1678,7 @@ def _fit_tree_bundle(
     fit_matrix, all_missing = _neutralize_all_missing(_matrix(fit, features))
     calibration_matrix = _matrix(calibration, features, all_missing)
     fit_weights = _market_band_weights(fit)
+    fit_weight_audit = _training_weight_audit(fit, fit_weights)
     classifier = _new_classifier(spec, seed).fit(
         fit_matrix,
         fit[base_label_column].to_numpy(),
@@ -1612,6 +1702,9 @@ def _fit_tree_bundle(
     )
     calibrator_x = np.column_stack((logit(raw), median, width)) if calibrator_uses_margin else logit(raw).reshape(-1, 1)
     calibration_weights = _market_band_weights(calibration)
+    calibration_weight_audit = _training_weight_audit(
+        calibration, calibration_weights
+    )
     calibrator = LogisticRegression(
         C=spec.calibration_c,
         max_iter=2000,
@@ -1634,6 +1727,8 @@ def _fit_tree_bundle(
         spec,
         fit_end,
         history_arm,
+        fit_weight_audit,
+        calibration_weight_audit,
     )
 
 
@@ -1648,23 +1743,37 @@ def _fit_probability_bundle(
 ) -> ProbabilityTreeBundle:
     fit, calibration = _chronological_fit_calibration(frame)
     fit_matrix, all_missing = _neutralize_all_missing(_matrix(fit, features))
+    fit_weights = _market_band_weights(fit)
+    fit_weight_audit = _training_weight_audit(fit, fit_weights)
     classifier = _new_classifier(spec, seed).fit(
-        fit_matrix, fit["label_up"].to_numpy(), sample_weight=_market_band_weights(fit)
+        fit_matrix, fit["label_up"].to_numpy(), sample_weight=fit_weights
     )
     raw = np.clip(
         classifier.predict_proba(_matrix(calibration, features, all_missing))[:, 1],
         1e-7,
         1 - 1e-7,
     )
+    calibration_weights = _market_band_weights(calibration)
+    calibration_weight_audit = _training_weight_audit(
+        calibration, calibration_weights
+    )
     calibrator = LogisticRegression(
         C=spec.calibration_c, max_iter=2000, random_state=seed + 1
     ).fit(
         logit(raw).reshape(-1, 1),
         calibration["label_up"].to_numpy(),
-        sample_weight=_market_band_weights(calibration),
+        sample_weight=calibration_weights,
     )
     return ProbabilityTreeBundle(
-        features, all_missing, classifier, calibrator, spec, fit_end, history_arm
+        features,
+        all_missing,
+        classifier,
+        calibrator,
+        spec,
+        fit_end,
+        history_arm,
+        fit_weight_audit,
+        calibration_weight_audit,
     )
 
 
@@ -2323,6 +2432,11 @@ def _fit_candidate_bundle(
     fit, calibration = _meta_fit_calibration(prior_oof)
     fit_values = _constituent_arrays(fit)
     weights = _market_band_weights(fit)
+    fit_weight_audit = _training_weight_audit(fit, weights)
+    calibration_weights = _market_band_weights(calibration)
+    calibration_weight_audit = _training_weight_audit(
+        calibration, calibration_weights
+    )
     labels = fit["label_up"].to_numpy()
     targets = fit["target_margin_bps"].to_numpy()
     probability_model: Any | None = None
@@ -2388,6 +2502,8 @@ def _fit_candidate_bundle(
         residual_lower,
         residual_upper,
         fit_end,
+        fit_weight_audit,
+        calibration_weight_audit,
     )
     raw = _candidate_raw_probability(name, calibration, bundle)
     calibrator = _fit_temperature(
@@ -2540,15 +2656,344 @@ def predictive_metrics(frame: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def _constituent_metric_frame(frame: pl.DataFrame, family: str) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.col(f"{family}_probability_up").alias("probability_up"),
+        pl.col(f"{family}_margin_lower_bps").alias("predicted_margin_lower_bps"),
+        pl.col(f"{family}_margin_median_bps").alias("predicted_margin_bps"),
+        pl.col(f"{family}_margin_upper_bps").alias("predicted_margin_upper_bps"),
+        pl.col(f"{family}_uncertainty_bps").alias("prediction_uncertainty_bps"),
+    )
+
+
+def _constituent_reproduction_audit(
+    constituent_oof: pl.DataFrame,
+    fold_models: dict[str, dict[str, Any]],
+    config: TournamentConfig,
+) -> dict[str, Any]:
+    official = constituent_oof.filter(pl.col("official_fold"))
+    if official.is_empty():
+        raise RuntimeError("constituent reproduction gate has no official OOF rows")
+    settings = config.raw["integrity_gates"]
+    labels = official["label_up"].to_numpy().astype(float)
+    evaluation_weights = _evaluation_weights(official)
+    prior_probability = float(np.average(labels, weights=evaluation_weights))
+    prior_brier = float(
+        np.average((prior_probability - labels) ** 2, weights=evaluation_weights)
+    )
+    gates: list[dict[str, Any]] = []
+
+    def maximum(name: str, actual: float, threshold: float) -> None:
+        gates.append(
+            {
+                "name": name,
+                "actual": actual,
+                "operator": "<=",
+                "threshold": threshold,
+                "passed": actual <= threshold,
+            }
+        )
+
+    def minimum(name: str, actual: float, threshold: float) -> None:
+        gates.append(
+            {
+                "name": name,
+                "actual": actual,
+                "operator": ">=",
+                "threshold": threshold,
+                "passed": actual >= threshold,
+            }
+        )
+
+    references: dict[str, Any] = {}
+    bridge_row = config.raw["constituents"]["bridge"]
+    bridge_reference_path = (
+        config.repository_root
+        / bridge_row["artifact_worktree"]
+        / bridge_row["reference_metrics_path"]
+    )
+    bridge_reference = json.loads(bridge_reference_path.read_text())[
+        "candidate_metrics"
+    ][bridge_row["selected_specification"]]["brier"]
+    references["bridge"] = {
+        "path": str(bridge_reference_path),
+        "sha256": file_sha256(bridge_reference_path),
+        "brier": float(bridge_reference),
+    }
+    history_reference = json.loads(config.history_reference.read_text())
+    primary_arm = config.raw["training"]["primary_history_arm"]
+    causal_reference = history_reference["results"][primary_arm]["brier"]
+    references["causal"] = {
+        "path": str(config.history_reference),
+        "sha256": file_sha256(config.history_reference),
+        "history_arm": primary_arm,
+        "brier": float(causal_reference),
+    }
+
+    families: dict[str, Any] = {}
+    for family in ("bridge", "latent", "causal"):
+        family_frame = _constituent_metric_frame(official, family)
+        metrics = predictive_metrics(family_frame)
+        probability = family_frame["probability_up"].to_numpy()
+        fold_rows = []
+        for fold in (row for row in config.folds if row.official):
+            fold_frame = family_frame.filter(pl.col("fold") == fold.name)
+            fold_metrics = predictive_metrics(fold_frame)
+            fold_std = float(fold_frame["probability_up"].std(ddof=0))
+            fold_rows.append(
+                {
+                    "fold": fold.name,
+                    "rows": fold_frame.height,
+                    "markets": fold_frame["market_id"].n_unique(),
+                    "brier": fold_metrics["brier"],
+                    "directional_accuracy": fold_metrics["directional_accuracy"],
+                    "prediction_std": fold_std,
+                }
+            )
+            minimum(
+                f"{family}.{fold.name}.prediction_std",
+                fold_std,
+                float(settings["minimum_fold_prediction_std"]),
+            )
+            maximum(
+                f"{family}.{fold.name}.brier",
+                float(fold_metrics["brier"]),
+                float(settings["maximum_fold_brier"]),
+            )
+        prediction_std = float(np.std(probability))
+        families[family] = {
+            "metrics": metrics,
+            "prediction_std": prediction_std,
+            "prediction_minimum": float(np.min(probability)),
+            "prediction_maximum": float(np.max(probability)),
+            "folds": fold_rows,
+        }
+        minimum(
+            f"{family}.prediction_std",
+            prediction_std,
+            float(settings["minimum_prediction_std"]),
+        )
+        maximum(
+            f"{family}.brier_vs_empirical_prior",
+            float(metrics["brier"]),
+            prior_brier - float(settings["minimum_brier_advantage_vs_prior"]),
+        )
+        minimum(
+            f"{family}.directional_accuracy",
+            float(metrics["directional_accuracy"]),
+            float(settings["minimum_directional_accuracy"]),
+        )
+
+    maximum(
+        "bridge.reference_brier_degradation",
+        float(families["bridge"]["metrics"]["brier"]),
+        float(bridge_reference)
+        + float(settings["maximum_bridge_reference_brier_degradation"]),
+    )
+    maximum(
+        "causal.reference_brier_degradation",
+        float(families["causal"]["metrics"]["brier"]),
+        float(causal_reference)
+        + float(settings["maximum_causal_reference_brier_degradation"]),
+    )
+    causal_coefficients = [
+        abs(float(fold_models[fold.name]["causal"].calibrator.coef_[0, 0]))
+        for fold in config.folds
+        if fold.official
+    ]
+    minimum(
+        "causal.minimum_calibration_coefficient",
+        min(causal_coefficients),
+        float(settings["minimum_causal_calibration_coefficient"]),
+    )
+    failed = [row for row in gates if row["passed"] is not True]
+    minimum_std = float(settings["minimum_prediction_std"])
+    prior_limit = prior_brier - float(
+        settings["minimum_brier_advantage_vs_prior"]
+    )
+    integrity_failures: list[dict[str, Any]] = []
+    bridge_collapsed = (
+        families["bridge"]["prediction_std"] < minimum_std
+        and families["bridge"]["metrics"]["brier"] > prior_limit
+        and families["bridge"]["metrics"]["brier"]
+        > float(bridge_reference)
+        + float(settings["maximum_bridge_reference_brier_degradation"])
+    )
+    if bridge_collapsed:
+        integrity_failures.append(
+            {
+                "family": "bridge",
+                "reason": "joint probability-collapse and immutable-reference reproduction failure",
+            }
+        )
+    causal_collapsed = (
+        families["causal"]["prediction_std"] < minimum_std
+        and families["causal"]["metrics"]["brier"] > prior_limit
+        and families["causal"]["metrics"]["brier"]
+        > float(causal_reference)
+        + float(settings["maximum_causal_reference_brier_degradation"])
+        and min(causal_coefficients)
+        < float(settings["minimum_causal_calibration_coefficient"])
+    )
+    if causal_collapsed:
+        integrity_failures.append(
+            {
+                "family": "causal",
+                "reason": "joint probability-collapse, calibration-collapse, and immutable-reference reproduction failure",
+            }
+        )
+    latent_collapsed = (
+        families["latent"]["prediction_std"] < minimum_std
+        and families["latent"]["metrics"]["brier"] > prior_limit
+        and families["latent"]["metrics"]["directional_accuracy"]
+        < float(settings["minimum_directional_accuracy"])
+    )
+    if latent_collapsed:
+        integrity_failures.append(
+            {
+                "family": "latent",
+                "reason": "joint probability-collapse and chance-level reproduction failure",
+            }
+        )
+    audit = {
+        "passed": not integrity_failures,
+        "executed_before_ensemble_fitting": True,
+        "poor_performance_alone_is_not_an_integrity_failure": True,
+        "empirical_prior_probability": prior_probability,
+        "empirical_prior_brier": prior_brier,
+        "references": references,
+        "families": families,
+        "causal_calibration_coefficients": causal_coefficients,
+        "gates": gates,
+        "failed_gates": failed,
+        "integrity_failures": integrity_failures,
+    }
+    if integrity_failures:
+        raise RuntimeError(
+            "constituent reproduction integrity failure: "
+            + ", ".join(row["family"] for row in integrity_failures)
+        )
+    return audit
+
+
+def _paired_brier_evidence(
+    control: pl.DataFrame,
+    candidate: pl.DataFrame,
+    config: TournamentConfig,
+    *,
+    comparison: str,
+) -> dict[str, Any]:
+    join_keys = (*KEY_COLUMNS, "fold")
+    paired = (
+        control.select(*join_keys, "label_up", "probability_up")
+        .rename({"probability_up": "control_probability"})
+        .join(
+            candidate.select(*join_keys, "label_up", "probability_up").rename(
+                {
+                    "label_up": "candidate_label_up",
+                    "probability_up": "candidate_probability",
+                }
+            ),
+            on=list(join_keys),
+            how="inner",
+            validate="1:1",
+        )
+    )
+    if paired.height != control.height or paired.height != candidate.height:
+        raise RuntimeError(f"paired evidence lost rows for {comparison}")
+    if paired.filter(pl.col("label_up") != pl.col("candidate_label_up")).height:
+        raise RuntimeError(f"paired evidence labels disagree for {comparison}")
+    per_market = (
+        paired.with_columns(
+            (
+                (pl.col("candidate_probability") - pl.col("label_up")) ** 2
+                - (pl.col("control_probability") - pl.col("label_up")) ** 2
+            ).alias("candidate_minus_control_brier")
+        )
+        .group_by("fold", "market_id")
+        .agg(
+            pl.col("candidate_minus_control_brier").mean(),
+            pl.len().alias("rows"),
+        )
+        .sort("fold", "market_id")
+    )
+    values = per_market["candidate_minus_control_brier"].to_numpy()
+    if not len(values):
+        raise RuntimeError(f"paired evidence has no markets for {comparison}")
+    iterations = int(config.raw["integrity_gates"]["paired_bootstrap_iterations"])
+    seed_offset = int(hashlib.sha256(comparison.encode()).hexdigest()[:8], 16)
+    rng = np.random.default_rng(config.random_seed + seed_offset)
+    bootstrap = np.empty(iterations, dtype=float)
+    for index in range(iterations):
+        selected = rng.integers(0, len(values), size=len(values))
+        bootstrap[index] = float(values[selected].mean())
+    lower, upper = np.quantile(bootstrap, (0.025, 0.975))
+    fold_deltas = [
+        {
+            "fold": row["fold"],
+            "markets": int(row["markets"]),
+            "candidate_minus_control_brier": float(
+                row["candidate_minus_control_brier"]
+            ),
+        }
+        for row in (
+            per_market.group_by("fold")
+            .agg(
+                pl.len().alias("markets"),
+                pl.col("candidate_minus_control_brier").mean(),
+            )
+            .sort("fold")
+        ).iter_rows(named=True)
+    ]
+    improving_folds = sum(
+        row["candidate_minus_control_brier"] < 0 for row in fold_deltas
+    )
+    worsening_folds = sum(
+        row["candidate_minus_control_brier"] > 0 for row in fold_deltas
+    )
+    minimum_effect = float(
+        config.raw["integrity_gates"]["minimum_incremental_brier_effect"]
+    )
+    minimum_folds = int(config.raw["integrity_gates"]["minimum_improving_folds"])
+    point = float(values.mean())
+    if point <= -minimum_effect and upper < 0 and improving_folds >= minimum_folds:
+        status = "positive"
+    elif point >= minimum_effect and lower > 0 and worsening_folds >= minimum_folds:
+        status = "negative"
+    else:
+        status = "not_demonstrated"
+    return {
+        "comparison": comparison,
+        "unit": "market",
+        "markets": per_market.height,
+        "rows": paired.height,
+        "candidate_minus_control_brier": point,
+        "confidence_interval_95pct": {
+            "lower": float(lower),
+            "upper": float(upper),
+            "iterations": iterations,
+            "seed": config.random_seed + seed_offset,
+        },
+        "minimum_effect": minimum_effect,
+        "minimum_consistent_folds": minimum_folds,
+        "improving_folds": improving_folds,
+        "worsening_folds": worsening_folds,
+        "fold_deltas": fold_deltas,
+        "status": status,
+    }
+
+
 def _history_ablation(
     frame: pl.DataFrame,
     config: TournamentConfig,
     checkpoints: CheckpointStore,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     ledgers: list[pl.DataFrame] = []
+    ledger_by_arm: dict[str, pl.DataFrame] = {}
     report: dict[str, Any] = {}
     for arm_index, arm in enumerate(HISTORY_ARMS):
         arm_rows: list[pl.DataFrame] = []
+        arm_weight_audits: list[dict[str, Any]] = []
         for fold_index, fold in enumerate(row for row in config.folds if row.official):
             train_raw = frame.filter(pl.col("window_start") < fold.test_start)
             reliability = _fit_reliability_model(frame, fold.test_start, config)
@@ -2574,6 +3019,13 @@ def _history_ablation(
                 ),
             )
             probability = model.predict(test)
+            arm_weight_audits.append(
+                {
+                    "fold": fold.name,
+                    "fit": model.fit_weight_audit,
+                    "calibration": model.calibration_weight_audit,
+                }
+            )
             arm_rows.append(
                 test.select(*KEY_COLUMNS, "label_up", "target_margin_bps", "label_source").with_columns(
                     pl.Series("probability_up", probability),
@@ -2595,6 +3047,8 @@ def _history_ablation(
             for key, value in metric.items()
             if key in ("rows", "markets", "brier", "log_loss", "expected_calibration_error", "directional_accuracy")
         }
+        report[arm]["training_weight_audits"] = arm_weight_audits
+        ledger_by_arm[arm] = ledger
         ledgers.append(ledger)
     prior = json.loads(config.history_reference.read_text())
     report["immutable_prior_reference"] = {
@@ -2603,11 +3057,21 @@ def _history_ablation(
         "metrics": prior,
         "used_as_prediction_input": False,
     }
-    report["synthetic_incremental_value"] = (
-        "positive"
-        if report["uncertainty_weighted_hybrid"]["brier"] < report["chainlink_reconstructed"]["brier"]
-        else "not_measured"
+    synthetic_evidence = _paired_brier_evidence(
+        ledger_by_arm["chainlink_reconstructed"],
+        ledger_by_arm["uncertainty_weighted_hybrid"],
+        config,
+        comparison="uncertainty_weighted_hybrid_minus_chainlink_reconstructed",
     )
+    settlement_evidence = _paired_brier_evidence(
+        ledger_by_arm["authentic_only"],
+        ledger_by_arm["uncertainty_weighted_hybrid"],
+        config,
+        comparison="uncertainty_weighted_hybrid_minus_authentic_only",
+    )
+    report["synthetic_incremental_value"] = synthetic_evidence["status"]
+    report["synthetic_incremental_evidence"] = synthetic_evidence
+    report["settlement_hypothesis_evidence"] = settlement_evidence
     return pl.concat(ledgers, how="vertical_relaxed"), report
 
 
@@ -3246,7 +3710,7 @@ def _prospective_evaluation(
                 "predictive": predictive_empty,
                 "economic": economic_empty,
                 "tuning_performed": False,
-                "classification": "prospective_evidence_unavailable",
+                "classification": "historically_consumed_holdout_unavailable",
                 "reason": "no complete post-freeze causal path and executable snapshot exists",
             }
             for candidate in CANDIDATE_NAMES
@@ -3261,7 +3725,7 @@ def _prospective_evaluation(
             }
         )
         return empty, empty.clone(), report, {
-            "status": "prospective_evidence_unavailable",
+            "status": "historically_consumed_holdout_unavailable",
             "source_panel": {
                 "schema_version": SOURCE_PANEL_SCHEMA_VERSION,
                 "rows": 0,
@@ -3310,11 +3774,11 @@ def _prospective_evaluation(
             "economic": metrics,
             "tuning_performed": False,
             "classification": (
-                "prospectively_confirmed_edge"
+                "historically_consumed_holdout_edge_replication"
                 if metrics["trades"] > 0
                 and metrics["stressed_expectancy"] > 0
                 and metrics["stressed_pnl"] > 0
-                else "prospective_evidence_not_confirmed"
+                else "historically_consumed_holdout_edge_not_confirmed"
             ),
         }
         if not selected.is_empty():
@@ -3367,12 +3831,41 @@ def _report_markdown(metrics: dict[str, Any]) -> str:
         f"Top historical candidate: `{metrics['ranking'][0]}`.  ",
         f"Synthetic TWAP incremental value: **{metrics['conclusions']['synthetic_twap_incremental_value']}**.  ",
         f"Constituent consensus incremental value: **{metrics['conclusions']['constituent_consensus_incremental_value']}**.",
+        "This is a corrected historical rerun. The frozen August 27–28 holdout was already consumed by the prior run and is not new prospective evidence.",
+        "",
+        "## Constituent reproduction gate",
+        "",
+        "| Family | Brier | Accuracy | Probability std | Reference Brier |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    reproduction = metrics["constituent_reproduction_audit"]
+    for family in ("bridge", "latent", "causal"):
+        row = reproduction["families"][family]
+        reference = reproduction["references"].get(family, {}).get("brier")
+        reference_value = "—" if reference is None else f"{reference:.6f}"
+        lines.append(
+            f"| {family} | {row['metrics']['brier']:.6f} | {row['metrics']['directional_accuracy']:.6f} | {row['prediction_std']:.6f} | {reference_value} |"
+        )
+    synthetic_evidence = metrics["history_ablation"][
+        "synthetic_incremental_evidence"
+    ]
+    consensus_evidence = metrics["conclusions"]["constituent_consensus_evidence"]
+    lines.extend(
+        [
+            "",
+            f"Reproduction gate: **{'passed' if reproduction['passed'] else 'failed'}**. Causal calibration coefficient range: `{min(reproduction['causal_calibration_coefficients']):.6f}`–`{max(reproduction['causal_calibration_coefficients']):.6f}`.",
+            "",
+            "## Paired incremental evidence",
+            "",
+            f"- Synthetic history candidate-minus-control Brier: `{synthetic_evidence['candidate_minus_control_brier']:.6f}`; 95% market-bootstrap CI `{synthetic_evidence['confidence_interval_95pct']['lower']:.6f}` to `{synthetic_evidence['confidence_interval_95pct']['upper']:.6f}`; {synthetic_evidence['improving_folds']}/{len(synthetic_evidence['fold_deltas'])} improving folds; **{synthetic_evidence['status']}**.",
+            f"- Best consensus candidate-minus-bridge Brier: `{consensus_evidence['candidate_minus_control_brier']:.6f}`; 95% market-bootstrap CI `{consensus_evidence['confidence_interval_95pct']['lower']:.6f}` to `{consensus_evidence['confidence_interval_95pct']['upper']:.6f}`; {consensus_evidence['improving_folds']}/{len(consensus_evidence['fold_deltas'])} improving folds; **{consensus_evidence['status']}**.",
         "",
         "## Candidate summary",
         "",
         "| Candidate | Policy | Brier | Log loss | ECE | Accuracy | Margin MAE bps | Coverage | Trades | Active days | Cost mean/max | W/L | Stressed PnL | Stressed expectancy | Profit factor | Recovery wins | Losing streak | Max DD | CVaR 5% | Classification |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
-    ]
+        ]
+    )
     for row in metrics["candidate_summary"]:
         def fmt(value: Any, digits: int = 6) -> str:
             return "—" if value is None else f"{value:.{digits}f}" if isinstance(value, float) else str(value)
@@ -3419,9 +3912,9 @@ def _report_markdown(metrics: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Prospective evidence",
+            "## Frozen holdout replication (historically consumed)",
             "",
-            "The post-freeze batch was loaded only after models and policy choices were frozen; no subsequent tuning or retraining occurred.",
+            "The August 27–28 batch was still loaded only after models and policy choices were frozen, with no subsequent tuning or retraining. Because the prior run already evaluated it, these results are a holdout replication and must not be represented as fresh prospective evidence.",
             "",
             "| Candidate | Policy | Brier | Trades | Stressed PnL | Expectancy | Classification |",
             "|---|---|---:|---:|---:|---:|---|",
@@ -3440,6 +3933,8 @@ def _report_markdown(metrics: dict[str, Any]) -> str:
             "",
             f"- Exact schedule: 25 points at 60–180 seconds; `{metrics['source_panel']['excluded_incomplete_markets']}` incomplete eligible-source markets excluded explicitly.",
             "- All constituent predictions are chronological OOF; preprocessing, missing-column handling, calibration, reliability weighting, and stack fitting occur inside the applicable fold.",
+            f"- Every regularized estimator fit passed `{metrics['training_weight_audits']['normalization']}`: finite nonnegative weights, total equal to rows, and mean equal to one. Full fold-level totals, ranges, effective sample sizes, label-source shares, and entry-band shares are in `metrics.json`.",
+            "- Immutable-reference reproduction and collapse gates ran before any ensemble fitting.",
             "- Coverage and frequency are descriptive only; no coverage gate was applied.",
             "- Profit factor is reported as undefined when no observed loss exists, alongside an exact accuracy interval and an injected stressed-loss result.",
             "- Poor predictive or economic performance is a finding, not an integrity failure.",
@@ -3562,7 +4057,23 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         pl.col("constituent_train_end") > pl.col("prediction_block_start")
     ).height:
         raise RuntimeError("in-sample constituent predictions entered aligned OOF ledger")
-    candidate_oof, _candidate_models = _fit_and_score_candidates(
+    reproduction_audit = checkpoints.value(
+        "constituent-reproduction-audit",
+        {
+            "constituent_oof_identity": _frame_identity(constituent_oof),
+            "integrity_gates": config.raw["integrity_gates"],
+            "references": {
+                "bridge": config.raw["constituents"]["bridge"][
+                    "reference_metrics_sha256"
+                ],
+                "causal": config.raw["source_identity"]["history_reference_sha256"],
+            },
+        },
+        lambda: _constituent_reproduction_audit(
+            constituent_oof, fold_models, config
+        ),
+    )
+    candidate_oof, candidate_models = _fit_and_score_candidates(
         constituent_oof, config, checkpoints
     )
     history_ledger, history_report = _history_ablation(frame, config, checkpoints)
@@ -3688,24 +4199,39 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         best_policies,
     )
     prospective_audit["partition_verification"] = prospective_partition_verification
+    prospective_audit["historical_evidence_consumed"] = True
+    prospective_audit["fresh_prospective_evidence"] = False
 
-    bridge_economic = economics["frozen_bridge_control"][best_policies["frozen_bridge_control"]]
-    top_ensemble = ranking[0]
+    bridge_economic = economics["frozen_bridge_control"][
+        best_policies["frozen_bridge_control"]
+    ]
+    top_ensemble = next(
+        name for name in ranking if name != "frozen_bridge_control"
+    )
     top_economic = economics[top_ensemble][best_policies[top_ensemble]]
+    consensus_evidence = _paired_brier_evidence(
+        official_predictions.filter(
+            pl.col("candidate") == "frozen_bridge_control"
+        ),
+        official_predictions.filter(pl.col("candidate") == top_ensemble),
+        config,
+        comparison=f"{top_ensemble}_minus_frozen_bridge_control",
+    )
     consensus_value = (
         "positive"
-        if top_ensemble != "frozen_bridge_control"
-        and predictive[top_ensemble]["brier"] < predictive["frozen_bridge_control"]["brier"]
-        and top_economic["stressed_expectancy"] > bridge_economic["stressed_expectancy"]
-        else "not_measured"
+        if consensus_evidence["status"] == "positive"
+        and top_economic["stressed_expectancy"]
+        > bridge_economic["stressed_expectancy"]
+        else "not_demonstrated"
     )
     conclusions = {
         "synthetic_twap_incremental_value": history_report["synthetic_incremental_value"],
         "constituent_consensus_incremental_value": consensus_value,
+        "constituent_consensus_evidence": consensus_evidence,
         "settlement_hypothesis": (
             "supported"
-            if history_report["uncertainty_weighted_hybrid"]["brier"]
-            < history_report["authentic_only"]["brier"]
+            if history_report["settlement_hypothesis_evidence"]["status"]
+            == "positive"
             else "not_supported"
         ),
         "ensemble_hypothesis": "supported" if consensus_value == "positive" else "not_supported",
@@ -3798,6 +4324,7 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         "source_panel": source_panel_manifest,
         "split_manifest": split_manifest,
         "integrity": integrity,
+        "constituent_reproduction_audit": reproduction_audit,
         "synthetic_reliability": reliability_preflight,
         "predictive": predictive,
         "history_ablation": history_report,
@@ -3810,9 +4337,50 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         "prospective": prospective,
         "conclusions": conclusions,
         "parity": parity,
+        "training_weight_audits": {
+            "normalization": WEIGHT_NORMALIZATION,
+            "constituent_oof": {
+                fold_name: {
+                    family: {
+                        "fit": bundle.fit_weight_audit,
+                        "calibration": bundle.calibration_weight_audit,
+                    }
+                    for family, bundle in models.items()
+                    if isinstance(bundle, TreeBundle)
+                }
+                for fold_name, models in fold_models.items()
+            },
+            "candidate_oof": {
+                fold_name: {
+                    name: {
+                        "fit": bundle.fit_weight_audit,
+                        "calibration": bundle.calibration_weight_audit,
+                    }
+                    for name, bundle in models.items()
+                }
+                for fold_name, models in candidate_models.items()
+            },
+            "final_constituents": {
+                family: {
+                    "fit": bundle.fit_weight_audit,
+                    "calibration": bundle.calibration_weight_audit,
+                }
+                for family, bundle in final_constituents.items()
+                if isinstance(bundle, TreeBundle)
+            },
+            "final_candidates": {
+                name: {
+                    "fit": bundle.fit_weight_audit,
+                    "calibration": bundle.calibration_weight_audit,
+                }
+                for name, bundle in final_challengers.items()
+            },
+        },
         "qualification_status": summary[next(index for index, row in enumerate(summary) if row["candidate"] == ranking[0])]["classification"],
         "deployment_status": "not_deployed_training_only",
         "runtime_exported": False,
+        "historical_evidence_consumed": True,
+        "corrected_historical_rerun": True,
         "database_mutations": False,
         "new_tables": False,
         "new_ingesters": False,
@@ -3840,8 +4408,17 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         "split_manifest_sha256": split_manifest["sha256"],
         "configuration_sha256": config_sha,
         "constituent_tags": artifact["constituent_tags"],
+        "correction_identity": {
+            "prior_defective_model_tag": config.raw["training"][
+                "prior_defective_model_tag"
+            ],
+            "weight_normalization": WEIGHT_NORMALIZATION,
+            "bridge_max_bins": config.bridge_spec.max_bins,
+            "causal_max_bins": config.causal_spec.max_bins,
+            "historical_evidence_consumed": True,
+        },
         "qualification_status": metrics["qualification_status"],
-        "prospective_status": {
+        "historically_consumed_holdout_status": {
             name: prospective[name]["classification"] for name in CANDIDATE_NAMES
         },
         "deployment_status": "not_deployed_training_only",
@@ -3857,6 +4434,7 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
             "aligned_oof_sha256": file_sha256(ledgers / "aligned-constituent-oof.parquet"),
             "strictly_earlier": True,
             "row_count": constituent_oof.height,
+            "reproduction_audit": reproduction_audit,
         },
     )
     _write_json(

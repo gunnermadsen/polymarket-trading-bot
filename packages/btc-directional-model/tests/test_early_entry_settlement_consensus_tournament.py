@@ -22,9 +22,12 @@ from btc_directional_model.early_entry_settlement_consensus_tournament import (
     _fit_nonnegative_logit,
     _json_default,
     _latent_filter,
+    _market_band_weights,
     _market_schedule_audit,
     _opportunity_panel,
+    _paired_brier_evidence,
     _select_one_trade_per_market,
+    _training_weight_audit,
     economic_metrics,
     load_config,
 )
@@ -47,6 +50,86 @@ def test_frozen_config_has_exact_rosters_and_boundaries() -> None:
     assert config.prospective_end == datetime(2026, 8, 28, tzinfo=UTC)
     assert config.raw["training"]["training_only"] is True
     assert config.raw["training"]["runtime_exported"] is False
+    assert config.raw["training"]["corrected_historical_rerun"] is True
+    assert config.raw["training"]["historical_evidence_consumed"] is True
+    assert config.bridge_spec.max_bins == 127
+    assert config.causal_spec.max_bins == 255
+
+
+def test_market_band_training_weights_are_mean_one_and_audited() -> None:
+    rows = []
+    for market_index, history_weight in enumerate((1.0, 0.4, 0.8)):
+        for second in ENTRY_SECONDS:
+            rows.append(
+                {
+                    "market_id": f"market-{market_index}",
+                    "seconds_elapsed": second,
+                    "history_weight": history_weight,
+                    "label_source": "authentic" if market_index == 0 else "synthetic",
+                }
+            )
+    frame = pl.DataFrame(rows)
+    weights = _market_band_weights(frame)
+    np.testing.assert_allclose(weights.mean(), 1.0, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(weights.sum(), frame.height, rtol=1e-12, atol=1e-12)
+    audit = _training_weight_audit(frame, weights)
+    assert audit["passed"] is True
+    assert audit["normalization"] == "mean_one_market_band_equal_v1"
+    assert audit["rows"] == frame.height
+    assert audit["markets"] == 3
+    assert audit["effective_sample_size"] > 0
+    assert sum(row["weight_share"] for row in audit["by_label_source"]) == pytest.approx(1.0)
+    assert sum(row["weight_share"] for row in audit["by_entry_band"]) == pytest.approx(1.0)
+
+
+def test_training_weight_audit_rejects_unit_total_scaling() -> None:
+    frame = pl.DataFrame(
+        {
+            "market_id": ["one", "two"],
+            "seconds_elapsed": [60, 60],
+            "label_source": ["authentic", "synthetic"],
+        }
+    )
+    with pytest.raises(RuntimeError, match="mean-one normalization"):
+        _training_weight_audit(frame, np.array([0.5, 0.5]))
+
+
+def test_paired_incremental_evidence_requires_effect_ci_and_fold_consistency() -> None:
+    config = load_config(CONFIG)
+    rows = []
+    for fold_index, fold in enumerate(row for row in config.folds if row.official):
+        for market_index in range(20):
+            label = market_index % 2
+            window_start = fold.test_start + timedelta(minutes=5 * market_index)
+            rows.append(
+                {
+                    "market_id": f"{fold.name}-{market_index}",
+                    "window_start": window_start,
+                    "observed_at": window_start + timedelta(seconds=60),
+                    "seconds_elapsed": 60,
+                    "fold": fold.name,
+                    "label_up": label,
+                    "probability_up": 0.60 if label else 0.40,
+                }
+            )
+    control = pl.DataFrame(rows)
+    candidate = control.with_columns(
+        pl.when(pl.col("label_up") == 1)
+        .then(pl.lit(0.80))
+        .otherwise(pl.lit(0.20))
+        .alias("probability_up")
+    )
+    evidence = _paired_brier_evidence(
+        control, candidate, config, comparison="unit-test-positive"
+    )
+    assert evidence["status"] == "positive"
+    assert evidence["candidate_minus_control_brier"] < 0
+    assert evidence["confidence_interval_95pct"]["upper"] < 0
+    assert evidence["improving_folds"] == 6
+    unchanged = _paired_brier_evidence(
+        control, control, config, comparison="unit-test-unchanged"
+    )
+    assert unchanged["status"] == "not_demonstrated"
 
 
 def test_report_json_encoder_supports_calendar_dates() -> None:
