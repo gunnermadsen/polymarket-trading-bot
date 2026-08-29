@@ -166,6 +166,34 @@ then compact PMXT execution snapshots. Binance aggregate trades and authenticate
 reports are optional for separate research and do not gate strategy readiness. No ingester is
 automatically executed by deployment or migration.
 
+## BTC model training dimensions and continuity
+
+The BTC model training code reads the relations below. Historical backfill tables and live
+capture tables are separate physical sources and must retain their source and artifact lineage.
+A historical artifact watermark is not the dataset watermark when an approved live relation
+continues the same dimension. Dataset extraction may combine the listed historical and live
+relations only where the training SQL explicitly implements that union and preserves causality,
+deduplication, and source identity.
+
+This inventory was verified against the training readers and database state on 2026-08-29. The
+coverage observations are UTC and describe the August 26 through August 28 watermark extension.
+
+| Training dimension | Training relation(s) | Continuity through 2026-08-28 | Known gaps and handling |
+|---|---|---|---|
+| Binance BTCUSDT one-second Klines/OHLCV | `polymarket.binance_one_second_klines`; newer union-aware readers also use `market_data.binance_spot_btcusdt_one_second_ohlcv` | Historical artifacts are complete through August 26. The live table contains exactly 86,400 rows on both August 27 and August 28. | The live gap ledger records 507 detected Kline gaps through the audit time. All are `repaired` using closed Binance REST Klines; no unresolved Kline gap remains. |
+| Binance BTCUSDT aggregate trades | `polymarket.binance_aggregate_trades`; live continuation is `market_data.binance_spot_btcusdt_aggregate_trades` | Historical artifacts are complete through August 25. Live aggregate-trade IDs continue across August 26-28 without a day-boundary discontinuity. | The ledger records 234 repaired ID jumps. One interval, cursors `4047408261` through `4047408428`, remains marked `repairing`, although all 168 inclusive IDs are already present in the live table. Treat this as an unresolved ledger transition until its status is reconciled, not as evidence that rows are currently absent. |
+| Binance BTCUSDT five-minute futures open interest | `polymarket.binance_btcusdt_five_minute_open_interest`; union-aware readers also use `market_data.binance_futures_btcusdt_open_interest` | Historical artifacts are complete through August 26. The live table contains exactly 288 five-minute observations on both August 27 and August 28. | One discontinuity from August 10 through August 13 was repaired. No unresolved OI gap is recorded. |
+| Binance spot BTCUSDT L2 features | `polymarket.binance_spot_btcusdt_l2_training_features`, derived from `polymarket.binance_spot_btcusdt_l2_one_second_features` | The latest completed historical feature artifact is August 1. `market_data.binance_spot_btcusdt_l2_snapshots` continues raw live spot-L2 capture, but it is not a drop-in replacement for the materialized training feature contract. | Live capture contains unrecoverable transport and sampling gaps: 87 sampling-slot gaps plus 388 recorded snapshot, connection, close, read, and timeout interruptions. Extending L2 training coverage requires the historical spot-L2 feature materializer and its quality/lineage checks; raw live snapshots alone do not advance the feature watermark. Futures-L2 relations are excluded because the current BTC training readers use the spot-L2 contract. |
+| Polygon Chainlink BTC/USD oracle rounds | `polymarket.polygon_chainlink_btcusd_oracle_rounds`; union-aware readers also use `market_data.polygon_chainlink_btcusd_oracle_rounds` | Historical artifacts extend through August 25. Live coverage contains 2,597 rounds on August 27 and 2,637 on August 28 and continues into August 29. | No oracle gap-ledger record exists. Daily counts are event-driven and are not expected to equal a fixed cadence. |
+| Chainlink BTC/USD one-minute OHLC | `polymarket.chainlink_btcusd_one_minute_candles` | The historical relation is complete through August 26. The companion live relation `market_data.chainlink_btcusd_one_minute_candles` contains exactly 1,440 rows on both August 27 and August 28, but legacy training SQL must be made union-aware before that live continuation is consumed. | The live ingester recorded 295 historical candle gaps, all repaired. No unresolved OHLC gap remains. |
+| Chainlink BTC/USD reference price | Legacy configurations use `polymarket.chainlink_btcusd_archive_ticks`; current RefPrice training uses `market_data.chainlink_btcusd_reference_prices` filtered to the required `source` | The legacy archive artifact extends through August 26. The canonical source-aware relation spans all of August 27 and August 28 and continues into August 29. | Nine short source-time discontinuities on August 10 are marked `unrecoverable`. No August 27-28 RefPrice gap is recorded. Rows from different providers must not be collapsed without retaining `source`, report identity, and availability time. |
+| Chainlink BTC/USD TWAP-30 and TWAP-60 | Historical training and label readers use `market_data.pmdata_chainlink_btcusd_twap`; live observations are in `market_data.polymarket_chainlink_btcusd_twap` | PMData artifacts extend through August 26. The live relation spans August 27 and August 28, but span alone does not establish complete coverage. | The live RTDS ledger contains unrecoverable closes, connection failures/timeouts, read failures, stale-window events, decode failures, and one artifact-batch failure. PMData daily shards for August 27 and August 28 are the appropriate optional supplement when the training or label contract requires maximum TWAP coverage. The two providers must remain lineage-distinct and be deduplicated according to the training query's explicit precedence rule. |
+
+The control and evidence relations used to assess these dimensions are
+`ingester.profiles`, `ingester.data_gaps`, `polymarket.backfill_jobs`,
+`polymarket.backfill_job_events`, and `polymarket.backfill_artifacts`. They are operational
+metadata, not model features. Staging tables are likewise excluded from training inputs.
+
 ## Canonical orderbook training source
 
 `polymarket.btc_market_execution_snapshots` is the canonical durable source for historical BTC
