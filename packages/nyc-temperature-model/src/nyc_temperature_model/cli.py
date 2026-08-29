@@ -12,7 +12,20 @@ from .benchmark import run_benchmark
 from .challenger_tournament import run_challenger_tournament
 from .config import Settings
 from .database import connection
+from .environment_snapshot import audit_environment_coverage, export_environment_snapshot
 from .execution_ingestion import ingest_pmxt_execution
+from .goes_ingestion import FEATURE_SCHEMA_VERSION as GOES_FEATURE_VERSION
+from .goes_ingestion import PRODUCTS as GOES_PRODUCTS
+from .goes_ingestion import (
+    SCAN_OFFSETS_MINUTES,
+    ingest_goes,
+)
+from .hrrr_environment_ingestion import (
+    FEATURE_SCHEMA_VERSION as HRRR_ENVIRONMENT_FEATURE_VERSION,
+)
+from .hrrr_environment_ingestion import (
+    ingest_hrrr_environment,
+)
 from .hrrr_ingestion import ingest_hrrr
 from .jobs import (
     SUPPORTED_INGESTERS,
@@ -34,6 +47,8 @@ HANDLERS = {
     "asos_resolution_observations": ingest_asos_resolution,
     "asos_one_minute_observations": ingest_asos_one_minute,
     "hrrr_point_forecasts": ingest_hrrr,
+    "goes_abi_klga_features": ingest_goes,
+    "hrrr_environment_features": ingest_hrrr_environment,
     "pmxt_temperature_execution": ingest_pmxt_execution,
 }
 
@@ -92,6 +107,71 @@ def _model_path(settings: Settings, model_run_id: str) -> Path:
     return Path(row["model_uri"])
 
 
+def _enqueue_environment_months(
+    settings: Settings,
+    ranges: list[tuple[date, date]],
+    *,
+    retry_recorded_missing: bool = False,
+) -> list[dict[str, str]]:
+    jobs = []
+    product_keys = ",".join(product.key for product in GOES_PRODUCTS)
+    offsets = ",".join(str(value) for value in SCAN_OFFSETS_MINUTES)
+    radii = "25,50,100"
+    retry_statuses = ["download_failure", "processing_failure"]
+    retry_suffix = ""
+    if retry_recorded_missing:
+        retry_statuses.extend(["missing_source", "satellite_transition_issue"])
+        retry_suffix = ":recorded-retry-v1"
+    for range_start, range_end in ranges:
+        goes_job = enqueue(
+            settings.database_url,
+            ingester_key="goes_abi_klga_features",
+            range_start=_utc_day(range_start),
+            range_end=_utc_day(range_end),
+            parameters={
+                "feature_schema_version": GOES_FEATURE_VERSION,
+                "products": [product.key for product in GOES_PRODUCTS],
+                "scan_offsets": list(SCAN_OFFSETS_MINUTES),
+                "radii_km": [25, 50, 100],
+                "retry_statuses": retry_statuses,
+            },
+            idempotency_key=(
+                f"klga-goes:{range_start}:{range_end}:products={product_keys}:"
+                f"offsets={offsets}:radii={radii}:{GOES_FEATURE_VERSION}{retry_suffix}"
+            ),
+        )
+        jobs.append({"ingester": "goes_abi_klga_features", "job_id": goes_job})
+        hrrr_job = enqueue(
+            settings.database_url,
+            ingester_key="hrrr_environment_features",
+            range_start=_utc_day(range_start),
+            range_end=_utc_day(range_end),
+            parameters={
+                "feature_schema_version": HRRR_ENVIRONMENT_FEATURE_VERSION,
+                "availability_lag_minutes": 75,
+                "fields": [
+                    "total_cloud_cover",
+                    "downward_shortwave_radiation",
+                    "dew_point_2m",
+                    "wind_u_10m",
+                    "wind_v_10m",
+                    "boundary_layer_height",
+                    "accumulated_precipitation",
+                    "composite_reflectivity",
+                    "temperature_2m",
+                ],
+                "radii_km": [0, 25, 50, 100],
+                "retry_statuses": retry_statuses,
+            },
+            idempotency_key=(
+                f"klga-hrrr-environment:{range_start}:{range_end}:fields=frozen-v1:"
+                f"lag75:radii=0,{radii}:{HRRR_ENVIRONMENT_FEATURE_VERSION}{retry_suffix}"
+            ),
+        )
+        jobs.append({"ingester": "hrrr_environment_features", "job_id": hrrr_job})
+    return jobs
+
+
 def _readiness(settings: Settings) -> dict:
     with connection(settings.database_url) as conn:
         return conn.execute(
@@ -143,6 +223,19 @@ def build_parser() -> argparse.ArgumentParser:
     pilot.add_argument("--weather-start", type=_date, default=date(2019, 1, 1))
     pilot.add_argument("--market-start", type=_date, default=date(2025, 9, 1))
     pilot.add_argument("--end", type=_date, default=datetime.now(UTC).date() + timedelta(days=1))
+    subparsers.add_parser("enqueue-environment-pilot")
+    environment_backfill = subparsers.add_parser("enqueue-environment-backfill")
+    environment_backfill.add_argument(
+        "--segment", required=True, choices=("history", "calibration", "tournament")
+    )
+    environment_backfill.add_argument("--retry-recorded-missing", action="store_true")
+    environment_snapshot = subparsers.add_parser("export-environment-snapshot")
+    environment_snapshot.add_argument("--start", type=_date, default=date(2019, 1, 1))
+    environment_snapshot.add_argument("--end", type=_date, default=date(2026, 8, 10))
+    environment_snapshot.add_argument("--snapshot-id", required=True)
+    environment_audit = subparsers.add_parser("audit-environment")
+    environment_audit.add_argument("--start", type=_date, default=date(2019, 1, 1))
+    environment_audit.add_argument("--end", type=_date, default=date(2026, 8, 10))
     reconcile = subparsers.add_parser("reconcile-labels")
     reconcile.add_argument("--start", required=True, type=_date)
     reconcile.add_argument("--end", required=True, type=_date)
@@ -293,6 +386,47 @@ def main() -> None:
                 )
                 jobs.append({"ingester": "pmxt_temperature_execution", "job_id": pmxt_job})
         result = {"jobs": jobs, "count": len(jobs)}
+    elif args.command == "enqueue-environment-pilot":
+        pilot_ranges = []
+        for pilot_start, pilot_end in (
+            (date(2024, 1, 1), date(2024, 2, 1)),
+            (date(2024, 7, 1), date(2024, 8, 1)),
+            (date(2025, 4, 1), date(2025, 5, 1)),
+        ):
+            pilot_ranges.extend(_month_ranges(pilot_start, pilot_end))
+        jobs = _enqueue_environment_months(settings, pilot_ranges)
+        result = {
+            "jobs": jobs,
+            "count": len(jobs),
+            "coverage_intent": ["winter", "summer", "cloudy", "clear", "goes_transition"],
+        }
+    elif args.command == "enqueue-environment-backfill":
+        segments = {
+            "history": (date(2019, 1, 1), date(2025, 1, 1)),
+            "calibration": (date(2025, 1, 1), date(2026, 1, 1)),
+            "tournament": (date(2026, 1, 1), date(2026, 8, 10)),
+        }
+        segment_start, segment_end = segments[args.segment]
+        jobs = _enqueue_environment_months(
+            settings,
+            list(_month_ranges(segment_start, segment_end)),
+            retry_recorded_missing=args.retry_recorded_missing,
+        )
+        result = {
+            "segment": args.segment,
+            "retry_recorded_missing": args.retry_recorded_missing,
+            "jobs": jobs,
+            "count": len(jobs),
+        }
+    elif args.command == "export-environment-snapshot":
+        result = export_environment_snapshot(
+            settings,
+            start=args.start,
+            end=args.end,
+            snapshot_id=args.snapshot_id,
+        )
+    elif args.command == "audit-environment":
+        result = audit_environment_coverage(settings, start=args.start, end=args.end)
     elif args.command == "reconcile-labels":
         result = reconcile_labels(settings, args.start, args.end)
     elif args.command == "train":
