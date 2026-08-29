@@ -1,0 +1,227 @@
+{
+  "historical_panel_sha256": "018ab133b9f926eff36f1770e565b87dcec97c21bc5e74c29ce9099ea6fe6d36",
+  "prospective_audit": {
+    "fresh_prospective_evidence": false,
+    "historical_evidence_consumed": true,
+    "integrity": "not_applicable_no_complete_post_freeze_market",
+    "loaded_after_models_and_policies_frozen": true,
+    "partition_verification": {
+      "binance": {
+        "manifest": "binance-manifest.json",
+        "manifest_sha256": "1a20cc7bec77c85eb65b432a3db5835f3a16da412f22ff5bbac030cb2f2ce137",
+        "verified_bytes": 104423306,
+        "verified_partitions": 160
+      },
+      "passed": true,
+      "source": {
+        "manifest": "source-manifest.json",
+        "manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4",
+        "verified_bytes": 1005040438,
+        "verified_partitions": 960
+      }
+    },
+    "source_panel": {
+      "excluded_incomplete_markets": 288,
+      "markets": 0,
+      "observation_seconds": [
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+        105,
+        110,
+        115,
+        120,
+        125,
+        130,
+        135,
+        140,
+        145,
+        150,
+        155,
+        160,
+        165,
+        170,
+        175,
+        180
+      ],
+      "rows": 0,
+      "schema_version": "btc-early-entry-settlement-consensus-panel-v1"
+    },
+    "status": "historically_consumed_holdout_unavailable",
+    "tuning_performed": false
+  },
+  "schema_version": "btc-early-entry-settlement-consensus-source-manifest-v1",
+  "source_panel": {
+    "database_mutations": false,
+    "excluded_incomplete_markets": 0,
+    "markets": 41814,
+    "new_data_sources": false,
+    "new_ingesters": false,
+    "new_tables": false,
+    "observation_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180
+    ],
+    "rows": 1045350,
+    "schema_version": "btc-early-entry-settlement-consensus-panel-v1",
+    "source_frame_sha256": "bdb1e49e640758fb64643304435f7b77613187c815cfb6f5e5cb350108f42f55"
+  },
+  "source_preflight": {
+    "constituent_bridge": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/tournament.joblib",
+      "artifact_sha256": "6f7936a7bc830321fa5cf0740bb9ccd101002c33e54752d4648ac993a7dca027",
+      "passed": true,
+      "recording_commit": "ab38546a71a127c6ee015f9ef6d34acb92a21eb2",
+      "reference_metrics_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/metrics.json",
+      "reference_metrics_sha256": "1b22f6dfd93418dd26b3fd96b9ba80f8edc0cc5d4ece2701d1ac2bd4f5c2c5ff",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/src/btc_directional_model/settlement_bridge_residual_tournament.py",
+      "source_sha256": "ccb3bc2a9cfb241043b712731dff349c37fae4d1a26fd45d8295cda3c7848407",
+      "tag": "model/btc-5m-settlement-bridge-residual-freeze-20260828-run-20260828T204616Z"
+    },
+    "constituent_causal": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/training-results/btc-5m-causal-twap-attribution-20260607-20260828/20260828T165228Z/tournament.joblib",
+      "artifact_sha256": "bfbb7ddfd77a947f2d17cb5258b6a18e60094b14f19748e4cb732ad56bd0349d",
+      "passed": true,
+      "recording_commit": "ab634723e12c8d916921ec694e8d18b250095cd2",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_tournament.py",
+      "source_sha256": "d659c53818851cae578c41cc1009683c37fe7af370994ca76cd2e73a948dc81e",
+      "tag": "model/btc-5m-counterfactual-twap-state-causal-attribution-20260607-20260826-20260828T165228Z"
+    },
+    "constituent_latent": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-latent-twap-settlement-risk/packages/btc-directional-model/training-results/btc-5m-latent-twap-settlement-risk-20260607-20260828/20260828T174703Z/model-family.joblib",
+      "artifact_sha256": "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80",
+      "passed": true,
+      "recording_commit": "e1eb28d68999503b34cad5344ddb40b33036520f",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-latent-twap-settlement-risk/packages/btc-directional-model/src/btc_directional_model/latent_twap_state_space.py",
+      "source_sha256": "7a2243736debfb3f38eb5d32b6eb1fe0efb6a0a4358eb75dee092ab88bcbbd78",
+      "tag": "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+    },
+    "historical_binance_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/binance-manifest.json",
+      "sha256": "e8fd4c39830f6d4c778fc415be38952d0434200a8d45ded4d72dbce793140fab"
+    },
+    "historical_binance_partitions": {
+      "manifest": "binance-manifest.json",
+      "manifest_sha256": "e8fd4c39830f6d4c778fc415be38952d0434200a8d45ded4d72dbce793140fab",
+      "verified_bytes": 104419582,
+      "verified_partitions": 159
+    },
+    "historical_frame": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/tournament-frame.parquet",
+      "sha256": "bdb1e49e640758fb64643304435f7b77613187c815cfb6f5e5cb350108f42f55"
+    },
+    "historical_label_audit": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/label-audit.parquet",
+      "sha256": "991d58ff265334528a7b61748ae77ddc07fa36b2933b136dd76ad88f7b578379"
+    },
+    "historical_partitions": {
+      "manifest": "source-manifest.json",
+      "manifest_sha256": "3ff80d230820756760eae6fb5cb254ecb85acc391fb7479303af7e45eaab4e94",
+      "verified_bytes": 1004987458,
+      "verified_partitions": 954
+    },
+    "historical_source_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/source-manifest.json",
+      "sha256": "3ff80d230820756760eae6fb5cb254ecb85acc391fb7479303af7e45eaab4e94"
+    },
+    "history_reference": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/training-results/btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z/historical-source-bakeoff.json",
+      "sha256": "02a83a229110987b2d56092ba1df62f9d2a68ce5ef12bf7b4dceff650eadca67"
+    },
+    "passed": true,
+    "prospective_binance_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/binance-manifest.json",
+      "sha256": "1a20cc7bec77c85eb65b432a3db5835f3a16da412f22ff5bbac030cb2f2ce137"
+    },
+    "prospective_frame": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/tournament-frame.parquet",
+      "sha256": "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26"
+    },
+    "prospective_source_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/source-manifest.json",
+      "sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+    },
+    "source_code": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_data.py",
+      "sha256": "584db15c135554b5f0355a5765addb13c5f1b46cd706f2f1f64f866ae63ea4c1"
+    },
+    "source_contracts": {
+      "historical": {
+        "completed_artifacts_only": true,
+        "current_start": "2026-03-21T00:00:00+00:00",
+        "database_mutations": false,
+        "queries": {
+          "candles": "192ec837ada3e7ee94e44ee137d319be1471a304382bc070fece5a481259f3cf",
+          "core_current": "7a47a0c651523bff403e246979ac015feecb32f8116bb2fb2aed6b66b3355ad6",
+          "execution": "da0a74d049d1d09fb4fec98882f384fa2dc6f9fe9f5152b42f88cdf99823e09b",
+          "labels": "4dc8231ece518a4c85a4d5448bae9d574b22b9a4e32ba0abef91b445b38bc682",
+          "oracle": "78f2316fb848afcaf0b25ce6460a8b6657f095c8257f52351add70e928d65a47",
+          "refprice": "1c84fd3e22cf495e1b3466bb63e65d0882eee8605754e2bb284bbe818e15bb76"
+        },
+        "range_end": "2026-08-27T00:00:00+00:00",
+        "range_start": "2026-03-21T00:00:00+00:00",
+        "read_only": true,
+        "schema_version": "btc-twap60-training-source-cache-v1"
+      },
+      "passed": true,
+      "prospective": {
+        "completed_artifacts_only": true,
+        "current_start": "2026-03-21T00:00:00+00:00",
+        "database_mutations": false,
+        "queries": {
+          "candles": "192ec837ada3e7ee94e44ee137d319be1471a304382bc070fece5a481259f3cf",
+          "core_current": "7a47a0c651523bff403e246979ac015feecb32f8116bb2fb2aed6b66b3355ad6",
+          "execution": "da0a74d049d1d09fb4fec98882f384fa2dc6f9fe9f5152b42f88cdf99823e09b",
+          "labels": "4dc8231ece518a4c85a4d5448bae9d574b22b9a4e32ba0abef91b445b38bc682",
+          "oracle": "78f2316fb848afcaf0b25ce6460a8b6657f095c8257f52351add70e928d65a47",
+          "refprice": "1c84fd3e22cf495e1b3466bb63e65d0882eee8605754e2bb284bbe818e15bb76"
+        },
+        "range_end": "2026-08-28T00:00:00+00:00",
+        "range_start": "2026-03-21T00:00:00+00:00",
+        "read_only": true,
+        "schema_version": "btc-twap60-training-source-cache-v1"
+      }
+    }
+  }
+}

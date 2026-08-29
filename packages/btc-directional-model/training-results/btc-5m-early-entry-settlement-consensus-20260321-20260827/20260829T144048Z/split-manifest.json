@@ -1,0 +1,82 @@
+{
+  "folds": [
+    {
+      "name": "counterfactual_20260801_06",
+      "official": false,
+      "test_end": "2026-08-07T00:00:00+00:00",
+      "test_start": "2026-08-01T00:00:00+00:00"
+    },
+    {
+      "name": "transition_20260807_13",
+      "official": false,
+      "test_end": "2026-08-14T00:00:00+00:00",
+      "test_start": "2026-08-07T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260814_15",
+      "official": true,
+      "test_end": "2026-08-16T00:00:00+00:00",
+      "test_start": "2026-08-14T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260816_17",
+      "official": true,
+      "test_end": "2026-08-18T00:00:00+00:00",
+      "test_start": "2026-08-16T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260818_19",
+      "official": true,
+      "test_end": "2026-08-20T00:00:00+00:00",
+      "test_start": "2026-08-18T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260820_21",
+      "official": true,
+      "test_end": "2026-08-22T00:00:00+00:00",
+      "test_start": "2026-08-20T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260822_23",
+      "official": true,
+      "test_end": "2026-08-24T00:00:00+00:00",
+      "test_start": "2026-08-22T00:00:00+00:00"
+    },
+    {
+      "name": "official_20260824_26",
+      "official": true,
+      "test_end": "2026-08-27T00:00:00+00:00",
+      "test_start": "2026-08-24T00:00:00+00:00"
+    }
+  ],
+  "market_level": true,
+  "observation_seconds": [
+    60,
+    65,
+    70,
+    75,
+    80,
+    85,
+    90,
+    95,
+    100,
+    105,
+    110,
+    115,
+    120,
+    125,
+    130,
+    135,
+    140,
+    145,
+    150,
+    155,
+    160,
+    165,
+    170,
+    175,
+    180
+  ],
+  "schema_version": "btc-early-entry-settlement-consensus-split-v1",
+  "sha256": "7fc804bd83f8ecd13fb4fd8788e91a22d49f943d476c9aa98a814230d006ba7b"
+}

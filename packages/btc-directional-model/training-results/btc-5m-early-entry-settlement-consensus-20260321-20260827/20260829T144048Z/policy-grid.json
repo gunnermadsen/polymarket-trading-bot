@@ -1,0 +1,46 @@
+{
+  "frozen_before_evaluation": true,
+  "policies": [
+    {
+      "maximum_debit": 1.0,
+      "maximum_loss_recovery_wins": 100.0,
+      "minimum_consensus": 0.0,
+      "minimum_stressed_edge": 0.055,
+      "name": "probability_edge_control",
+      "require_margin_excludes_zero": false,
+      "slippage_reserve": 0.01,
+      "uncertainty_reserve_scale": 0.0
+    },
+    {
+      "maximum_debit": 0.72,
+      "maximum_loss_recovery_wins": 100.0,
+      "minimum_consensus": 0.0,
+      "minimum_stressed_edge": 0.045,
+      "name": "edge_maximum_debit",
+      "require_margin_excludes_zero": false,
+      "slippage_reserve": 0.01,
+      "uncertainty_reserve_scale": 0.0
+    },
+    {
+      "maximum_debit": 0.75,
+      "maximum_loss_recovery_wins": 100.0,
+      "minimum_consensus": 0.6666666666666666,
+      "minimum_stressed_edge": 0.035,
+      "name": "edge_uncertainty_margin",
+      "require_margin_excludes_zero": true,
+      "slippage_reserve": 0.01,
+      "uncertainty_reserve_scale": 0.0025
+    },
+    {
+      "maximum_debit": 0.62,
+      "maximum_loss_recovery_wins": 2.5,
+      "minimum_consensus": 0.6666666666666666,
+      "minimum_stressed_edge": 0.03,
+      "name": "edge_loss_compensation_tail_risk",
+      "require_margin_excludes_zero": true,
+      "slippage_reserve": 0.015,
+      "uncertainty_reserve_scale": 0.0035
+    }
+  ],
+  "sha256": "501c8cdb8b066d4272a7dad48628df9d7007eb97b53b8341b4f122faca7d8029"
+}

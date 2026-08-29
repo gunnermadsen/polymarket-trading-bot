@@ -2673,16 +2673,16 @@ impl IngestionExecutor {
             let logical_key = self.config.chainlink_candlesticks.logical_key(date);
             let source_uri = self.config.chainlink_candlesticks.source_uri(date);
             progress.current_logical_key = Some(logical_key.clone());
-            let prepared = self
+            let mut prepared = self
                 .repository
                 .prepare_artifact(
                     claim,
                     &ArtifactSpec {
                         job_id: claim.job.job_id,
                         ingester: IngesterKey::ChainlinkBtcusdOneMinuteCandles,
-                        logical_key,
+                        logical_key: logical_key.clone(),
                         provider: CHAINLINK_CANDLESTICK_PROVIDER.to_string(),
-                        source_uri,
+                        source_uri: source_uri.clone(),
                         source_date: Some(date),
                         expected_checksum: None,
                         metadata: serde_json::json!({
@@ -2695,12 +2695,48 @@ impl IngestionExecutor {
                 )
                 .await
                 .map_err(IngestionExecutionError::transient)?;
+            let mut supplements_artifact_id = None;
             if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
-                observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
-                date += ChronoDuration::days(1);
-                self.finish_work_unit(claim, &mut progress, range_end, Some(date))
-                    .await?;
-                continue;
+                if prepared.artifact.record_count.unwrap_or_default() >= 1_440 {
+                    observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                    date += ChronoDuration::days(1);
+                    self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                        .await?;
+                    continue;
+                }
+                supplements_artifact_id = Some(prepared.artifact.artifact_id);
+                let supplemental_logical_key = format!("{logical_key}:supplement-v1");
+                progress.current_logical_key = Some(supplemental_logical_key.clone());
+                prepared = self
+                    .repository
+                    .prepare_artifact(
+                        claim,
+                        &ArtifactSpec {
+                            job_id: claim.job.job_id,
+                            ingester: IngesterKey::ChainlinkBtcusdOneMinuteCandles,
+                            logical_key: supplemental_logical_key,
+                            provider: CHAINLINK_CANDLESTICK_PROVIDER.to_string(),
+                            source_uri: source_uri.clone(),
+                            source_date: Some(date),
+                            expected_checksum: None,
+                            metadata: serde_json::json!({
+                                "symbol": self.config.chainlink_candlesticks.symbol,
+                                "resolution": "1m",
+                                "price_decimals": 18,
+                                "volume_supported": false,
+                                "supplements_artifact_id": supplements_artifact_id,
+                            }),
+                        },
+                    )
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+                    observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+                    date += ChronoDuration::days(1);
+                    self.finish_work_unit(claim, &mut progress, range_end, Some(date))
+                        .await?;
+                    continue;
+                }
             }
             self.set_artifact_status(
                 claim,
@@ -2732,6 +2768,17 @@ impl IngestionExecutor {
                     .await;
                 return Err(IngestionExecutionError::permanent(message));
             }
+            if supplements_artifact_id.is_some() && day.records.len() != 1_440 {
+                let message = format!(
+                    "Chainlink still returned an incomplete BTC/USD candle day for {date}: {} of 1440 rows",
+                    day.records.len()
+                );
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                    .await;
+                return Err(IngestionExecutionError::permanent(message));
+            }
             progress.bytes_downloaded =
                 progress.bytes_downloaded.saturating_add(day.response_bytes);
             self.set_artifact_status(
@@ -2752,7 +2799,34 @@ impl IngestionExecutor {
                 BackfillArtifactStatus::Ingesting,
             )
             .await?;
-            for batch in day.records.chunks(self.config.batch_rows) {
+            let source_record_count = day.records.len();
+            let mut records = day.records;
+            if supplements_artifact_id.is_some() {
+                let timestamps = records
+                    .iter()
+                    .map(|record| record.open_timestamp)
+                    .collect::<Vec<_>>();
+                let existing = self
+                    .repository
+                    .existing_chainlink_candle_timestamps(
+                        &self.config.chainlink_candlesticks.symbol,
+                        &timestamps,
+                    )
+                    .await
+                    .map_err(IngestionExecutionError::transient)?;
+                records.retain(|record| !existing.contains(&record.open_timestamp));
+                if records.is_empty() {
+                    let message = format!(
+                        "Chainlink returned no new BTC/USD candle rows for incomplete day {date}"
+                    );
+                    let _ = self
+                        .repository
+                        .fail_artifact(claim, prepared.artifact.artifact_id, &message)
+                        .await;
+                    return Err(IngestionExecutionError::permanent(message));
+                }
+            }
+            for batch in records.chunks(self.config.batch_rows) {
                 self.ensure_continue(claim, cancellation).await?;
                 let result = self
                     .repository
@@ -2762,9 +2836,9 @@ impl IngestionExecutor {
                 observe_batch(&mut progress, &mut summary, result);
                 self.update_batch_checkpoint(claim, &progress, date).await?;
             }
-            let minimum_source_timestamp = day.records.first().map(|row| row.open_timestamp);
-            let maximum_source_timestamp = day.records.last().map(|row| row.open_timestamp);
-            let missing_minutes = 1_440usize.saturating_sub(day.records.len());
+            let minimum_source_timestamp = records.first().map(|row| row.open_timestamp);
+            let maximum_source_timestamp = records.last().map(|row| row.open_timestamp);
+            let missing_minutes = 1_440usize.saturating_sub(source_record_count);
             self.repository
                 .complete_artifact(
                     claim,
@@ -2772,7 +2846,7 @@ impl IngestionExecutor {
                     &ArtifactCompletion {
                         actual_checksum: day.sha256,
                         compressed_bytes: day.response_bytes,
-                        record_count: u64::try_from(day.records.len())
+                        record_count: u64::try_from(records.len())
                             .map_err(IngestionExecutionError::permanent)?,
                         minimum_source_timestamp,
                         maximum_source_timestamp,
@@ -2780,8 +2854,10 @@ impl IngestionExecutor {
                             "symbol": self.config.chainlink_candlesticks.symbol,
                             "resolution": "1m",
                             "expected_records": 1440,
+                            "source_record_count": source_record_count,
                             "missing_minutes": missing_minutes,
                             "volume_supported": false,
+                            "supplements_artifact_id": supplements_artifact_id,
                         }),
                     },
                 )

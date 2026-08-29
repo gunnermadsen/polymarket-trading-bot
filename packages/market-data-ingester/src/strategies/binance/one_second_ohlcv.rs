@@ -1633,6 +1633,16 @@ impl BinanceSpotOneSecondOhlcvStrategy {
         transaction.commit().await.map_err(|error| {
             database_error("binance_ohlcv_gap_transaction_commit_failed", error)
         })?;
+        if detection.inserted {
+            warn!(
+                strategy = %STRATEGY_KEY,
+                error_code = "binance_one_second_kline_gap",
+                gap_id = %detection.gap.gap_id,
+                start = %start,
+                end = %end,
+                "new Binance one-second candle gap detected"
+            );
+        }
 
         match self.recover_exact_range(state, start, end, shutdown).await {
             Ok(()) => {
@@ -1671,6 +1681,15 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                 transaction.commit().await.map_err(|database| {
                     database_error("binance_ohlcv_gap_terminal_commit_failed", database)
                 })?;
+                warn!(
+                    strategy = %STRATEGY_KEY,
+                    error_code = "binance_ohlcv_gap_unrecoverable",
+                    gap_id = %detection.gap.gap_id,
+                    start = %start,
+                    end = %end,
+                    repair_attempts = repairing_gap.repair_attempts,
+                    "Binance one-second candle gap repair became terminal"
+                );
                 Err(integrity_error(
                     "binance_ohlcv_gap_unrecoverable",
                     format!(
