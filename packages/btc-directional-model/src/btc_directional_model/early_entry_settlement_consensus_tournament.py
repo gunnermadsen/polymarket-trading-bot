@@ -13,11 +13,12 @@ import json
 import math
 import os
 import platform
+import shutil
 import subprocess
 import tomllib
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -604,8 +605,10 @@ def _json_hash(payload: Any) -> str:
 
 
 def _json_default(value: Any) -> Any:
-    if isinstance(value, (datetime, Path)):
-        return value.isoformat() if isinstance(value, datetime) else str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, np.ndarray):
@@ -634,6 +637,13 @@ def _write_joblib(path: Path, value: Any) -> None:
     temporary = path.with_name(path.name + f".{os.getpid()}.partial")
     joblib.dump(value, temporary, compress=3)
     temporary.replace(path)
+
+
+def _copy_file_atomic(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + f".{os.getpid()}.partial")
+    shutil.copyfile(source, temporary)
+    temporary.replace(destination)
 
 
 class CheckpointStore:
@@ -3627,7 +3637,23 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
         "deployment_status": "not_deployed_training_only",
     }
     frozen_artifact_path = run_root / "frozen-tournament.joblib"
-    _write_joblib(frozen_artifact_path, artifact)
+    if frozen_artifact_path.is_file():
+        frozen_artifact = joblib.load(frozen_artifact_path)
+        expected_identity = {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "model_family": config.model_family,
+            "producing_commit": producing_commit,
+            "candidate_freeze": config.candidate_freeze,
+            "selected_policies": best_policies,
+        }
+        actual_identity = {
+            name: frozen_artifact.get(name) for name in expected_identity
+        }
+        if actual_identity != expected_identity:
+            raise RuntimeError("frozen tournament artifact identity mismatch")
+        artifact = frozen_artifact
+    else:
+        _write_joblib(frozen_artifact_path, artifact)
     sample_markets = frame.filter(
         pl.col("window_start") >= config.regimes["official_twap60_start"]
     )["market_id"].unique().head(8)
@@ -3702,7 +3728,7 @@ def run_tournament(config: TournamentConfig) -> tuple[Path, dict[str, Any]]:
     ledgers = temporary / "ledgers"
     ledgers.mkdir()
     artifact_path = temporary / "tournament.joblib"
-    _write_joblib(artifact_path, artifact)
+    _copy_file_atomic(frozen_artifact_path, artifact_path)
     _write_parquet(
         ledgers / "aligned-constituent-oof.parquet",
         constituent_oof.select(

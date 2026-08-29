@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +20,7 @@ from btc_directional_model.early_entry_settlement_consensus_tournament import (
     Policy,
     _fit_latent_parameters,
     _fit_nonnegative_logit,
+    _json_default,
     _latent_filter,
     _market_schedule_audit,
     _opportunity_panel,
@@ -46,6 +47,10 @@ def test_frozen_config_has_exact_rosters_and_boundaries() -> None:
     assert config.prospective_end == datetime(2026, 8, 28, tzinfo=UTC)
     assert config.raw["training"]["training_only"] is True
     assert config.raw["training"]["runtime_exported"] is False
+
+
+def test_report_json_encoder_supports_calendar_dates() -> None:
+    assert _json_default(date(2026, 8, 26)) == "2026-08-26"
 
 
 def test_market_schedule_audit_requires_all_25_rows_together() -> None:
