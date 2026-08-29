@@ -37,6 +37,7 @@ from .jobs import (
 )
 from .market_ingestion import ingest_markets, ingest_price_history
 from .modeling import reconcile_labels, train_model
+from .pmxt_full_market_tournament import run_pmxt_full_market_tournament
 from .residual_opportunity_benchmark import run_residual_opportunity_benchmark
 from .tail_calibration_tournament import run_tail_calibration_tournament
 
@@ -69,6 +70,12 @@ def _sha256_image_id(value: str) -> str:
         raise argparse.ArgumentTypeError("image ID must use sha256:<64 lowercase hex characters>")
     if any(character not in "0123456789abcdef" for character in value[7:]):
         raise argparse.ArgumentTypeError("image ID must use lowercase hexadecimal characters")
+    return value
+
+
+def _sha256(value: str) -> str:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise argparse.ArgumentTypeError("SHA-256 must use 64 lowercase hexadecimal characters")
     return value
 
 
@@ -294,6 +301,17 @@ def build_parser() -> argparse.ArgumentParser:
     tail_tournament.add_argument("--sealed-start", required=True, type=_date)
     tail_tournament.add_argument("--git-revision", required=True)
     tail_tournament.add_argument("--runner-image-id", required=True, type=_sha256_image_id)
+    pmxt_tournament = subparsers.add_parser("pmxt-full-market-tournament")
+    pmxt_tournament.add_argument("--source-weather-artifact", required=True, type=Path)
+    pmxt_tournament.add_argument("--source-weather-artifact-sha256", required=True, type=_sha256)
+    pmxt_tournament.add_argument("--development-start", required=True, type=_date)
+    pmxt_tournament.add_argument("--development-end", required=True, type=_date)
+    pmxt_tournament.add_argument("--sealed-start", required=True, type=_date)
+    pmxt_tournament.add_argument("--sealed-end", required=True, type=_date)
+    pmxt_tournament.add_argument("--git-revision", required=True)
+    pmxt_tournament.add_argument("--runner-image-id", required=True, type=_sha256_image_id)
+    pmxt_tournament.add_argument("--output-directory", type=Path)
+    pmxt_tournament.add_argument("--bootstrap-iterations", type=int, default=200)
     subparsers.add_parser("readiness")
     return parser
 
@@ -494,6 +512,20 @@ def main() -> None:
             sealed_start=args.sealed_start,
             git_revision=args.git_revision,
             runner_image_id=args.runner_image_id,
+        )
+    elif args.command == "pmxt-full-market-tournament":
+        result = run_pmxt_full_market_tournament(
+            settings,
+            source_weather_artifact_path=args.source_weather_artifact,
+            source_weather_artifact_sha256=args.source_weather_artifact_sha256,
+            development_start=args.development_start,
+            development_end=args.development_end,
+            sealed_start=args.sealed_start,
+            sealed_end=args.sealed_end,
+            git_revision=args.git_revision,
+            runner_image_id=args.runner_image_id,
+            output_directory=args.output_directory,
+            bootstrap_iterations=args.bootstrap_iterations,
         )
     elif args.command == "readiness":
         result = _readiness(settings)
