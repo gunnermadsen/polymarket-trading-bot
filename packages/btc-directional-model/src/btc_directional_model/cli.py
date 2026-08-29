@@ -49,6 +49,12 @@ from .counterfactual_twap_state_tournament import (
 from .counterfactual_twap_state_tournament import (
     run_tournament as run_counterfactual_twap_state_tournament,
 )
+from .causal_twap_attribution_tournament import (
+    load_config as load_causal_twap_attribution_config,
+)
+from .causal_twap_attribution_tournament import (
+    run_tournament as run_causal_twap_attribution_tournament,
+)
 from .early_entry_settlement_consensus_tournament import (
     load_config as load_early_entry_consensus_config,
 )
@@ -225,6 +231,11 @@ def main() -> None:
     twap60_run = subparsers.add_parser("twap60-challenger-tournament-run")
     twap60_run.add_argument("--config", type=Path, required=True)
     twap60_run.add_argument("--force", action="store_true")
+    causal_twap_attribution = subparsers.add_parser(
+        "causal-twap-attribution-tournament-run"
+    )
+    causal_twap_attribution.add_argument("--config", type=Path, required=True)
+    causal_twap_attribution.add_argument("--force", action="store_true")
     counterfactual_twap_state = subparsers.add_parser(
         "counterfactual-twap-state-tournament-run"
     )
@@ -585,6 +596,19 @@ def main() -> None:
         print(
             "provisional challenger: "
             f"{result['tournament']['selection']['provisional_challenger'] or 'none'}"
+        )
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "causal-twap-attribution-tournament-run":
+        config = load_causal_twap_attribution_config(args.config)
+        run_dir, result = run_causal_twap_attribution_tournament(
+            config, force_extract=args.force
+        )
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"status: {result['selection']['status']}")
+        print(
+            "provisional candidate: "
+            f"{result['selection']['provisional_candidate']}"
         )
         print("runtime/database/trading processes changed: false")
         return
