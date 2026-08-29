@@ -114,6 +114,43 @@ def test_latent_state_filter_is_causal_and_finite() -> None:
         np.testing.assert_allclose(full[key][:-1], prefix[key], atol=1e-12, rtol=0)
 
 
+def test_latent_state_filter_uses_only_available_causal_sensors() -> None:
+    rng = np.random.default_rng(19)
+    sequences = []
+    targets = []
+    for _ in range(50):
+        target = rng.normal(scale=7)
+        path = np.linspace(0, target, len(ENTRY_SECONDS))
+        sequences.append(
+            np.column_stack(
+                (
+                    path + rng.normal(scale=1.0, size=len(path)),
+                    path + rng.normal(scale=0.9, size=len(path)),
+                    path + rng.normal(scale=1.1, size=len(path)),
+                )
+            )
+        )
+        targets.append(target)
+    parameters = _fit_latent_parameters(
+        sequences,
+        np.asarray(targets),
+        np.ones(len(targets)),
+        LatentSpec(0.92, 2.0, 2.0, 1.5, 20.0),
+    )
+    partial = sequences[0].copy()
+    partial[5, 2] = np.nan
+    partial[10, 1:] = np.nan
+    full = _latent_filter(partial, parameters)
+    prefix = _latent_filter(partial[:15], parameters)
+    for key in full:
+        assert np.all(np.isfinite(full[key]))
+        np.testing.assert_allclose(full[key][:15], prefix[key], atol=1e-12, rtol=0)
+    unavailable = partial.copy()
+    unavailable[7] = np.nan
+    with pytest.raises(ValueError, match="at least one causal sensor"):
+        _latent_filter(unavailable, parameters)
+
+
 def _policy_frame() -> pl.DataFrame:
     start = datetime(2026, 8, 14, tzinfo=UTC)
     rows = []

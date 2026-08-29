@@ -1915,15 +1915,22 @@ def _fit_latent_parameters(
 
 def _latent_filter(sequence: np.ndarray, parameters: LatentParameters) -> dict[str, np.ndarray]:
     values = np.asarray(sequence, dtype=float)
-    if values.ndim != 2 or values.shape[1] != len(LATENT_SENSORS) or np.any(~np.isfinite(values)):
-        raise ValueError("latent sequence is not a finite three-sensor matrix")
+    if values.ndim != 2 or values.shape[1] != len(LATENT_SENSORS):
+        raise ValueError("latent sequence is not a three-sensor matrix")
+    available = np.isfinite(values)
+    if np.any(~available.any(axis=1)):
+        raise ValueError("every latent observation requires at least one causal sensor")
     calibrated = (
         np.asarray(parameters.sensor_intercepts)[None, :]
         + values * np.asarray(parameters.sensor_loadings)[None, :]
     )
     sensor_variances = np.asarray(parameters.sensor_variances)
     precision = 1.0 / sensor_variances
-    initial_margin = float(np.sum(calibrated[0] * precision) / precision.sum())
+    initial_available = available[0]
+    initial_margin = float(
+        np.sum(calibrated[0, initial_available] * precision[initial_available])
+        / precision[initial_available].sum()
+    )
     states = np.tile(np.array([initial_margin, 0.0]), (3, 1))
     covariances = np.tile(
         np.diag([parameters.initial_margin_variance, parameters.initial_velocity_variance]),
@@ -1937,6 +1944,9 @@ def _latent_filter(sequence: np.ndarray, parameters: LatentParameters) -> dict[s
     means: list[float] = []
     variances: list[float] = []
     for index, row in enumerate(calibrated):
+        observed = available[index]
+        observed_row = row[observed]
+        observed_variances = sensor_variances[observed]
         if index:
             prior = probabilities @ regime_transition
             mixed_state = np.sum(probabilities[:, None] * states, axis=0)
@@ -1958,14 +1968,20 @@ def _latent_filter(sequence: np.ndarray, parameters: LatentParameters) -> dict[s
                 states[regime] = transition @ mixed_state
                 covariances[regime] = transition @ mixed_covariance @ transition.T + process
                 states[regime], covariances[regime], likelihoods[regime] = _measurement_updates(
-                    states[regime], covariances[regime], row, sensor_variances
+                    states[regime],
+                    covariances[regime],
+                    observed_row,
+                    observed_variances,
                 )
             probabilities = prior * np.maximum(likelihoods, 1e-300)
             probabilities /= max(float(probabilities.sum()), 1e-300)
         else:
             for regime in range(3):
                 states[regime], covariances[regime], _ = _measurement_updates(
-                    states[regime], covariances[regime], row, sensor_variances
+                    states[regime],
+                    covariances[regime],
+                    observed_row,
+                    observed_variances,
                 )
         mean_state = np.sum(probabilities[:, None] * states, axis=0)
         centered = states - mean_state
