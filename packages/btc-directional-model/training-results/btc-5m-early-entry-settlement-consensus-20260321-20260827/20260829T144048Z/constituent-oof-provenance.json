@@ -1,0 +1,702 @@
+{
+  "aligned_oof_sha256": "1f76cab00509ab5fc2f5aa0e0952e3ef958f7a3b5253f9c9bd2496cea225dac6",
+  "constituents": {
+    "constituent_bridge": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/tournament.joblib",
+      "artifact_sha256": "6f7936a7bc830321fa5cf0740bb9ccd101002c33e54752d4648ac993a7dca027",
+      "passed": true,
+      "recording_commit": "ab38546a71a127c6ee015f9ef6d34acb92a21eb2",
+      "reference_metrics_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/metrics.json",
+      "reference_metrics_sha256": "1b22f6dfd93418dd26b3fd96b9ba80f8edc0cc5d4ece2701d1ac2bd4f5c2c5ff",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/src/btc_directional_model/settlement_bridge_residual_tournament.py",
+      "source_sha256": "ccb3bc2a9cfb241043b712731dff349c37fae4d1a26fd45d8295cda3c7848407",
+      "tag": "model/btc-5m-settlement-bridge-residual-freeze-20260828-run-20260828T204616Z"
+    },
+    "constituent_causal": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/training-results/btc-5m-causal-twap-attribution-20260607-20260828/20260828T165228Z/tournament.joblib",
+      "artifact_sha256": "bfbb7ddfd77a947f2d17cb5258b6a18e60094b14f19748e4cb732ad56bd0349d",
+      "passed": true,
+      "recording_commit": "ab634723e12c8d916921ec694e8d18b250095cd2",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_tournament.py",
+      "source_sha256": "d659c53818851cae578c41cc1009683c37fe7af370994ca76cd2e73a948dc81e",
+      "tag": "model/btc-5m-counterfactual-twap-state-causal-attribution-20260607-20260826-20260828T165228Z"
+    },
+    "constituent_latent": {
+      "abandoned": false,
+      "artifact_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-latent-twap-settlement-risk/packages/btc-directional-model/training-results/btc-5m-latent-twap-settlement-risk-20260607-20260828/20260828T174703Z/model-family.joblib",
+      "artifact_sha256": "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80",
+      "passed": true,
+      "recording_commit": "e1eb28d68999503b34cad5344ddb40b33036520f",
+      "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-latent-twap-settlement-risk/packages/btc-directional-model/src/btc_directional_model/latent_twap_state_space.py",
+      "source_sha256": "7a2243736debfb3f38eb5d32b6eb1fe0efb6a0a4358eb75dee092ab88bcbbd78",
+      "tag": "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+    },
+    "historical_binance_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/binance-manifest.json",
+      "sha256": "e8fd4c39830f6d4c778fc415be38952d0434200a8d45ded4d72dbce793140fab"
+    },
+    "historical_binance_partitions": {
+      "manifest": "binance-manifest.json",
+      "manifest_sha256": "e8fd4c39830f6d4c778fc415be38952d0434200a8d45ded4d72dbce793140fab",
+      "verified_bytes": 104419582,
+      "verified_partitions": 159
+    },
+    "historical_frame": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/tournament-frame.parquet",
+      "sha256": "bdb1e49e640758fb64643304435f7b77613187c815cfb6f5e5cb350108f42f55"
+    },
+    "historical_label_audit": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/label-audit.parquet",
+      "sha256": "991d58ff265334528a7b61748ae77ddc07fa36b2933b136dd76ad88f7b578379"
+    },
+    "historical_partitions": {
+      "manifest": "source-manifest.json",
+      "manifest_sha256": "3ff80d230820756760eae6fb5cb254ecb85acc391fb7479303af7e45eaab4e94",
+      "verified_bytes": 1004987458,
+      "verified_partitions": 954
+    },
+    "historical_source_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/data/btc-counterfactual-twap-state-causal-20260321-20260827/source-manifest.json",
+      "sha256": "3ff80d230820756760eae6fb5cb254ecb85acc391fb7479303af7e45eaab4e94"
+    },
+    "history_reference": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/training-results/btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z/historical-source-bakeoff.json",
+      "sha256": "02a83a229110987b2d56092ba1df62f9d2a68ce5ef12bf7b4dceff650eadca67"
+    },
+    "passed": true,
+    "prospective_binance_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/binance-manifest.json",
+      "sha256": "1a20cc7bec77c85eb65b432a3db5835f3a16da412f22ff5bbac030cb2f2ce137"
+    },
+    "prospective_frame": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/tournament-frame.parquet",
+      "sha256": "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26"
+    },
+    "prospective_source_manifest": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/source-manifest.json",
+      "sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+    },
+    "source_code": {
+      "passed": true,
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/src/btc_directional_model/counterfactual_twap_state_data.py",
+      "sha256": "584db15c135554b5f0355a5765addb13c5f1b46cd706f2f1f64f866ae63ea4c1"
+    },
+    "source_contracts": {
+      "historical": {
+        "completed_artifacts_only": true,
+        "current_start": "2026-03-21T00:00:00+00:00",
+        "database_mutations": false,
+        "queries": {
+          "candles": "192ec837ada3e7ee94e44ee137d319be1471a304382bc070fece5a481259f3cf",
+          "core_current": "7a47a0c651523bff403e246979ac015feecb32f8116bb2fb2aed6b66b3355ad6",
+          "execution": "da0a74d049d1d09fb4fec98882f384fa2dc6f9fe9f5152b42f88cdf99823e09b",
+          "labels": "4dc8231ece518a4c85a4d5448bae9d574b22b9a4e32ba0abef91b445b38bc682",
+          "oracle": "78f2316fb848afcaf0b25ce6460a8b6657f095c8257f52351add70e928d65a47",
+          "refprice": "1c84fd3e22cf495e1b3466bb63e65d0882eee8605754e2bb284bbe818e15bb76"
+        },
+        "range_end": "2026-08-27T00:00:00+00:00",
+        "range_start": "2026-03-21T00:00:00+00:00",
+        "read_only": true,
+        "schema_version": "btc-twap60-training-source-cache-v1"
+      },
+      "passed": true,
+      "prospective": {
+        "completed_artifacts_only": true,
+        "current_start": "2026-03-21T00:00:00+00:00",
+        "database_mutations": false,
+        "queries": {
+          "candles": "192ec837ada3e7ee94e44ee137d319be1471a304382bc070fece5a481259f3cf",
+          "core_current": "7a47a0c651523bff403e246979ac015feecb32f8116bb2fb2aed6b66b3355ad6",
+          "execution": "da0a74d049d1d09fb4fec98882f384fa2dc6f9fe9f5152b42f88cdf99823e09b",
+          "labels": "4dc8231ece518a4c85a4d5448bae9d574b22b9a4e32ba0abef91b445b38bc682",
+          "oracle": "78f2316fb848afcaf0b25ce6460a8b6657f095c8257f52351add70e928d65a47",
+          "refprice": "1c84fd3e22cf495e1b3466bb63e65d0882eee8605754e2bb284bbe818e15bb76"
+        },
+        "range_end": "2026-08-28T00:00:00+00:00",
+        "range_start": "2026-03-21T00:00:00+00:00",
+        "read_only": true,
+        "schema_version": "btc-twap60-training-source-cache-v1"
+      }
+    }
+  },
+  "reproduction_audit": {
+    "causal_calibration_coefficients": [
+      1.0450670070780037,
+      0.9749425217640925,
+      1.0165633199612156,
+      1.0330593669617425,
+      0.959348767199024,
+      0.9311157358878162
+    ],
+    "empirical_prior_brier": 0.24999028196698286,
+    "empirical_prior_probability": 0.5031173759826512,
+    "executed_before_ensemble_fitting": true,
+    "failed_gates": [],
+    "families": {
+      "bridge": {
+        "folds": [
+          {
+            "brier": 0.18036218456226938,
+            "directional_accuracy": 0.7354166666666666,
+            "fold": "official_20260814_15",
+            "markets": 576,
+            "prediction_std": 0.2381143441799312,
+            "rows": 14400
+          },
+          {
+            "brier": 0.18320918735035957,
+            "directional_accuracy": 0.7165794066317626,
+            "fold": "official_20260816_17",
+            "markets": 573,
+            "prediction_std": 0.24934060848778367,
+            "rows": 14325
+          },
+          {
+            "brier": 0.1596615488457254,
+            "directional_accuracy": 0.7715478260869565,
+            "fold": "official_20260818_19",
+            "markets": 575,
+            "prediction_std": 0.29228066287595533,
+            "rows": 14375
+          },
+          {
+            "brier": 0.18197879615159354,
+            "directional_accuracy": 0.7331010452961673,
+            "fold": "official_20260820_21",
+            "markets": 574,
+            "prediction_std": 0.3369377991052652,
+            "rows": 14350
+          },
+          {
+            "brier": 0.18814441800256496,
+            "directional_accuracy": 0.7150000000000001,
+            "fold": "official_20260822_23",
+            "markets": 576,
+            "prediction_std": 0.25643910731410113,
+            "rows": 14400
+          },
+          {
+            "brier": 0.19178121883417112,
+            "directional_accuracy": 0.7128343558282209,
+            "fold": "official_20260824_26",
+            "markets": 815,
+            "prediction_std": 0.27856908046761736,
+            "rows": 20375
+          }
+        ],
+        "metrics": {
+          "brier": 0.18156724867342286,
+          "directional_accuracy": 0.7295852534562212,
+          "expected_calibration_error": 0.03244965333902023,
+          "log_loss": 0.5415189877099275,
+          "markets": 3689,
+          "mean_uncertainty_bps": 7.206270268849463,
+          "quantile_interval_coverage": 0.8820710219571701,
+          "rows": 92225,
+          "terminal_margin_mae_bps": 6.012047171093022
+        },
+        "prediction_maximum": 0.9948161170714538,
+        "prediction_minimum": 0.011475095732081317,
+        "prediction_std": 0.2802971365395112
+      },
+      "causal": {
+        "folds": [
+          {
+            "brier": 0.18149562401881528,
+            "directional_accuracy": 0.7336805555555556,
+            "fold": "official_20260814_15",
+            "markets": 576,
+            "prediction_std": 0.2687572567283807,
+            "rows": 14400
+          },
+          {
+            "brier": 0.17599805033207852,
+            "directional_accuracy": 0.7297033158813263,
+            "fold": "official_20260816_17",
+            "markets": 573,
+            "prediction_std": 0.2599013015556725,
+            "rows": 14325
+          },
+          {
+            "brier": 0.15740503521563842,
+            "directional_accuracy": 0.7729391304347826,
+            "fold": "official_20260818_19",
+            "markets": 575,
+            "prediction_std": 0.2957752880139224,
+            "rows": 14375
+          },
+          {
+            "brier": 0.17624509524280682,
+            "directional_accuracy": 0.7431358885017422,
+            "fold": "official_20260820_21",
+            "markets": 574,
+            "prediction_std": 0.3369503774210652,
+            "rows": 14350
+          },
+          {
+            "brier": 0.1548695354556979,
+            "directional_accuracy": 0.7739583333333333,
+            "fold": "official_20260822_23",
+            "markets": 576,
+            "prediction_std": 0.3112651424463862,
+            "rows": 14400
+          },
+          {
+            "brier": 0.1727278121801528,
+            "directional_accuracy": 0.7466503067484662,
+            "fold": "official_20260824_26",
+            "markets": 815,
+            "prediction_std": 0.3136639463396736,
+            "rows": 20375
+          }
+        ],
+        "metrics": {
+          "brier": 0.16997532164347748,
+          "directional_accuracy": 0.7498075359175929,
+          "expected_calibration_error": 0.018450176218803075,
+          "log_loss": 0.5125813564244365,
+          "markets": 3689,
+          "mean_uncertainty_bps": 7.311719243282166,
+          "quantile_interval_coverage": 0.9108593114665222,
+          "rows": 92225,
+          "terminal_margin_mae_bps": 5.565961713518209
+        },
+        "prediction_maximum": 0.9887071721269841,
+        "prediction_minimum": 0.017082071518028163,
+        "prediction_std": 0.300148707557209
+      },
+      "latent": {
+        "folds": [
+          {
+            "brier": 0.20359534296027562,
+            "directional_accuracy": 0.7121527777777779,
+            "fold": "official_20260814_15",
+            "markets": 576,
+            "prediction_std": 0.19819282912356254,
+            "rows": 14400
+          },
+          {
+            "brier": 0.19873164968179038,
+            "directional_accuracy": 0.712460732984293,
+            "fold": "official_20260816_17",
+            "markets": 573,
+            "prediction_std": 0.20374215154055,
+            "rows": 14325
+          },
+          {
+            "brier": 0.17611972455616137,
+            "directional_accuracy": 0.7578434782608696,
+            "fold": "official_20260818_19",
+            "markets": 575,
+            "prediction_std": 0.2727806177177212,
+            "rows": 14375
+          },
+          {
+            "brier": 0.20364429797870015,
+            "directional_accuracy": 0.7295470383275262,
+            "fold": "official_20260820_21",
+            "markets": 574,
+            "prediction_std": 0.3938253905758478,
+            "rows": 14350
+          },
+          {
+            "brier": 0.17132122131650002,
+            "directional_accuracy": 0.763888888888889,
+            "fold": "official_20260822_23",
+            "markets": 576,
+            "prediction_std": 0.27128006685527234,
+            "rows": 14400
+          },
+          {
+            "brier": 0.18312467428253804,
+            "directional_accuracy": 0.7295705521472393,
+            "fold": "official_20260824_26",
+            "markets": 815,
+            "prediction_std": 0.3038716350702255,
+            "rows": 20375
+          }
+        ],
+        "metrics": {
+          "brier": 0.18900310503955653,
+          "directional_accuracy": 0.7339550013553808,
+          "expected_calibration_error": 0.059875767524675313,
+          "log_loss": 0.6063256497955097,
+          "markets": 3689,
+          "mean_uncertainty_bps": 2.5208849226159313,
+          "quantile_interval_coverage": 0.5659528327460017,
+          "rows": 92225,
+          "terminal_margin_mae_bps": 5.768942137376725
+        },
+        "prediction_maximum": 0.9999385407863989,
+        "prediction_minimum": 6.145921343851898e-05,
+        "prediction_std": 0.28327164406594696
+      }
+    },
+    "gates": [
+      {
+        "actual": 0.2381143441799312,
+        "name": "bridge.official_20260814_15.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18036218456226938,
+        "name": "bridge.official_20260814_15.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.24934060848778367,
+        "name": "bridge.official_20260816_17.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18320918735035957,
+        "name": "bridge.official_20260816_17.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.29228066287595533,
+        "name": "bridge.official_20260818_19.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.1596615488457254,
+        "name": "bridge.official_20260818_19.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3369377991052652,
+        "name": "bridge.official_20260820_21.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18197879615159354,
+        "name": "bridge.official_20260820_21.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.25643910731410113,
+        "name": "bridge.official_20260822_23.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18814441800256496,
+        "name": "bridge.official_20260822_23.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.27856908046761736,
+        "name": "bridge.official_20260824_26.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.19178121883417112,
+        "name": "bridge.official_20260824_26.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.2802971365395112,
+        "name": "bridge.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.02
+      },
+      {
+        "actual": 0.18156724867342286,
+        "name": "bridge.brier_vs_empirical_prior",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24499028196698286
+      },
+      {
+        "actual": 0.7295852534562212,
+        "name": "bridge.directional_accuracy",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.6
+      },
+      {
+        "actual": 0.19819282912356254,
+        "name": "latent.official_20260814_15.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.20359534296027562,
+        "name": "latent.official_20260814_15.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.20374215154055,
+        "name": "latent.official_20260816_17.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.19873164968179038,
+        "name": "latent.official_20260816_17.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.2727806177177212,
+        "name": "latent.official_20260818_19.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.17611972455616137,
+        "name": "latent.official_20260818_19.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3938253905758478,
+        "name": "latent.official_20260820_21.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.20364429797870015,
+        "name": "latent.official_20260820_21.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.27128006685527234,
+        "name": "latent.official_20260822_23.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.17132122131650002,
+        "name": "latent.official_20260822_23.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3038716350702255,
+        "name": "latent.official_20260824_26.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18312467428253804,
+        "name": "latent.official_20260824_26.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.28327164406594696,
+        "name": "latent.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.02
+      },
+      {
+        "actual": 0.18900310503955653,
+        "name": "latent.brier_vs_empirical_prior",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24499028196698286
+      },
+      {
+        "actual": 0.7339550013553808,
+        "name": "latent.directional_accuracy",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.6
+      },
+      {
+        "actual": 0.2687572567283807,
+        "name": "causal.official_20260814_15.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.18149562401881528,
+        "name": "causal.official_20260814_15.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.2599013015556725,
+        "name": "causal.official_20260816_17.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.17599805033207852,
+        "name": "causal.official_20260816_17.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.2957752880139224,
+        "name": "causal.official_20260818_19.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.15740503521563842,
+        "name": "causal.official_20260818_19.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3369503774210652,
+        "name": "causal.official_20260820_21.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.17624509524280682,
+        "name": "causal.official_20260820_21.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3112651424463862,
+        "name": "causal.official_20260822_23.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.1548695354556979,
+        "name": "causal.official_20260822_23.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.3136639463396736,
+        "name": "causal.official_20260824_26.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.01
+      },
+      {
+        "actual": 0.1727278121801528,
+        "name": "causal.official_20260824_26.brier",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24
+      },
+      {
+        "actual": 0.300148707557209,
+        "name": "causal.prediction_std",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.02
+      },
+      {
+        "actual": 0.16997532164347748,
+        "name": "causal.brier_vs_empirical_prior",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.24499028196698286
+      },
+      {
+        "actual": 0.7498075359175929,
+        "name": "causal.directional_accuracy",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.6
+      },
+      {
+        "actual": 0.18156724867342286,
+        "name": "bridge.reference_brier_degradation",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.20459930940926022
+      },
+      {
+        "actual": 0.16997532164347748,
+        "name": "causal.reference_brier_degradation",
+        "operator": "<=",
+        "passed": true,
+        "threshold": 0.19272439267782446
+      },
+      {
+        "actual": 0.9311157358878162,
+        "name": "causal.minimum_calibration_coefficient",
+        "operator": ">=",
+        "passed": true,
+        "threshold": 0.05
+      }
+    ],
+    "integrity_failures": [],
+    "passed": true,
+    "poor_performance_alone_is_not_an_integrity_failure": true,
+    "references": {
+      "bridge": {
+        "brier": 0.18459930940926023,
+        "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-settlement-bridge-residual-tournament/packages/btc-directional-model/training-results/btc-5m-settlement-bridge-residual-20260321-20260828/20260828T204616Z/metrics.json",
+        "sha256": "1b22f6dfd93418dd26b3fd96b9ba80f8edc0cc5d4ece2701d1ac2bd4f5c2c5ff"
+      },
+      "causal": {
+        "brier": 0.17272439267782447,
+        "history_arm": "uncertainty_weighted_hybrid",
+        "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-counterfactual-twap-state-tournament/packages/btc-directional-model/training-results/btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z/historical-source-bakeoff.json",
+        "sha256": "02a83a229110987b2d56092ba1df62f9d2a68ce5ef12bf7b4dceff650eadca67"
+      }
+    }
+  },
+  "row_count": 183150,
+  "strictly_earlier": true
+}
