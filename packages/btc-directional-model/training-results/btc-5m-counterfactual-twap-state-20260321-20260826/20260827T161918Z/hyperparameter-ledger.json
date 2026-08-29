@@ -1,0 +1,560 @@
+{
+  "combinations": 36,
+  "ledger": [
+    {
+      "brier": 0.17286933651910213,
+      "expected_calibration_error": 0.02041720938098661,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 0,
+      "log_loss": 0.5203430750865935,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1702665778819892,
+      "expected_calibration_error": 0.017502722395826387,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.04,
+        "max_iter": 180,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 1,
+      "log_loss": 0.5128983762499262,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16966072274574148,
+      "expected_calibration_error": 0.016815877069238025,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.06,
+        "max_iter": 240,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 2,
+      "log_loss": 0.5110469659637402,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17173085694680432,
+      "expected_calibration_error": 0.017135983499318143,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 3,
+      "log_loss": 0.5168828126841752,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16965325030386172,
+      "expected_calibration_error": 0.016982197681751077,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 4,
+      "log_loss": 0.5108508790062687,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16956947405524442,
+      "expected_calibration_error": 0.016251214042538684,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.06,
+        "max_iter": 120,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 5,
+      "log_loss": 0.5110927580099512,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16979822594326108,
+      "expected_calibration_error": 0.01760306324277249,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.02,
+        "max_iter": 180,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 6,
+      "log_loss": 0.5115182426664069,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16890274971827673,
+      "expected_calibration_error": 0.017948221966296203,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 7,
+      "log_loss": 0.5080669172844698,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16943514304989568,
+      "expected_calibration_error": 0.022498167724296553,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 8,
+      "log_loss": 0.5096997090471653,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1710531030347068,
+      "expected_calibration_error": 0.01983288580485958,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.02,
+        "max_iter": 240,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 140
+      },
+      "index": 9,
+      "log_loss": 0.5152275028812847,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17094820869717062,
+      "expected_calibration_error": 0.02022527800314424,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.04,
+        "max_iter": 120,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 140
+      },
+      "index": 10,
+      "log_loss": 0.5148807774485201,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1699140689537423,
+      "expected_calibration_error": 0.017573353953241506,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 140
+      },
+      "index": 11,
+      "log_loss": 0.5117431729963017,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17174985565927006,
+      "expected_calibration_error": 0.017387885620137142,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 140
+      },
+      "index": 12,
+      "log_loss": 0.5170075748200486,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16952948791701702,
+      "expected_calibration_error": 0.015852177935521707,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.04,
+        "max_iter": 180,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 140
+      },
+      "index": 13,
+      "log_loss": 0.5109440329701518,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16893422300472302,
+      "expected_calibration_error": 0.0193415477337316,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.06,
+        "max_iter": 240,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 140
+      },
+      "index": 14,
+      "log_loss": 0.508696528955877,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17070489238264203,
+      "expected_calibration_error": 0.01742432382615554,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 140
+      },
+      "index": 15,
+      "log_loss": 0.5142206157827298,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1692052875022573,
+      "expected_calibration_error": 0.02151151749040924,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 140
+      },
+      "index": 16,
+      "log_loss": 0.5088785004041085,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16902462929178685,
+      "expected_calibration_error": 0.017317569782589366,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.06,
+        "max_iter": 120,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 140
+      },
+      "index": 17,
+      "log_loss": 0.5089675537062767,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1716823289924193,
+      "expected_calibration_error": 0.021240051098761703,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.02,
+        "max_iter": 180,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 240
+      },
+      "index": 18,
+      "log_loss": 0.5169711364722318,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16988242604524448,
+      "expected_calibration_error": 0.017773707257099765,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 240
+      },
+      "index": 19,
+      "log_loss": 0.5117641722883325,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16987095140223707,
+      "expected_calibration_error": 0.01763390230442711,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 240
+      },
+      "index": 20,
+      "log_loss": 0.5115546221588483,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1701647071586018,
+      "expected_calibration_error": 0.016286482313389933,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.02,
+        "max_iter": 240,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 240
+      },
+      "index": 21,
+      "log_loss": 0.5127169239900733,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1700822737182502,
+      "expected_calibration_error": 0.018248825537088936,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.04,
+        "max_iter": 120,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 240
+      },
+      "index": 22,
+      "log_loss": 0.5124946708157124,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16930806230251647,
+      "expected_calibration_error": 0.017255535720892688,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 240
+      },
+      "index": 23,
+      "log_loss": 0.5099066136792978,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17083020825083814,
+      "expected_calibration_error": 0.018035084110656043,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 240
+      },
+      "index": 24,
+      "log_loss": 0.5145775795070053,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1692294576385666,
+      "expected_calibration_error": 0.012689556447742735,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.04,
+        "max_iter": 180,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 240
+      },
+      "index": 25,
+      "log_loss": 0.509408002923753,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1684979849374173,
+      "expected_calibration_error": 0.012534885211885501,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.06,
+        "max_iter": 240,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 240
+      },
+      "index": 26,
+      "log_loss": 0.5069973365007251,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17300510688967968,
+      "expected_calibration_error": 0.01946058258514013,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.02,
+        "max_iter": 120,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 27,
+      "log_loss": 0.5206333825750763,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16993548287122032,
+      "expected_calibration_error": 0.017514611048246857,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 28,
+      "log_loss": 0.5118497036567685,
+      "markets": 1917
+    },
+    {
+      "brier": 0.1701140682409198,
+      "expected_calibration_error": 0.01687111401733524,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.06,
+        "max_iter": 120,
+        "max_leaf_nodes": 7,
+        "min_samples_leaf": 80
+      },
+      "index": 29,
+      "log_loss": 0.512476317256262,
+      "markets": 1917
+    },
+    {
+      "brier": 0.17075995511330802,
+      "expected_calibration_error": 0.017378244933850616,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.02,
+        "max_iter": 180,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 30,
+      "log_loss": 0.5144067467839081,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16971422603775824,
+      "expected_calibration_error": 0.01524567074712262,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.04,
+        "max_iter": 240,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 31,
+      "log_loss": 0.511117719111239,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16924023021819987,
+      "expected_calibration_error": 0.01704168379434048,
+      "hyperparameters": {
+        "calibration_c": 0.1,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 15,
+        "min_samples_leaf": 80
+      },
+      "index": 32,
+      "log_loss": 0.5098996592968943,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16956607277958421,
+      "expected_calibration_error": 0.017672092317292054,
+      "hyperparameters": {
+        "calibration_c": 0.25,
+        "l2_regularization": 16.0,
+        "learning_rate": 0.02,
+        "max_iter": 240,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 33,
+      "log_loss": 0.5106948644453291,
+      "markets": 1917
+    },
+    {
+      "brier": 0.169537129474246,
+      "expected_calibration_error": 0.01823544800237928,
+      "hyperparameters": {
+        "calibration_c": 0.5,
+        "l2_regularization": 8.0,
+        "learning_rate": 0.04,
+        "max_iter": 120,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 34,
+      "log_loss": 0.5106256800331056,
+      "markets": 1917
+    },
+    {
+      "brier": 0.16941558004045407,
+      "expected_calibration_error": 0.01904957995793301,
+      "hyperparameters": {
+        "calibration_c": 1.0,
+        "l2_regularization": 4.0,
+        "learning_rate": 0.06,
+        "max_iter": 180,
+        "max_leaf_nodes": 31,
+        "min_samples_leaf": 80
+      },
+      "index": 35,
+      "log_loss": 0.509521808910101,
+      "markets": 1917
+    }
+  ],
+  "selected": {
+    "brier": 0.1684979849374173,
+    "expected_calibration_error": 0.012534885211885501,
+    "hyperparameters": {
+      "calibration_c": 0.5,
+      "l2_regularization": 4.0,
+      "learning_rate": 0.06,
+      "max_iter": 240,
+      "max_leaf_nodes": 31,
+      "min_samples_leaf": 240
+    },
+    "index": 26,
+    "log_loss": 0.5069973365007251,
+    "markets": 1917
+  }
+}

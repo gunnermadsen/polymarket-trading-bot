@@ -814,7 +814,11 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
         transaction
             .commit()
             .await
-            .map_err(db("polymarket_twap_gap_commit"))
+            .map_err(db("polymarket_twap_gap_commit"))?;
+        if detection.inserted {
+            warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_twap_transport_gap", gap_id = %detection.gap.gap_id, source_time_start = %started, source_time_end = %ended, "new unrecoverable Polymarket RTDS transport gap detected");
+        }
+        Ok(())
     }
 
     async fn lock_lease(

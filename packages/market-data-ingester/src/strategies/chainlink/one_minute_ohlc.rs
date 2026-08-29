@@ -850,8 +850,9 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
         let inserted = self
             .persist_candles_in(&mut transaction, artifact_id, &page.candles, &timestamps)
             .await?;
+        let mut new_gap_count = 0_usize;
         for gap in gaps {
-            GapRepository::new(self.pool.clone())
+            let detection = GapRepository::new(self.pool.clone())
                 .detect_in(
                     &mut transaction,
                     &NewDataGap {
@@ -873,6 +874,7 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
                 )
                 .await
                 .map_err(|error| database_error("chainlink_candle_gap_detect_failed", error))?;
+            new_gap_count += usize::from(detection.inserted);
         }
 
         if !gaps.is_empty() {
@@ -970,6 +972,14 @@ impl ChainlinkBtcusdOneMinuteOhlcStrategy {
             .commit()
             .await
             .map_err(|error| database_error("chainlink_candle_transaction_commit_failed", error))?;
+        if new_gap_count > 0 {
+            warn!(
+                strategy = %STRATEGY_KEY,
+                error_code = "chainlink_one_minute_candle_gap",
+                gap_count = new_gap_count,
+                "new Chainlink one-minute candle gap detected"
+            );
+        }
         if let Some(artifact) = artifact_after_commit {
             state.artifact = Some(artifact);
         }

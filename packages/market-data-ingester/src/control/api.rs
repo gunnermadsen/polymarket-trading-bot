@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, State},
-    http::{header::AUTHORIZATION, HeaderMap, Request, StatusCode},
+    http::{
+        header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderMap, Request, StatusCode,
+    },
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -23,6 +26,7 @@ use crate::{
 };
 
 use super::error::ApiError;
+use super::metrics;
 
 const MAX_REQUEST_BODY_BYTES: usize = 32 * 1024;
 const MAX_CONFIG_BYTES: usize = 16 * 1024;
@@ -71,6 +75,7 @@ impl ControlApi {
         Router::new()
             .route("/health/live", get(liveness))
             .route("/health/ready", get(readiness))
+            .route("/prometheus/metrics", get(prometheus_metrics))
             .merge(admin)
             .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
             .with_state(self.state.clone())
@@ -151,6 +156,20 @@ async fn readiness(State(state): State<ApiState>) -> StatusCode {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+async fn prometheus_metrics(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let profiles = state.profiles.list().await.map_err(ApiError::internal)?;
+    let body =
+        metrics::render(&profiles, state.readiness.is_ready()).map_err(ApiError::internal)?;
+    Ok((
+        [(
+            CONTENT_TYPE,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response())
 }
 
 async fn list_profiles(

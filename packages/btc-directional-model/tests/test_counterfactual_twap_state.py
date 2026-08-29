@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import joblib
@@ -23,26 +23,28 @@ from btc_directional_model.counterfactual_twap_state_tournament import (
     ATTRIBUTION_TREATMENTS,
     CANDIDATE_NAMES,
     CHECKPOINT_SCHEMA_VERSION,
+    FEATURE_TREATMENTS,
+    HISTORY_ARMS,
     CheckpointStore,
     _apply_all_missing_feature_mask,
+    _arm_frame,
     _bootstrap_means,
-    _complete_utc_day_audit,
     _development_fold_frames,
     _economic_frame,
     _json_default,
+    _json_safe,
+    _margin_conditioned_agreement,
     _matrix,
     _neutralize_all_missing_fit_columns,
-    _paired_bootstrap,
     execution_settings,
     feature_names,
     load_config,
     predetermined_hyperparameters,
     score_model,
-    select_policy,
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CONFIG = PACKAGE_ROOT / "configs/btc-5m-causal-twap-attribution-20260607-20260828.toml"
+CONFIG = PACKAGE_ROOT / "configs/btc-5m-counterfactual-twap-state-causal-20260321-20260827.toml"
 
 
 def test_contract_is_new_training_only_family_with_exact_schedule() -> None:
@@ -54,40 +56,46 @@ def test_contract_is_new_training_only_family_with_exact_schedule() -> None:
     assert config.authentic_start == datetime(2026, 8, 1, tzinfo=UTC)
     assert config.current_start == datetime(2026, 8, 14, tzinfo=UTC)
     assert config.candidate_freeze == datetime(2026, 8, 26, tzinfo=UTC)
-    assert config.end == datetime(2026, 8, 28, tzinfo=UTC)
+    assert config.end == datetime(2026, 8, 27, tzinfo=UTC)
     assert config.raw["training"]["training_only"] is True
     assert config.raw["training"]["live_capital_allowed"] is False
     assert tuple(tuple(value) for value in config.raw["entry"]["cells"]) == (
-        (60, 90),
-        (90, 120),
-        (120, 150),
-        (150, 180),
+        (60, 90), (90, 120), (120, 150), (150, 180)
     )
 
 
 def test_tournament_dimensions_and_search_are_frozen() -> None:
     config = load_config(CONFIG)
 
+    assert FEATURE_TREATMENTS == (
+        "refprice_control", "twap30", "twap60", "dual_twap", "combined",
+        "combined_disagreement",
+    )
     assert ATTRIBUTION_TREATMENTS == (
         "refprice_only",
         "refprice_non_twap_basis",
         "refprice_relative_twap",
         "refprice_absolute_twap",
     )
-    assert CANDIDATE_NAMES == ATTRIBUTION_TREATMENTS
+    assert len(HISTORY_ARMS) == 5
+    assert CANDIDATE_NAMES == (
+        "refprice_state_control",
+        "dual_twap_state",
+        "refprice_dual_twap_state",
+        "refprice_dual_twap_binance_extension",
+        "refprice_dual_twap_margin_calibrated",
+        "refprice_dual_twap_uncertainty_guard",
+    )
     assert len(predetermined_hyperparameters(config)) == 36
     assert len(set(predetermined_hyperparameters(config))) == 36
-    assert not set(feature_names("refprice_absolute_twap")) & {
-        "label_source",
-        "label_up",
-        "target_margin_bps",
-        "window_start",
+    assert not set(feature_names("combined_disagreement")) & {
+        "label_source", "label_up", "target_margin_bps", "window_start"
     }
 
 
 def test_every_tournament_feature_is_causal_registered_and_supervision_free() -> None:
     registry = inference_feature_registry()
-    for treatment in ATTRIBUTION_TREATMENTS:
+    for treatment in (*FEATURE_TREATMENTS, *ATTRIBUTION_TREATMENTS):
         features = feature_names(treatment)
         validate_inference_features(features)
         assert set(features) <= set(registry)
@@ -135,7 +143,10 @@ def test_causal_availability_audit_fails_on_future_source_timestamp() -> None:
     valid = pl.DataFrame(
         {
             "observed_at": [observed],
-            **{name: [observed - timedelta(seconds=1)] for name in CAUSAL_AVAILABILITY_COLUMNS},
+            **{
+                name: [observed - timedelta(seconds=1)]
+                for name in CAUSAL_AVAILABILITY_COLUMNS
+            },
         }
     )
     assert causal_availability_audit(valid)["passed"] is True
@@ -145,6 +156,24 @@ def test_causal_availability_audit_fails_on_future_source_timestamp() -> None:
     )
     with pytest.raises(RuntimeError, match="future source availability"):
         causal_availability_audit(invalid)
+
+
+def test_uncertainty_weighting_changes_only_synthetic_binance_history() -> None:
+    frame = pl.DataFrame(
+        {
+            "label_source": [
+                "authentic_official_twap60",
+                "chainlink_reconstructed_twap60",
+                "binance_synthetic_twap60",
+            ],
+            "base_label_weight": [1.0, 0.8, 0.6],
+            "estimated_synthetic_label_error": [0.5, 0.5, 0.5],
+        }
+    )
+
+    weighted = _arm_frame(frame, "uncertainty_weighted_hybrid")
+
+    assert weighted["base_label_weight"].to_list() == [1.0, 0.8, 0.3]
 
 
 def test_binance_twap_uses_completed_left_closed_right_open_closes() -> None:
@@ -162,8 +191,7 @@ def test_binance_twap_uses_completed_left_closed_right_open_closes() -> None:
     )
     labels = pl.DataFrame(
         {
-            "market_id": ["m"],
-            "window_start": [start],
+            "market_id": ["m"], "window_start": [start],
             "window_end": [start + timedelta(minutes=5)],
         }
     )
@@ -179,12 +207,9 @@ def test_binance_twap_uses_completed_left_closed_right_open_closes() -> None:
 
 def test_source_queries_are_bounded_select_only_and_add_no_schema() -> None:
     names = (
-        "btc-twap60-label-source.sql",
-        "btc-twap60-refprice-source.sql",
-        "btc-twap60-core-current-source.sql",
-        "btc-core-oracle-source.sql",
-        "btc-twap60-candle-source.sql",
-        "btc-capacity-execution-evidence.sql",
+        "btc-twap60-label-source.sql", "btc-twap60-refprice-source.sql",
+        "btc-twap60-core-current-source.sql", "btc-core-oracle-source.sql",
+        "btc-twap60-candle-source.sql", "btc-capacity-execution-evidence.sql",
         "btc-counterfactual-twap-binance-source.sql",
     )
     forbidden = ("insert ", "update ", "delete ", "create ", "alter ", "drop ")
@@ -248,6 +273,36 @@ def test_all_missing_fit_feature_is_neutralized_for_fit_and_scoring() -> None:
     np.testing.assert_array_equal(normalized_scoring[:, 1], scoring[:, 1])
 
 
+def test_json_default_serializes_date_values() -> None:
+    assert _json_default(date(2026, 8, 26)) == "2026-08-26"
+
+
+def test_json_safe_normalizes_nested_non_finite_values() -> None:
+    assert _json_safe({"values": [float("inf"), np.float64(-np.inf)]}) == {
+        "values": ["inf", "-inf"]
+    }
+
+
+def test_margin_conditioned_agreement_uses_left_closed_bands() -> None:
+    frame = pl.DataFrame(
+        {
+            "observed": [1, 1, 0, 0, 1],
+            "reconstructed": [1, 0, 0, 1, 1],
+            "margin": [0.0, 0.526, 1.0, 2.0, 5.0],
+        }
+    )
+
+    result = _margin_conditioned_agreement(
+        frame,
+        observed_label="observed",
+        reconstructed_label="reconstructed",
+        margin="margin",
+    )
+
+    assert [row["markets"] for row in result["bands"]] == [1, 1, 1, 1, 1]
+    assert [row["agreement"] for row in result["bands"]] == [1.0, 0.0, 1.0, 0.0, 1.0]
+
+
 def test_development_folds_are_market_disjoint_and_chronological() -> None:
     config = load_config(CONFIG)
     frame = pl.DataFrame(
@@ -267,34 +322,6 @@ def test_development_folds_are_market_disjoint_and_chronological() -> None:
     assert test["market_id"].to_list() == ["test"]
 
 
-def test_complete_day_audit_rejects_partial_post_freeze_days() -> None:
-    complete = datetime(2026, 8, 25, tzinfo=UTC)
-    partial = datetime(2026, 8, 26, tzinfo=UTC)
-    rows = [
-        {
-            "market_id": f"complete-{index}",
-            "window_start": complete + timedelta(minutes=5 * index),
-        }
-        for index in range(288)
-    ]
-    rows.extend(
-        {
-            "market_id": f"partial-{index}",
-            "window_start": partial + timedelta(minutes=5 * index),
-        }
-        for index in range(239)
-    )
-
-    audit = _complete_utc_day_audit(pl.DataFrame(rows))
-
-    assert audit["complete_dates"] == [complete.date()]
-    assert audit["days"][1]["complete"] is False
-
-
-def test_report_serializer_handles_complete_day_dates() -> None:
-    assert _json_default(datetime(2026, 8, 25, tzinfo=UTC).date()) == "2026-08-25"
-
-
 def test_economic_frame_applies_current_regime_datetime_filter() -> None:
     config = load_config(CONFIG)
     row = {
@@ -312,16 +339,6 @@ def test_economic_frame_applies_current_regime_datetime_filter() -> None:
     assert result["label_regime"].item() == "authentic_official_twap60"
 
 
-def test_policy_selection_requires_isolated_authentic_execution_evidence() -> None:
-    with pytest.raises(RuntimeError, match="policy-calibration"):
-        select_policy(
-            pl.DataFrame(),
-            load_config(CONFIG),
-            strict_guard=False,
-            seed=20260828,
-        )
-
-
 def test_vectorized_bootstrap_preserves_seeded_legacy_draws() -> None:
     values = np.linspace(-1.5, 2.5, 1001)
     legacy_rng = np.random.default_rng(20260826)
@@ -332,29 +349,6 @@ def test_vectorized_bootstrap_preserves_seeded_legacy_draws() -> None:
     optimized = _bootstrap_means(values, resamples=137, seed=20260826)
 
     np.testing.assert_array_equal(optimized, legacy)
-
-
-def test_paired_bootstrap_uses_every_observation_then_resamples_markets() -> None:
-    start = datetime(2026, 8, 14, tzinfo=UTC)
-    base = {
-        "market_id": ["a", "a", "b", "b"],
-        "observed_at": [start + timedelta(seconds=value) for value in (60, 65, 60, 65)],
-        "seconds_elapsed": [60, 65, 60, 65],
-        "window_start": [start, start, start + timedelta(minutes=5), start + timedelta(minutes=5)],
-        "label_up": [1, 1, 0, 0],
-        "target_margin_bps": [2.0, 2.0, -2.0, -2.0],
-    }
-    candidate = pl.DataFrame({**base, "probability_up": [0.9, 0.8, 0.1, 0.2]})
-    control = pl.DataFrame({**base, "probability_up": [0.7, 0.7, 0.3, 0.3]})
-
-    result = _paired_bootstrap(candidate, control, seed=7, resamples=100)
-
-    expected = np.mean(
-        (candidate["probability_up"].to_numpy() - np.array(base["label_up"])) ** 2
-        - (control["probability_up"].to_numpy() - np.array(base["label_up"])) ** 2
-    )
-    assert result["markets"] == 2
-    assert result["candidate_minus_control_brier"] == pytest.approx(expected)
 
 
 def test_execution_settings_use_bounded_fit_parallelism(
@@ -391,6 +385,8 @@ def test_checkpoint_resume_requires_exact_training_identity(tmp_path: Path) -> N
     store.save("hyperparameter-search", value)
 
     assert store.load("hyperparameter-search") == value
-    assert CheckpointStore(tmp_path, "different-identity").load("hyperparameter-search") is None
+    assert CheckpointStore(tmp_path, "different-identity").load(
+        "hyperparameter-search"
+    ) is None
     payload = joblib.load(tmp_path / "hyperparameter-search.joblib")
     assert payload["schema_version"] == CHECKPOINT_SCHEMA_VERSION

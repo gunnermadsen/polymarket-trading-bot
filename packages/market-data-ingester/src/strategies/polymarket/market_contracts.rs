@@ -798,7 +798,7 @@ impl PolymarketBtcFiveMinuteMarketContractsStrategy {
         };
 
         for window_start in missing_windows {
-            GapRepository::new(self.pool.clone())
+            let detection = GapRepository::new(self.pool.clone())
                 .detect_in(
                     &mut transaction,
                     &NewDataGap {
@@ -821,10 +821,13 @@ impl PolymarketBtcFiveMinuteMarketContractsStrategy {
                 )
                 .await
                 .map_err(|error| database_error("polymarket_contract_gap_detect_failed", error))?;
+            if detection.inserted {
+                warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_gamma_contract_window_unavailable", gap_id = %detection.gap.gap_id, window_start = %window_start, "new Polymarket contract-window gap detected");
+            }
         }
 
         for (window_start, failure_code, failure_message) in failed_windows {
-            GapRepository::new(self.pool.clone())
+            let detection = GapRepository::new(self.pool.clone())
                 .detect_in(
                     &mut transaction,
                     &NewDataGap {
@@ -847,6 +850,9 @@ impl PolymarketBtcFiveMinuteMarketContractsStrategy {
                 )
                 .await
                 .map_err(|error| database_error("polymarket_contract_gap_detect_failed", error))?;
+            if detection.inserted {
+                warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_gamma_contract_window_unavailable", gap_id = %detection.gap.gap_id, window_start = %window_start, "new Polymarket contract-window fetch gap detected");
+            }
         }
 
         let transient_gap_ids = due_gap_outcomes
@@ -941,6 +947,7 @@ impl PolymarketBtcFiveMinuteMarketContractsStrategy {
                         format!("contract gap {gap_id} was not terminalized"),
                     ));
                 }
+                warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_gamma_contract_permanently_absent", gap_id = %gap_id, window_start = %window_start, repair_attempts = attempted.repair_attempts, "Polymarket contract-window repair became terminal");
             }
         }
 

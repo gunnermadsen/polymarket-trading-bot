@@ -988,6 +988,33 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  alloy:
+    image: grafana/alloy:v1.18.0@sha256:491b0578c04983fd54fe99b587b6fab4404dc46d0dc16677bd6b00cc1140b308
+    container_name: alloy
+    hostname: alloy
+    init: true
+    mem_limit: 128m
+    cpus: "0.15"
+    pids_limit: 128
+    logging: *default-logging
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./common/configs/alloy/market-data-ingester.alloy:/etc/alloy/config.alloy:ro
+    depends_on:
+      loki:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -1041,6 +1068,7 @@ volumes:
   grafana-data:
   prometheus-data:
   loki-data:
+  alloy-data:
   polymarket-backfill-cache:
     external: true
     name: polymarket-backfill-cache

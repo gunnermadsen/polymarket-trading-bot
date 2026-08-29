@@ -1100,7 +1100,7 @@ impl PolymarketBtcFiveMinuteResolutionsStrategy {
         };
         let gap_repository = GapRepository::new(self.pool.clone());
         for (window_start, reason) in unavailable {
-            gap_repository
+            let detection = gap_repository
                 .detect_in(
                     &mut transaction,
                     &NewDataGap {
@@ -1121,6 +1121,9 @@ impl PolymarketBtcFiveMinuteResolutionsStrategy {
                 .map_err(|error| {
                     database_error("polymarket_resolution_gap_detect_failed", error)
                 })?;
+            if detection.inserted {
+                warn!(strategy = %STRATEGY_KEY, error_code = RESOLUTION_GAP_REASON, gap_id = %detection.gap.gap_id, window_start = %window_start, "new Polymarket resolution gap detected");
+            }
         }
         for gap_id in absent_gap_ids {
             let attempted = gap_repository
@@ -1134,7 +1137,7 @@ impl PolymarketBtcFiveMinuteResolutionsStrategy {
                     )
                 })?;
             if attempted.repair_attempts >= MAX_ABSENT_REPAIR_ATTEMPTS {
-                gap_repository
+                let terminal = gap_repository
                     .mark_unrecoverable_in(
                         &mut transaction,
                         *gap_id,
@@ -1153,6 +1156,7 @@ impl PolymarketBtcFiveMinuteResolutionsStrategy {
                             format!("resolution gap {gap_id} could not be terminalized"),
                         )
                     })?;
+                warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_resolution_terminal_evidence_absent", gap_id = %terminal.gap_id, repair_attempts = terminal.repair_attempts, "Polymarket resolution repair became terminal");
             }
         }
 

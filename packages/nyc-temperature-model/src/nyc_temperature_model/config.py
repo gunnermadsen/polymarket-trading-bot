@@ -11,6 +11,8 @@ SUPPORTED_INGESTERS = (
     "asos_resolution_observations",
     "asos_one_minute_observations",
     "hrrr_point_forecasts",
+    "goes_abi_klga_features",
+    "hrrr_environment_features",
     "pmxt_temperature_execution",
 )
 
@@ -57,6 +59,9 @@ class Settings:
     cache_directory: Path
     model_directory: Path
     report_directory: Path
+    goes_directory: Path
+    hrrr_environment_directory: Path
+    training_snapshot_directory: Path
     worker_id: str
     worker_ingesters: tuple[str, ...]
     poll_seconds: int
@@ -73,6 +78,8 @@ class Settings:
     hrrr_source_priority: tuple[str, ...]
     pmxt_download_attempts: int
     pmxt_retry_base_seconds: float
+    noaa_download_attempts: int
+    noaa_retry_base_seconds: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -88,6 +95,19 @@ class Settings:
         cache = Path(os.environ.get("WEATHER_CACHE_DIR", "/var/lib/weather/cache"))
         models = Path(os.environ.get("WEATHER_MODEL_DIR", "/var/lib/weather/models"))
         reports = Path(os.environ.get("WEATHER_REPORT_DIR", "/var/lib/weather/reports"))
+        goes = Path(
+            os.environ.get("GOES_PATCH_DIR", "/var/lib/weather/satellite/goes")
+        )
+        hrrr_environment = Path(
+            os.environ.get(
+                "HRRR_ENVIRONMENT_DIR", "/var/lib/weather/hrrr-environment"
+            )
+        )
+        training_snapshots = Path(
+            os.environ.get(
+                "WEATHER_TRAINING_SNAPSHOT_DIR", "/var/lib/weather/training-snapshots"
+            )
+        )
         hrrr_retry_base_ms = _env_int("HRRR_RETRY_BASE_MS", 1000)
         hrrr_retry_max_ms = _env_int("HRRR_RETRY_MAX_MS", 30000)
         if hrrr_retry_max_ms < hrrr_retry_base_ms:
@@ -104,6 +124,9 @@ class Settings:
             cache_directory=cache,
             model_directory=models,
             report_directory=reports,
+            goes_directory=goes,
+            hrrr_environment_directory=hrrr_environment,
+            training_snapshot_directory=training_snapshots,
             worker_id=os.environ.get("WEATHER_WORKER_ID", "temperature-worker-1"),
             worker_ingesters=_env_worker_ingesters(),
             poll_seconds=_env_int("WEATHER_WORKER_POLL_SECONDS", 2),
@@ -132,8 +155,19 @@ class Settings:
             hrrr_source_priority=hrrr_source_priority,
             pmxt_download_attempts=_env_int("PMXT_DOWNLOAD_ATTEMPTS", 6),
             pmxt_retry_base_seconds=_env_nonnegative_float("PMXT_RETRY_BASE_SECONDS", 2.0),
+            noaa_download_attempts=_env_int("NOAA_DOWNLOAD_ATTEMPTS", 6),
+            noaa_retry_base_seconds=_env_nonnegative_float(
+                "NOAA_RETRY_BASE_SECONDS", 2.0
+            ),
         )
 
     def prepare_directories(self) -> None:
-        for directory in (self.cache_directory, self.model_directory, self.report_directory):
+        for directory in (
+            self.cache_directory,
+            self.model_directory,
+            self.report_directory,
+            self.goes_directory,
+            self.hrrr_environment_directory,
+            self.training_snapshot_directory,
+        ):
             directory.mkdir(parents=True, exist_ok=True)

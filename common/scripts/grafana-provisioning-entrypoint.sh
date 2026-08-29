@@ -84,11 +84,16 @@ if [ ! -f "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" ]; then
   echo "Missing Grafana directional runtime alert provisioning source" >&2
   exit 1
 fi
+if [ ! -f "${SRC_DIR}/alerting/rules-market-data-ingester.yml" ]; then
+  echo "Missing Grafana market-data ingester alert provisioning source" >&2
+  exit 1
+fi
 
 cp "${SRC_DIR}/dashboards/dashboards.yml" "${DST_DIR}/dashboards/dashboards.yml"
 cp "${SRC_DIR}/alerting/rules-clob-market-data.yml" "${DST_DIR}/alerting/rules-clob-market-data.yml"
 cp "${SRC_DIR}/alerting/rules-prometheus.yml" "${DST_DIR}/alerting/rules-prometheus.yml"
 cp "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" "${DST_DIR}/alerting/rules-directional-runtime-health.yml"
+cp "${SRC_DIR}/alerting/rules-market-data-ingester.yml" "${DST_DIR}/alerting/rules-market-data-ingester.yml"
 
 cat > "${DST_DIR}/datasources/postgres.yml" <<EOF
 apiVersion: 1
