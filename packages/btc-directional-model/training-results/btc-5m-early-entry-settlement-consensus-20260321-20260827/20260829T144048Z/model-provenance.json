@@ -1,0 +1,33 @@
+{
+  "artifact_path": "tournament.joblib",
+  "configuration_sha256": "da6e0b6637270efc367fbfe66e8d71516f1fec91f59baf276680f23204b92a41",
+  "constituent_tags": {
+    "bridge": "model/btc-5m-settlement-bridge-residual-freeze-20260828-run-20260828T204616Z",
+    "causal": "model/btc-5m-counterfactual-twap-state-causal-attribution-20260607-20260826-20260828T165228Z",
+    "latent": "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+  },
+  "correction_identity": {
+    "bridge_max_bins": 127,
+    "causal_max_bins": 255,
+    "historical_evidence_consumed": true,
+    "prior_defective_model_tag": "model/btc-5m-early-entry-settlement-consensus-20260321-20260827-run-20260829T022324Z",
+    "weight_normalization": "mean_one_market_band_equal_v1"
+  },
+  "deployment_status": "not_deployed_training_only",
+  "historically_consumed_holdout_status": {
+    "bridge_latent_equal_logit_pool": "historically_consumed_holdout_unavailable",
+    "bridge_latent_uncertainty_margin_stack": "historically_consumed_holdout_unavailable",
+    "frozen_bridge_control": "historically_consumed_holdout_unavailable",
+    "three_family_nonnegative_logit_stack": "historically_consumed_holdout_unavailable"
+  },
+  "model_artifact_sha256": "562c39688790f055414c0f23ee372db08f782e1e2106189ef8424220ea4715e2",
+  "model_family": "btc-5m-early-entry-settlement-consensus",
+  "producing_commit": "f86ab895930823840b079f92f17c542ccd4969c9",
+  "qualification_status": "promising_sparse_edge",
+  "runtime_exported": false,
+  "schema_version": "btc-model-provenance-v1",
+  "source_identity": "018ab133b9f926eff36f1770e565b87dcec97c21bc5e74c29ce9099ea6fe6d36",
+  "source_manifest_sha256": "3e1ff464bf4dbc1d2b4b3f7c77f1715c212a56cc1f6901fe38e5db0f7e175881",
+  "split_manifest_sha256": "7fc804bd83f8ecd13fb4fd8788e91a22d49f943d476c9aa98a814230d006ba7b",
+  "training_run_id": "20260829T144048Z"
+}
