@@ -1,0 +1,5314 @@
+{
+  "configuration": {
+    "freeze_at": "2026-08-28T00:00:00+00:00",
+    "path": "configs/btc-5m-latent-twap-settlement-risk-20260607-20260828.toml",
+    "sha256": "40a269a179873211aaed3e9657a171d45d916b0c1cb6e6508495b8790054a543"
+  },
+  "created_at": "2026-08-28T17:47:03.160384+00:00",
+  "data": {
+    "immutable_label_audit_sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130",
+    "immutable_source_frame_sha256": "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26",
+    "immutable_source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4",
+    "split_separation": {
+      "block_markets": {
+        "authentic_calibration": 3423,
+        "historical_fit": 14710,
+        "official_development": 3668,
+        "prospective": 0
+      },
+      "block_overlaps": {
+        "authentic_calibration__official_development": 0,
+        "authentic_calibration__prospective": 0,
+        "historical_fit__authentic_calibration": 0,
+        "historical_fit__official_development": 0,
+        "historical_fit__prospective": 0,
+        "official_development__prospective": 0
+      },
+      "completed_market_values_supervision_only": true,
+      "features_at_or_before_checkpoint": true,
+      "fold_train_test_overlaps": {
+        "official_20260814_15": 0,
+        "official_20260816_17": 0,
+        "official_20260818_19": 0,
+        "official_20260820_21": 0,
+        "official_20260822_23": 0,
+        "official_20260824_25": 0,
+        "official_20260826_27": 0
+      },
+      "passed": true
+    },
+    "training_frame": {
+      "book_valid_rows": 69543,
+      "checkpoint_seconds": [
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+        105,
+        110,
+        115,
+        120,
+        125,
+        130,
+        135,
+        140,
+        145,
+        150
+      ],
+      "checkpoints_per_market": 25,
+      "database_mutations": false,
+      "features_use_completed_targets": false,
+      "label_audit_sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130",
+      "label_inventory": {
+        "authentic_counterfactual_twap60": {
+          "markets": 3423,
+          "rows": 85575
+        },
+        "authentic_official_twap60": {
+          "markets": 3668,
+          "rows": 91700
+        },
+        "chainlink_reconstructed_twap60": {
+          "markets": 14710,
+          "rows": 367750
+        }
+      },
+      "labels_supervision_only": true,
+      "markets": 21801,
+      "read_only_sources": true,
+      "rows": 545025,
+      "schema_version": "btc-latent-twap-causal-frame-v1",
+      "sensor_valid_rows": 541339,
+      "sha256": "2e3a5c852cadd7e328c1be959d8b547e543de9fe0b27d6b0f773d4136440b679",
+      "source_frame_sha256": "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26",
+      "source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+    }
+  },
+  "database_mutations": false,
+  "development": {
+    "candidates": {
+      "twap_refprice_regime_switching": {
+        "accuracy": 0.6745562130177515,
+        "average_loss": -3.4614747575757576,
+        "average_win": 1.481788978950117,
+        "bootstrap_stressed_expectancy": {
+          "lower": -0.39977797587223074,
+          "median": -0.12517078122501435,
+          "resamples": 2000,
+          "unit": "stressed_pnl_per_trade",
+          "upper": 0.2362253256811412
+        },
+        "calibration_period": {
+          "brier_score": 0.19698608570623216,
+          "expected_calibration_error": 0.06671862920410818,
+          "log_loss": 0.5864790504486459,
+          "margin_mae_bps": 3.8643772920669526,
+          "markets": 3417,
+          "mean_probability_up": 0.5119596196258592,
+          "rows": 85425
+        },
+        "capacity": {
+          "10": {
+            "net_pnl": -78.61583246282004,
+            "stressed_expectancy": -0.2550608135361342,
+            "stressed_pnl": -129.31583246282003,
+            "supported_trades": 507
+          },
+          "100": {
+            "net_pnl": -888.325340891425,
+            "stressed_expectancy": -2.7521209879515287,
+            "stressed_pnl": -1395.325340891425,
+            "supported_trades": 507
+          },
+          "125": {
+            "net_pnl": -1141.5090779377865,
+            "stressed_expectancy": -3.501497195143563,
+            "stressed_pnl": -1775.2590779377865,
+            "supported_trades": 507
+          },
+          "15": {
+            "net_pnl": -118.86422674118815,
+            "stressed_expectancy": -0.3844462065901149,
+            "stressed_pnl": -194.91422674118826,
+            "supported_trades": 507
+          },
+          "150": {
+            "net_pnl": -1403.5385785380422,
+            "stressed_expectancy": -4.2683206677278935,
+            "stressed_pnl": -2164.038578538042,
+            "supported_trades": 507
+          },
+          "175": {
+            "net_pnl": -1679.5663018128316,
+            "stressed_expectancy": -5.062754046968109,
+            "stressed_pnl": -2566.8163018128316,
+            "supported_trades": 507
+          },
+          "20": {
+            "net_pnl": -159.70230829088507,
+            "stressed_expectancy": -0.5149946909090436,
+            "stressed_pnl": -261.1023082908851,
+            "supported_trades": 507
+          },
+          "200": {
+            "net_pnl": -1966.7637198470784,
+            "stressed_expectancy": -5.879218382341377,
+            "stressed_pnl": -2980.7637198470784,
+            "supported_trades": 507
+          },
+          "25": {
+            "net_pnl": -201.22214770886004,
+            "stressed_expectancy": -0.6468878653034715,
+            "stressed_pnl": -327.97214770886006,
+            "supported_trades": 507
+          },
+          "30": {
+            "net_pnl": -243.45153201909602,
+            "stressed_expectancy": -0.7801805365268172,
+            "stressed_pnl": -395.5515320190963,
+            "supported_trades": 507
+          },
+          "40": {
+            "net_pnl": -329.74226964286515,
+            "stressed_expectancy": -1.0503792300648227,
+            "stressed_pnl": -532.5422696428651,
+            "supported_trades": 507
+          },
+          "5": {
+            "net_pnl": -39.02150419906002,
+            "stressed_expectancy": -0.1269654915168837,
+            "stressed_pnl": -64.37150419906003,
+            "supported_trades": 507
+          },
+          "50": {
+            "net_pnl": -418.352315065034,
+            "stressed_expectancy": -1.325152495197306,
+            "stressed_pnl": -671.8523150650341,
+            "supported_trades": 507
+          },
+          "75": {
+            "net_pnl": -647.1993640058499,
+            "stressed_expectancy": -2.026527345179191,
+            "stressed_pnl": -1027.44936400585,
+            "supported_trades": 507
+          }
+        },
+        "coverage": 0.13822246455834242,
+        "cvar_10": -3.706555980392157,
+        "daily": {
+          "2026-08-14": {
+            "net_pnl": -3.256585,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1,
+            "wins": 0
+          },
+          "2026-08-16": {
+            "net_pnl": 1.4015000000000004,
+            "stressed_pnl": 1.3515000000000004,
+            "trades": 1,
+            "wins": 1
+          },
+          "2026-08-17": {
+            "net_pnl": -1.4921899999999981,
+            "stressed_pnl": -1.7921899999999982,
+            "trades": 6,
+            "wins": 4
+          },
+          "2026-08-18": {
+            "net_pnl": 0.07609999999999917,
+            "stressed_pnl": -0.22390000000000043,
+            "trades": 6,
+            "wins": 4
+          },
+          "2026-08-19": {
+            "net_pnl": 6.635345000000005,
+            "stressed_pnl": 4.585345000000007,
+            "trades": 41,
+            "wins": 29
+          },
+          "2026-08-20": {
+            "net_pnl": -38.101134999999985,
+            "stressed_pnl": -42.30113499999998,
+            "trades": 84,
+            "wins": 51
+          },
+          "2026-08-21": {
+            "net_pnl": -24.019479999999984,
+            "stressed_pnl": -31.319479999999977,
+            "trades": 146,
+            "wins": 96
+          },
+          "2026-08-22": {
+            "net_pnl": 23.860815000000006,
+            "stressed_pnl": 21.360815000000006,
+            "trades": 50,
+            "wins": 39
+          },
+          "2026-08-23": {
+            "net_pnl": 12.321220800940006,
+            "stressed_pnl": 10.821220800940008,
+            "trades": 30,
+            "wins": 23
+          },
+          "2026-08-24": {
+            "net_pnl": -48.31389999999999,
+            "stressed_pnl": -51.913899999999984,
+            "trades": 72,
+            "wins": 40
+          },
+          "2026-08-25": {
+            "net_pnl": 31.86680500000001,
+            "stressed_pnl": 28.36680500000001,
+            "trades": 70,
+            "wins": 55
+          }
+        },
+        "down_trade_share": 0.4556213017751479,
+        "entry_bands": {
+          "120-151": {
+            "accuracy": 0.5869565217391305,
+            "average_loss": -3.453653815789472,
+            "average_win": 1.4870654629629632,
+            "losses": 38,
+            "mean_entry_second": 132.3913043478261,
+            "stressed_expectancy": -0.553666413043478,
+            "stressed_pnl": -50.937309999999975,
+            "trades": 92,
+            "wins": 54
+          },
+          "30-60": {
+            "accuracy": 0.6898395721925134,
+            "average_loss": -3.4785219827586205,
+            "average_win": 1.510469031007752,
+            "losses": 58,
+            "mean_entry_second": 43.529411764705884,
+            "stressed_expectancy": -0.036918556149732475,
+            "stressed_pnl": -6.903769999999972,
+            "trades": 187,
+            "wins": 129
+          },
+          "60-90": {
+            "accuracy": 0.6590909090909091,
+            "average_loss": -3.4194553333333335,
+            "average_win": 1.4355551816200003,
+            "losses": 45,
+            "mean_entry_second": 70.68181818181819,
+            "stressed_expectancy": -0.219562039386818,
+            "stressed_pnl": -28.982189199059977,
+            "trades": 132,
+            "wins": 87
+          },
+          "90-120": {
+            "accuracy": 0.75,
+            "average_loss": -3.5114468749999994,
+            "average_win": 1.4823123611111113,
+            "losses": 24,
+            "mean_entry_second": 100.88541666666667,
+            "stressed_expectancy": 0.23387255208333343,
+            "stressed_pnl": 22.45176500000001,
+            "trades": 96,
+            "wins": 72
+          }
+        },
+        "fold_stressed_pnl": {
+          "official_20260814_15": -3.3065849999999997,
+          "official_20260816_17": -0.44068999999999825,
+          "official_20260818_19": 4.361445000000007,
+          "official_20260820_21": -73.62061499999996,
+          "official_20260822_23": 32.182035800940014,
+          "official_20260824_25": -23.547094999999977
+        },
+        "folds": [
+          {
+            "economic": {
+              "accuracy": 0.0,
+              "coverage": 0.001736111111111111,
+              "mean_entry_second": 135.0,
+              "stressed_pnl": -3.3065849999999997,
+              "trades": 1
+            },
+            "name": "official_20260814_15",
+            "predictive": {
+              "brier_score": 0.21951188987940123,
+              "expected_calibration_error": 0.0709655576941013,
+              "log_loss": 0.6338518492338447,
+              "markets": 575,
+              "mean_probability_up": 0.5113608138358189,
+              "rows": 14375
+            },
+            "test_end": "2026-08-16T00:00:00+00:00",
+            "test_start": "2026-08-14T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 18133
+          },
+          {
+            "economic": {
+              "accuracy": 0.7142857142857143,
+              "coverage": 0.012216404886561954,
+              "mean_entry_second": 97.14285714285714,
+              "stressed_pnl": -0.44068999999999825,
+              "trades": 7
+            },
+            "name": "official_20260816_17",
+            "predictive": {
+              "brier_score": 0.21433627765436714,
+              "expected_calibration_error": 0.06443179993623432,
+              "log_loss": 0.6177669469550713,
+              "markets": 572,
+              "mean_probability_up": 0.5054339985277834,
+              "rows": 14300
+            },
+            "test_end": "2026-08-18T00:00:00+00:00",
+            "test_start": "2026-08-16T00:00:00+00:00",
+            "testing_markets": 573,
+            "training_markets": 18709
+          },
+          {
+            "economic": {
+              "accuracy": 0.7021276595744681,
+              "coverage": 0.08333333333333333,
+              "mean_entry_second": 63.61702127659574,
+              "stressed_pnl": 4.361445000000009,
+              "trades": 47
+            },
+            "name": "official_20260818_19",
+            "predictive": {
+              "brier_score": 0.1960910615727186,
+              "expected_calibration_error": 0.06369462544761482,
+              "log_loss": 0.6017349996399806,
+              "markets": 563,
+              "mean_probability_up": 0.5156005664846499,
+              "rows": 14075
+            },
+            "test_end": "2026-08-20T00:00:00+00:00",
+            "test_start": "2026-08-18T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19282
+          },
+          {
+            "economic": {
+              "accuracy": 0.6391304347826087,
+              "coverage": 0.4078014184397163,
+              "mean_entry_second": 76.19565217391305,
+              "stressed_pnl": -73.62061499999999,
+              "trades": 230
+            },
+            "name": "official_20260820_21",
+            "predictive": {
+              "brier_score": 0.22016054218084735,
+              "expected_calibration_error": 0.12914217961629948,
+              "log_loss": 0.8432108674734226,
+              "markets": 563,
+              "mean_probability_up": 0.5042400108344423,
+              "rows": 14075
+            },
+            "test_end": "2026-08-22T00:00:00+00:00",
+            "test_start": "2026-08-20T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19846
+          },
+          {
+            "economic": {
+              "accuracy": 0.775,
+              "coverage": 0.1388888888888889,
+              "mean_entry_second": 83.25,
+              "stressed_pnl": 32.18203580094001,
+              "trades": 80
+            },
+            "name": "official_20260822_23",
+            "predictive": {
+              "brier_score": 0.18728429379651407,
+              "expected_calibration_error": 0.06240846672418011,
+              "log_loss": 0.6083487819792934,
+              "markets": 575,
+              "mean_probability_up": 0.5347652986695627,
+              "rows": 14375
+            },
+            "test_end": "2026-08-24T00:00:00+00:00",
+            "test_start": "2026-08-22T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20410
+          },
+          {
+            "economic": {
+              "accuracy": 0.6690140845070423,
+              "coverage": 0.2465277777777778,
+              "mean_entry_second": 79.8943661971831,
+              "stressed_pnl": -23.54709499999997,
+              "trades": 142
+            },
+            "name": "official_20260824_25",
+            "predictive": {
+              "brier_score": 0.21282501588879943,
+              "expected_calibration_error": 0.10366319172779968,
+              "log_loss": 0.7158526588867138,
+              "markets": 575,
+              "mean_probability_up": 0.4995983357930436,
+              "rows": 14375
+            },
+            "test_end": "2026-08-26T00:00:00+00:00",
+            "test_start": "2026-08-24T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20986
+          },
+          {
+            "economic": {
+              "accuracy": null,
+              "coverage": 0.0,
+              "stressed_pnl": 0.0,
+              "trades": 0
+            },
+            "name": "official_20260826_27",
+            "predictive": {
+              "brier_score": 0.20023122968474072,
+              "expected_calibration_error": 0.08490880568574555,
+              "log_loss": 0.5936174005418284,
+              "markets": 239,
+              "mean_probability_up": 0.5359909636191391,
+              "rows": 5975
+            },
+            "test_end": "2026-08-28T00:00:00+00:00",
+            "test_start": "2026-08-26T00:00:00+00:00",
+            "testing_markets": 239,
+            "training_markets": 21562
+          }
+        ],
+        "gross_pnl": 12.418899999999988,
+        "loss_percentiles": {
+          "p25": -3.6485,
+          "p5": -3.7455599999999993,
+          "p50": -3.55116,
+          "p75": -3.3556399999999997,
+          "p95": -2.8419960000000026
+        },
+        "losses": 165,
+        "markets": 3668,
+        "maximum_drawdown": 102.11748419905983,
+        "maximum_positive_pnl_day_share": 0.42666033535295106,
+        "maximum_quote_loss_recovery_ratio": 2.985842288192341,
+        "mean_entry_second": 77.58382642998028,
+        "median_entry_second": 70.0,
+        "net_pnl": -39.02150419905991,
+        "p10_entry_second": 40.0,
+        "p25_entry_second": 50.0,
+        "p75_entry_second": 105.0,
+        "p90_entry_second": 130.0,
+        "per_direction": {
+          "DOWN": {
+            "accuracy": 0.645021645021645,
+            "average_loss": -3.4998049390243904,
+            "average_win": 1.4749281543624164,
+            "losses": 82,
+            "mean_entry_second": 78.78787878787878,
+            "stressed_expectancy": -0.2909944155844153,
+            "stressed_pnl": -67.21970999999994,
+            "trades": 231,
+            "wins": 149
+          },
+          "UP": {
+            "accuracy": 0.6992753623188406,
+            "average_loss": -3.4236063855421683,
+            "average_win": 1.4870856777250776,
+            "losses": 83,
+            "mean_entry_second": 76.57608695652173,
+            "stressed_expectancy": 0.010319586235290064,
+            "stressed_pnl": 2.8482058009400575,
+            "trades": 276,
+            "wins": 193
+          }
+        },
+        "predictive": {
+          "brier_score": 0.20783382233094472,
+          "expected_calibration_error": 0.06888728543480979,
+          "log_loss": 0.6648340844839047,
+          "markets": 3662,
+          "mean_probability_up": 0.5134276052062015,
+          "rows": 91550
+        },
+        "price_bands": {
+          "0-0.65": {
+            "accuracy": 0.5982905982905983,
+            "average_loss": -3.088578723404255,
+            "average_win": 1.8586608571428571,
+            "losses": 47,
+            "mean_entry_second": 76.06837606837607,
+            "stressed_expectancy": -0.12869179487179472,
+            "stressed_pnl": -15.056939999999981,
+            "trades": 117,
+            "wins": 70
+          },
+          "0.65-0.75": {
+            "accuracy": 0.6974358974358974,
+            "average_loss": -3.610001144067797,
+            "average_win": 1.3847998926505147,
+            "losses": 118,
+            "mean_entry_second": 78.03846153846153,
+            "stressed_expectancy": -0.12644760051041004,
+            "stressed_pnl": -49.314564199059916,
+            "trades": 390,
+            "wins": 272
+          },
+          "0.75-0.85": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "profit_factor": 0.8872936087067183,
+        "profitable_fold_ratio": 0.2857142857142857,
+        "qualification": {
+          "checks": {
+            "accuracy": false,
+            "average_entry": true,
+            "average_loss_recovery": true,
+            "both_directions": true,
+            "coverage": true,
+            "cvar_nonworse": true,
+            "every_quote_recovery": true,
+            "maximum_drawdown_nonworse": true,
+            "official_development_period_complete": false,
+            "pnl_day_concentration": true,
+            "positive_bootstrap_lower": false,
+            "positive_stressed_expectancy": false,
+            "positive_stressed_pnl": false,
+            "positive_vwap5_capacity": false,
+            "profit_factor": false,
+            "profitable_folds": false,
+            "refprice_admission": false,
+            "trade_support": true
+          },
+          "passed": false,
+          "reasons": [
+            "official_development_period_complete",
+            "accuracy",
+            "profit_factor",
+            "positive_stressed_pnl",
+            "positive_stressed_expectancy",
+            "positive_bootstrap_lower",
+            "profitable_folds",
+            "positive_vwap5_capacity",
+            "refprice_admission"
+          ]
+        },
+        "selected_configuration": "state_12",
+        "stressed_expectancy": -0.12696549151688344,
+        "stressed_pnl": -64.3715041990599,
+        "trades": 507,
+        "up_trade_share": 0.5443786982248521,
+        "wins": 342,
+        "wins_to_recover_average_loss": 2.336010597155538,
+        "worst_loss": -3.7455599999999993
+      },
+      "twap_refprice_single_regime": {
+        "accuracy": 0.6817325800376648,
+        "average_loss": -3.4611763609467454,
+        "average_win": 1.480386009432376,
+        "bootstrap_stressed_expectancy": {
+          "lower": -0.34353655499411,
+          "median": -0.08934153226636979,
+          "resamples": 2000,
+          "unit": "stressed_pnl_per_trade",
+          "upper": 0.2718574655070063
+        },
+        "calibration_period": {
+          "brier_score": 0.1952476386358854,
+          "expected_calibration_error": 0.06362839886353774,
+          "log_loss": 0.5820833540679267,
+          "margin_mae_bps": 3.837536147299665,
+          "markets": 3417,
+          "mean_probability_up": 0.5119387107269332,
+          "rows": 85425
+        },
+        "capacity": {
+          "10": {
+            "net_pnl": -45.704903416950025,
+            "stressed_expectancy": -0.18607326443870054,
+            "stressed_pnl": -98.80490341694998,
+            "supported_trades": 531
+          },
+          "100": {
+            "net_pnl": -564.4048264929575,
+            "stressed_expectancy": -2.062909277764515,
+            "stressed_pnl": -1095.4048264929575,
+            "supported_trades": 531
+          },
+          "125": {
+            "net_pnl": -736.5124521089393,
+            "stressed_expectancy": -2.6370291000168358,
+            "stressed_pnl": -1400.26245210894,
+            "supported_trades": 531
+          },
+          "15": {
+            "net_pnl": -69.55249722993116,
+            "stressed_expectancy": -0.2809839872503415,
+            "stressed_pnl": -149.20249722993134,
+            "supported_trades": 531
+          },
+          "150": {
+            "net_pnl": -917.867924449629,
+            "stressed_expectancy": -3.2285648294719933,
+            "stressed_pnl": -1714.3679244496284,
+            "supported_trades": 531
+          },
+          "175": {
+            "net_pnl": -1113.0726184368832,
+            "stressed_expectancy": -3.8461819556250156,
+            "stressed_pnl": -2042.3226184368832,
+            "supported_trades": 531
+          },
+          "20": {
+            "net_pnl": -94.07714892166504,
+            "stressed_expectancy": -0.3771697719805366,
+            "stressed_pnl": -200.27714892166492,
+            "supported_trades": 531
+          },
+          "200": {
+            "net_pnl": -1320.938191157308,
+            "stressed_expectancy": -4.4876425445523696,
+            "stressed_pnl": -2382.938191157308,
+            "supported_trades": 531
+          },
+          "25": {
+            "net_pnl": -119.35492784566003,
+            "stressed_expectancy": -0.4747738754155557,
+            "stressed_pnl": -252.1049278456601,
+            "supported_trades": 531
+          },
+          "30": {
+            "net_pnl": -145.2934618851967,
+            "stressed_expectancy": -0.5736223387668496,
+            "stressed_pnl": -304.59346188519714,
+            "supported_trades": 531
+          },
+          "40": {
+            "net_pnl": -199.37169708250755,
+            "stressed_expectancy": -0.7754645896092418,
+            "stressed_pnl": -411.7716970825074,
+            "supported_trades": 531
+          },
+          "5": {
+            "net_pnl": -22.489069585480003,
+            "stressed_expectancy": -0.09235229677114874,
+            "stressed_pnl": -49.03906958547998,
+            "supported_trades": 531
+          },
+          "50": {
+            "net_pnl": -255.80680194808212,
+            "stressed_expectancy": -0.9817453897327347,
+            "stressed_pnl": -521.3068019480821,
+            "supported_trades": 531
+          },
+          "75": {
+            "net_pnl": -403.8016230275037,
+            "stressed_expectancy": -1.510455033950101,
+            "stressed_pnl": -802.0516230275036,
+            "supported_trades": 531
+          }
+        },
+        "coverage": 0.14476553980370774,
+        "cvar_10": -3.7132183333333337,
+        "daily": {
+          "2026-08-14": {
+            "net_pnl": -3.256585,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1,
+            "wins": 0
+          },
+          "2026-08-16": {
+            "net_pnl": 1.4015000000000004,
+            "stressed_pnl": 1.3515000000000004,
+            "trades": 1,
+            "wins": 1
+          },
+          "2026-08-17": {
+            "net_pnl": -1.4921899999999981,
+            "stressed_pnl": -1.7921899999999982,
+            "trades": 6,
+            "wins": 4
+          },
+          "2026-08-18": {
+            "net_pnl": 2.9873399999999997,
+            "stressed_pnl": 2.7373399999999997,
+            "trades": 5,
+            "wins": 4
+          },
+          "2026-08-19": {
+            "net_pnl": 10.397651274540006,
+            "stressed_pnl": 8.197651274540007,
+            "trades": 44,
+            "wins": 32
+          },
+          "2026-08-20": {
+            "net_pnl": -26.606914999999983,
+            "stressed_pnl": -31.206914999999977,
+            "trades": 92,
+            "wins": 59
+          },
+          "2026-08-21": {
+            "net_pnl": -28.19957499999998,
+            "stressed_pnl": -35.799574999999976,
+            "trades": 152,
+            "wins": 99
+          },
+          "2026-08-22": {
+            "net_pnl": 26.278478813040007,
+            "stressed_pnl": 23.67847881304001,
+            "trades": 52,
+            "wins": 41
+          },
+          "2026-08-23": {
+            "net_pnl": 11.537880800940007,
+            "stressed_pnl": 10.037880800940007,
+            "trades": 30,
+            "wins": 23
+          },
+          "2026-08-24": {
+            "net_pnl": -49.491170473999986,
+            "stressed_pnl": -53.34117047399998,
+            "trades": 77,
+            "wins": 43
+          },
+          "2026-08-25": {
+            "net_pnl": 33.954515000000015,
+            "stressed_pnl": 30.40451500000001,
+            "trades": 71,
+            "wins": 56
+          }
+        },
+        "down_trade_share": 0.4632768361581921,
+        "entry_bands": {
+          "120-151": {
+            "accuracy": 0.6179775280898876,
+            "average_loss": -3.473876617647058,
+            "average_win": 1.4770975454545456,
+            "losses": 34,
+            "mean_entry_second": 132.35955056179776,
+            "stressed_expectancy": -0.414285842696629,
+            "stressed_pnl": -36.87143999999998,
+            "trades": 89,
+            "wins": 55
+          },
+          "30-60": {
+            "accuracy": 0.6831683168316832,
+            "average_loss": -3.4606642968749997,
+            "average_win": 1.501524891304348,
+            "losses": 64,
+            "mean_entry_second": 42.32673267326733,
+            "stressed_expectancy": -0.07065386138613843,
+            "stressed_pnl": -14.272079999999962,
+            "trades": 202,
+            "wins": 138
+          },
+          "60-90": {
+            "accuracy": 0.6642335766423357,
+            "average_loss": -3.406039239130435,
+            "average_win": 1.450249674884835,
+            "losses": 46,
+            "mean_entry_second": 70.91240875912409,
+            "stressed_expectancy": -0.18032908456554725,
+            "stressed_pnl": -24.705084585479973,
+            "trades": 137,
+            "wins": 91
+          },
+          "90-120": {
+            "accuracy": 0.7572815533980582,
+            "average_loss": -3.5466672,
+            "average_win": 1.480464294871795,
+            "losses": 25,
+            "mean_entry_second": 101.11650485436893,
+            "stressed_expectancy": 0.26028674757281567,
+            "stressed_pnl": 26.809535000000015,
+            "trades": 103,
+            "wins": 78
+          }
+        },
+        "fold_stressed_pnl": {
+          "official_20260814_15": -3.3065849999999997,
+          "official_20260816_17": -0.44068999999999825,
+          "official_20260818_19": 10.934991274540007,
+          "official_20260820_21": -67.00648999999996,
+          "official_20260822_23": 33.71635961398002,
+          "official_20260824_25": -22.93665547399997
+        },
+        "folds": [
+          {
+            "economic": {
+              "accuracy": 0.0,
+              "coverage": 0.001736111111111111,
+              "mean_entry_second": 135.0,
+              "stressed_pnl": -3.3065849999999997,
+              "trades": 1
+            },
+            "name": "official_20260814_15",
+            "predictive": {
+              "brier_score": 0.21791785862572946,
+              "expected_calibration_error": 0.0702828216867205,
+              "log_loss": 0.6308552577974953,
+              "markets": 575,
+              "mean_probability_up": 0.5108689829663311,
+              "rows": 14375
+            },
+            "test_end": "2026-08-16T00:00:00+00:00",
+            "test_start": "2026-08-14T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 18133
+          },
+          {
+            "economic": {
+              "accuracy": 0.7142857142857143,
+              "coverage": 0.012216404886561954,
+              "mean_entry_second": 96.42857142857143,
+              "stressed_pnl": -0.44068999999999825,
+              "trades": 7
+            },
+            "name": "official_20260816_17",
+            "predictive": {
+              "brier_score": 0.21252880968635798,
+              "expected_calibration_error": 0.06357978577908749,
+              "log_loss": 0.6137840553440004,
+              "markets": 572,
+              "mean_probability_up": 0.5056709296179495,
+              "rows": 14300
+            },
+            "test_end": "2026-08-18T00:00:00+00:00",
+            "test_start": "2026-08-16T00:00:00+00:00",
+            "testing_markets": 573,
+            "training_markets": 18709
+          },
+          {
+            "economic": {
+              "accuracy": 0.7346938775510204,
+              "coverage": 0.08687943262411348,
+              "mean_entry_second": 63.265306122448976,
+              "stressed_pnl": 10.93499127454001,
+              "trades": 49
+            },
+            "name": "official_20260818_19",
+            "predictive": {
+              "brier_score": 0.19420127003280696,
+              "expected_calibration_error": 0.060940751015266095,
+              "log_loss": 0.5992070650863519,
+              "markets": 563,
+              "mean_probability_up": 0.5153355814638061,
+              "rows": 14075
+            },
+            "test_end": "2026-08-20T00:00:00+00:00",
+            "test_start": "2026-08-18T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19282
+          },
+          {
+            "economic": {
+              "accuracy": 0.6475409836065574,
+              "coverage": 0.4326241134751773,
+              "mean_entry_second": 74.18032786885246,
+              "stressed_pnl": -67.00648999999996,
+              "trades": 244
+            },
+            "name": "official_20260820_21",
+            "predictive": {
+              "brier_score": 0.2191653389024044,
+              "expected_calibration_error": 0.1311571932245431,
+              "log_loss": 0.8529901944655893,
+              "markets": 563,
+              "mean_probability_up": 0.5047956143066176,
+              "rows": 14075
+            },
+            "test_end": "2026-08-22T00:00:00+00:00",
+            "test_start": "2026-08-20T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19846
+          },
+          {
+            "economic": {
+              "accuracy": 0.7804878048780488,
+              "coverage": 0.1423611111111111,
+              "mean_entry_second": 81.34146341463415,
+              "stressed_pnl": 33.71635961398002,
+              "trades": 82
+            },
+            "name": "official_20260822_23",
+            "predictive": {
+              "brier_score": 0.1861971238279917,
+              "expected_calibration_error": 0.060051940508985435,
+              "log_loss": 0.6104063439269117,
+              "markets": 575,
+              "mean_probability_up": 0.5347729633551248,
+              "rows": 14375
+            },
+            "test_end": "2026-08-24T00:00:00+00:00",
+            "test_start": "2026-08-22T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20410
+          },
+          {
+            "economic": {
+              "accuracy": 0.668918918918919,
+              "coverage": 0.2569444444444444,
+              "mean_entry_second": 79.5945945945946,
+              "stressed_pnl": -22.93665547399997,
+              "trades": 148
+            },
+            "name": "official_20260824_25",
+            "predictive": {
+              "brier_score": 0.2119176811335732,
+              "expected_calibration_error": 0.10439399946967655,
+              "log_loss": 0.7160204506492434,
+              "markets": 575,
+              "mean_probability_up": 0.49944897220870427,
+              "rows": 14375
+            },
+            "test_end": "2026-08-26T00:00:00+00:00",
+            "test_start": "2026-08-24T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20986
+          },
+          {
+            "economic": {
+              "accuracy": null,
+              "coverage": 0.0,
+              "stressed_pnl": 0.0,
+              "trades": 0
+            },
+            "name": "official_20260826_27",
+            "predictive": {
+              "brier_score": 0.19941549635413142,
+              "expected_calibration_error": 0.08688409499256493,
+              "log_loss": 0.5923881403151883,
+              "markets": 239,
+              "mean_probability_up": 0.5367647367021333,
+              "rows": 5975
+            },
+            "test_end": "2026-08-28T00:00:00+00:00",
+            "test_start": "2026-08-26T00:00:00+00:00",
+            "testing_markets": 239,
+            "training_markets": 21562
+          }
+        ],
+        "gross_pnl": 31.37939999999999,
+        "loss_percentiles": {
+          "p25": -3.6970649999999994,
+          "p5": -3.7455599999999993,
+          "p50": -3.55116,
+          "p75": -3.3065849999999997,
+          "p95": -2.78229
+        },
+        "losses": 169,
+        "markets": 3668,
+        "maximum_drawdown": 94.14235586001988,
+        "maximum_positive_pnl_day_share": 0.39792649107104205,
+        "maximum_quote_loss_recovery_ratio": 2.985842288192341,
+        "mean_entry_second": 76.19585687382298,
+        "median_entry_second": 70.0,
+        "net_pnl": -22.48906958547991,
+        "p10_entry_second": 35.0,
+        "p25_entry_second": 45.0,
+        "p75_entry_second": 105.0,
+        "p90_entry_second": 125.0,
+        "per_direction": {
+          "DOWN": {
+            "accuracy": 0.6463414634146342,
+            "average_loss": -3.4755209770114948,
+            "average_win": 1.472348388761258,
+            "losses": 87,
+            "mean_entry_second": 77.6829268292683,
+            "stressed_expectancy": -0.27750785035349573,
+            "stressed_pnl": -68.26693118695995,
+            "trades": 246,
+            "wins": 159
+          },
+          "UP": {
+            "accuracy": 0.712280701754386,
+            "average_loss": -3.445957073170731,
+            "average_win": 1.4866814857215762,
+            "losses": 82,
+            "mean_entry_second": 74.91228070175438,
+            "stressed_expectancy": 0.06746618105782476,
+            "stressed_pnl": 19.227861601480058,
+            "trades": 285,
+            "wins": 203
+          }
+        },
+        "predictive": {
+          "brier_score": 0.20649125209242286,
+          "expected_calibration_error": 0.06862433707825992,
+          "log_loss": 0.6651254730842955,
+          "markets": 3662,
+          "mean_probability_up": 0.5134603181831969,
+          "rows": 91550
+        },
+        "price_bands": {
+          "0-0.65": {
+            "accuracy": 0.6031746031746031,
+            "average_loss": -3.0847997999999994,
+            "average_win": 1.8397926159610527,
+            "losses": 50,
+            "mean_entry_second": 74.76190476190476,
+            "stressed_expectancy": -0.11441072370603157,
+            "stressed_pnl": -14.415751186959978,
+            "trades": 126,
+            "wins": 76
+          },
+          "0.65-0.75": {
+            "accuracy": 0.7061728395061728,
+            "average_loss": -3.619317773109244,
+            "average_win": 1.3848793587464336,
+            "losses": 119,
+            "mean_entry_second": 76.64197530864197,
+            "stressed_expectancy": -0.08548967505807388,
+            "stressed_pnl": -34.62331839851992,
+            "trades": 405,
+            "wins": 286
+          },
+          "0.75-0.85": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "profit_factor": 0.9161637607792497,
+        "profitable_fold_ratio": 0.2857142857142857,
+        "qualification": {
+          "checks": {
+            "accuracy": false,
+            "average_entry": true,
+            "average_loss_recovery": true,
+            "both_directions": true,
+            "coverage": true,
+            "cvar_nonworse": true,
+            "every_quote_recovery": true,
+            "maximum_drawdown_nonworse": true,
+            "official_development_period_complete": false,
+            "pnl_day_concentration": true,
+            "positive_bootstrap_lower": false,
+            "positive_stressed_expectancy": false,
+            "positive_stressed_pnl": false,
+            "positive_vwap5_capacity": false,
+            "profit_factor": false,
+            "profitable_folds": false,
+            "refprice_admission": false,
+            "trade_support": true
+          },
+          "passed": false,
+          "reasons": [
+            "official_development_period_complete",
+            "accuracy",
+            "profit_factor",
+            "positive_stressed_pnl",
+            "positive_stressed_expectancy",
+            "positive_bootstrap_lower",
+            "profitable_folds",
+            "positive_vwap5_capacity",
+            "refprice_admission"
+          ]
+        },
+        "selected_configuration": "state_12",
+        "stressed_expectancy": -0.09235229677114855,
+        "stressed_pnl": -49.03906958547988,
+        "trades": 531,
+        "up_trade_share": 0.536723163841808,
+        "wins": 362,
+        "wins_to_recover_average_loss": 2.3380228797716507,
+        "worst_loss": -3.7455599999999993
+      },
+      "twap_regime_switching": {
+        "accuracy": 0.6801909307875895,
+        "average_loss": -3.374392052238806,
+        "average_win": 1.5603640338541755,
+        "bootstrap_stressed_expectancy": {
+          "lower": -0.3113595223696288,
+          "median": -0.021101571672468736,
+          "resamples": 2000,
+          "unit": "stressed_pnl_per_trade",
+          "upper": 0.4195033714211551
+        },
+        "calibration_period": {
+          "brier_score": 0.20554147058312972,
+          "expected_calibration_error": 0.07305695252131916,
+          "log_loss": 0.606369236518288,
+          "margin_mae_bps": 4.016996178475946,
+          "markets": 3417,
+          "mean_probability_up": 0.5115084415629205,
+          "rows": 85425
+        },
+        "capacity": {
+          "10": {
+            "net_pnl": 26.367262966289964,
+            "stressed_expectancy": -0.03707097144083532,
+            "stressed_pnl": -15.53273703371,
+            "supported_trades": 419
+          },
+          "100": {
+            "net_pnl": 159.32677578125686,
+            "stressed_expectancy": -0.6197451651998646,
+            "stressed_pnl": -259.67322421874326,
+            "supported_trades": 419
+          },
+          "125": {
+            "net_pnl": 172.0190158135115,
+            "stressed_expectancy": -0.8394534228794472,
+            "stressed_pnl": -351.7309841864884,
+            "supported_trades": 419
+          },
+          "15": {
+            "net_pnl": 38.4104770667855,
+            "stressed_expectancy": -0.05832821702437863,
+            "stressed_pnl": -24.439522933214647,
+            "supported_trades": 419
+          },
+          "150": {
+            "net_pnl": 173.5930828321841,
+            "stressed_expectancy": -1.0856966996845256,
+            "stressed_pnl": -454.90691716781623,
+            "supported_trades": 419
+          },
+          "175": {
+            "net_pnl": 163.25586778896093,
+            "stressed_expectancy": -1.360367857305581,
+            "stressed_pnl": -569.9941322110385,
+            "supported_trades": 419
+          },
+          "20": {
+            "net_pnl": 49.93222180009994,
+            "stressed_expectancy": -0.08083001957016714,
+            "stressed_pnl": -33.86777819990003,
+            "supported_trades": 419
+          },
+          "200": {
+            "net_pnl": 144.32079774820068,
+            "stressed_expectancy": -1.6555589552548917,
+            "stressed_pnl": -693.6792022517997,
+            "supported_trades": 419
+          },
+          "25": {
+            "net_pnl": 60.733870196000055,
+            "stressed_expectancy": -0.10505042912649158,
+            "stressed_pnl": -44.01612980399997,
+            "supported_trades": 419
+          },
+          "30": {
+            "net_pnl": 70.99194451349041,
+            "stressed_expectancy": -0.13056815151911663,
+            "stressed_pnl": -54.70805548650986,
+            "supported_trades": 419
+          },
+          "40": {
+            "net_pnl": 89.05016484160745,
+            "stressed_expectancy": -0.1874697736477149,
+            "stressed_pnl": -78.54983515839254,
+            "supported_trades": 419
+          },
+          "5": {
+            "net_pnl": 13.485214648439978,
+            "stressed_expectancy": -0.017815716829498816,
+            "stressed_pnl": -7.464785351560003,
+            "supported_trades": 419
+          },
+          "50": {
+            "net_pnl": 104.99174878305803,
+            "stressed_expectancy": -0.24942303393064924,
+            "stressed_pnl": -104.50825121694203,
+            "supported_trades": 419
+          },
+          "75": {
+            "net_pnl": 137.49104020586105,
+            "stressed_expectancy": -0.42185909258744364,
+            "stressed_pnl": -176.7589597941389,
+            "supported_trades": 419
+          }
+        },
+        "coverage": 0.11423118865866957,
+        "cvar_10": -3.691250119047618,
+        "daily": {
+          "2026-08-14": {
+            "net_pnl": -3.256585,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1,
+            "wins": 0
+          },
+          "2026-08-16": {
+            "net_pnl": 3.5359550000000004,
+            "stressed_pnl": 3.435955,
+            "trades": 2,
+            "wins": 2
+          },
+          "2026-08-17": {
+            "net_pnl": 0.9408650000000014,
+            "stressed_pnl": 0.5908650000000015,
+            "trades": 7,
+            "wins": 5
+          },
+          "2026-08-18": {
+            "net_pnl": -1.1279900000000007,
+            "stressed_pnl": -1.37799,
+            "trades": 5,
+            "wins": 3
+          },
+          "2026-08-19": {
+            "net_pnl": 19.120205000000006,
+            "stressed_pnl": 17.220205000000007,
+            "trades": 38,
+            "wins": 29
+          },
+          "2026-08-20": {
+            "net_pnl": -24.052849999999985,
+            "stressed_pnl": -27.202849999999984,
+            "trades": 63,
+            "wins": 39
+          },
+          "2026-08-21": {
+            "net_pnl": -29.40008237599999,
+            "stressed_pnl": -34.90008237599998,
+            "trades": 110,
+            "wins": 68
+          },
+          "2026-08-22": {
+            "net_pnl": 23.028575000000004,
+            "stressed_pnl": 20.828575000000004,
+            "trades": 44,
+            "wins": 34
+          },
+          "2026-08-23": {
+            "net_pnl": 5.655425800940004,
+            "stressed_pnl": 4.405425800940005,
+            "trades": 25,
+            "wins": 18
+          },
+          "2026-08-24": {
+            "net_pnl": -28.707684999999987,
+            "stressed_pnl": -31.957684999999984,
+            "trades": 65,
+            "wins": 38
+          },
+          "2026-08-25": {
+            "net_pnl": 47.74938122350001,
+            "stressed_pnl": 44.79938122350001,
+            "trades": 59,
+            "wins": 49
+          }
+        },
+        "down_trade_share": 0.4510739856801909,
+        "entry_bands": {
+          "120-151": {
+            "accuracy": 0.5612244897959183,
+            "average_loss": -3.376558139534884,
+            "average_win": 1.522072272727273,
+            "losses": 43,
+            "mean_entry_second": 133.16326530612244,
+            "stressed_expectancy": -0.6273267857142855,
+            "stressed_pnl": -61.478024999999974,
+            "trades": 98,
+            "wins": 55
+          },
+          "30-60": {
+            "accuracy": 0.6451612903225806,
+            "average_loss": -3.382975454545454,
+            "average_win": 1.6140891474583339,
+            "losses": 33,
+            "mean_entry_second": 46.075268817204304,
+            "stressed_expectancy": -0.15906280809139772,
+            "stressed_pnl": -14.792841152499987,
+            "trades": 93,
+            "wins": 60
+          },
+          "60-90": {
+            "accuracy": 0.7357142857142858,
+            "average_loss": -3.3642410810810803,
+            "average_win": 1.5637197165139802,
+            "losses": 37,
+            "mean_entry_second": 71.64285714285714,
+            "stressed_expectancy": 0.26133007714957157,
+            "stressed_pnl": 36.58621080094002,
+            "trades": 140,
+            "wins": 103
+          },
+          "90-120": {
+            "accuracy": 0.7613636363636364,
+            "average_loss": -3.3743535714285713,
+            "average_win": 1.5385267910447764,
+            "losses": 21,
+            "mean_entry_second": 101.93181818181819,
+            "stressed_expectancy": 0.3661348863636366,
+            "stressed_pnl": 32.21987000000002,
+            "trades": 88,
+            "wins": 67
+          }
+        },
+        "fold_stressed_pnl": {
+          "official_20260814_15": -3.3065849999999997,
+          "official_20260816_17": 4.026820000000002,
+          "official_20260818_19": 15.842215000000007,
+          "official_20260820_21": -62.10293237599997,
+          "official_20260822_23": 25.234000800940013,
+          "official_20260824_25": 12.841696223500028
+        },
+        "folds": [
+          {
+            "economic": {
+              "accuracy": 0.0,
+              "coverage": 0.001736111111111111,
+              "mean_entry_second": 135.0,
+              "stressed_pnl": -3.3065849999999997,
+              "trades": 1
+            },
+            "name": "official_20260814_15",
+            "predictive": {
+              "brier_score": 0.22632436348359233,
+              "expected_calibration_error": 0.069929444596522,
+              "log_loss": 0.6466749903165883,
+              "markets": 575,
+              "mean_probability_up": 0.5123279296024524,
+              "rows": 14375
+            },
+            "test_end": "2026-08-16T00:00:00+00:00",
+            "test_start": "2026-08-14T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 18133
+          },
+          {
+            "economic": {
+              "accuracy": 0.7777777777777778,
+              "coverage": 0.015706806282722512,
+              "mean_entry_second": 105.0,
+              "stressed_pnl": 4.026820000000001,
+              "trades": 9
+            },
+            "name": "official_20260816_17",
+            "predictive": {
+              "brier_score": 0.22190604160866642,
+              "expected_calibration_error": 0.06150472733107182,
+              "log_loss": 0.6344422729636554,
+              "markets": 572,
+              "mean_probability_up": 0.5044331096310152,
+              "rows": 14300
+            },
+            "test_end": "2026-08-18T00:00:00+00:00",
+            "test_start": "2026-08-16T00:00:00+00:00",
+            "testing_markets": 573,
+            "training_markets": 18709
+          },
+          {
+            "economic": {
+              "accuracy": 0.7441860465116279,
+              "coverage": 0.07624113475177305,
+              "mean_entry_second": 75.11627906976744,
+              "stressed_pnl": 15.842215000000007,
+              "trades": 43
+            },
+            "name": "official_20260818_19",
+            "predictive": {
+              "brier_score": 0.20563198320379403,
+              "expected_calibration_error": 0.06539601886844763,
+              "log_loss": 0.6180247372459006,
+              "markets": 563,
+              "mean_probability_up": 0.5156442300396953,
+              "rows": 14075
+            },
+            "test_end": "2026-08-20T00:00:00+00:00",
+            "test_start": "2026-08-18T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19282
+          },
+          {
+            "economic": {
+              "accuracy": 0.6184971098265896,
+              "coverage": 0.3067375886524823,
+              "mean_entry_second": 85.0,
+              "stressed_pnl": -62.10293237599997,
+              "trades": 173
+            },
+            "name": "official_20260820_21",
+            "predictive": {
+              "brier_score": 0.2266439109522485,
+              "expected_calibration_error": 0.12061386258955153,
+              "log_loss": 0.8122060419531811,
+              "markets": 563,
+              "mean_probability_up": 0.5016119732806344,
+              "rows": 14075
+            },
+            "test_end": "2026-08-22T00:00:00+00:00",
+            "test_start": "2026-08-20T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19846
+          },
+          {
+            "economic": {
+              "accuracy": 0.7536231884057971,
+              "coverage": 0.11979166666666667,
+              "mean_entry_second": 90.43478260869566,
+              "stressed_pnl": 25.23400080094002,
+              "trades": 69
+            },
+            "name": "official_20260822_23",
+            "predictive": {
+              "brier_score": 0.19522511586915364,
+              "expected_calibration_error": 0.06599532113601302,
+              "log_loss": 0.6161503221824312,
+              "markets": 575,
+              "mean_probability_up": 0.53336726834164,
+              "rows": 14375
+            },
+            "test_end": "2026-08-24T00:00:00+00:00",
+            "test_start": "2026-08-22T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20410
+          },
+          {
+            "economic": {
+              "accuracy": 0.7016129032258065,
+              "coverage": 0.2152777777777778,
+              "mean_entry_second": 89.35483870967742,
+              "stressed_pnl": 12.841696223500023,
+              "trades": 124
+            },
+            "name": "official_20260824_25",
+            "predictive": {
+              "brier_score": 0.2179735873920128,
+              "expected_calibration_error": 0.08928193584913068,
+              "log_loss": 0.7081367329669666,
+              "markets": 575,
+              "mean_probability_up": 0.5001439874100195,
+              "rows": 14375
+            },
+            "test_end": "2026-08-26T00:00:00+00:00",
+            "test_start": "2026-08-24T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20986
+          },
+          {
+            "economic": {
+              "accuracy": null,
+              "coverage": 0.0,
+              "stressed_pnl": 0.0,
+              "trades": 0
+            },
+            "name": "official_20260826_27",
+            "predictive": {
+              "brier_score": 0.20661380945792832,
+              "expected_calibration_error": 0.08250328196574,
+              "log_loss": 0.6072771303637641,
+              "markets": 239,
+              "mean_probability_up": 0.5302260504590253,
+              "rows": 5975
+            },
+            "test_end": "2026-08-28T00:00:00+00:00",
+            "test_start": "2026-08-26T00:00:00+00:00",
+            "testing_markets": 239,
+            "training_markets": 21562
+          }
+        ],
+        "gross_pnl": 56.48440000000001,
+        "loss_percentiles": {
+          "p25": -3.6485,
+          "p5": -3.7455599999999993,
+          "p50": -3.502385,
+          "p75": -3.25746,
+          "p95": -2.59492825
+        },
+        "losses": 134,
+        "markets": 3668,
+        "maximum_drawdown": 77.83423157505999,
+        "maximum_positive_pnl_day_share": 0.490788578665136,
+        "maximum_quote_loss_recovery_ratio": 2.985842288192341,
+        "mean_entry_second": 86.71837708830549,
+        "median_entry_second": 80.0,
+        "net_pnl": 13.485214648440039,
+        "p10_entry_second": 45.0,
+        "p25_entry_second": 60.0,
+        "p75_entry_second": 115.0,
+        "p90_entry_second": 135.0,
+        "per_direction": {
+          "DOWN": {
+            "accuracy": 0.6613756613756614,
+            "average_loss": -3.4541126562499995,
+            "average_win": 1.5476137297880002,
+            "losses": 64,
+            "mean_entry_second": 88.01587301587301,
+            "stressed_expectancy": -0.146092559664021,
+            "stressed_pnl": -27.611493776499966,
+            "trades": 189,
+            "wins": 125
+          },
+          "UP": {
+            "accuracy": 0.6956521739130435,
+            "average_loss": -3.301504642857143,
+            "average_win": 1.570325208905875,
+            "losses": 70,
+            "mean_entry_second": 85.65217391304348,
+            "stressed_expectancy": 0.08759438445626103,
+            "stressed_pnl": 20.146708424940037,
+            "trades": 230,
+            "wins": 160
+          }
+        },
+        "predictive": {
+          "brier_score": 0.21502131295704266,
+          "expected_calibration_error": 0.06805076394302044,
+          "log_loss": 0.6680948441081855,
+          "markets": 3662,
+          "mean_probability_up": 0.512515712402132,
+          "rows": 91550
+        },
+        "price_bands": {
+          "0-0.65": {
+            "accuracy": 0.6417910447761194,
+            "average_loss": -2.9768242708333332,
+            "average_win": 1.9456016584186047,
+            "losses": 48,
+            "mean_entry_second": 84.14179104477611,
+            "stressed_expectancy": 0.18234460913432854,
+            "stressed_pnl": 24.434177624000025,
+            "trades": 134,
+            "wins": 86
+          },
+          "0.65-0.75": {
+            "accuracy": 0.6982456140350877,
+            "average_loss": -3.5962903488372095,
+            "average_win": 1.393879432283618,
+            "losses": 86,
+            "mean_entry_second": 87.9298245614035,
+            "stressed_expectancy": -0.1119261858791577,
+            "stressed_pnl": -31.898962975559947,
+            "trades": 285,
+            "wins": 199
+          },
+          "0.75-0.85": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "profit_factor": 0.9834911437356869,
+        "profitable_fold_ratio": 0.5714285714285714,
+        "qualification": {
+          "checks": {
+            "accuracy": false,
+            "average_entry": true,
+            "average_loss_recovery": true,
+            "both_directions": true,
+            "coverage": true,
+            "cvar_nonworse": true,
+            "every_quote_recovery": true,
+            "maximum_drawdown_nonworse": true,
+            "official_development_period_complete": false,
+            "pnl_day_concentration": true,
+            "positive_bootstrap_lower": false,
+            "positive_stressed_expectancy": false,
+            "positive_stressed_pnl": false,
+            "positive_vwap5_capacity": false,
+            "profit_factor": false,
+            "profitable_folds": false,
+            "refprice_admission": true,
+            "trade_support": true
+          },
+          "passed": false,
+          "reasons": [
+            "official_development_period_complete",
+            "accuracy",
+            "profit_factor",
+            "positive_stressed_pnl",
+            "positive_stressed_expectancy",
+            "positive_bootstrap_lower",
+            "profitable_folds",
+            "positive_vwap5_capacity"
+          ]
+        },
+        "selected_configuration": "state_12",
+        "stressed_expectancy": -0.01781571682949861,
+        "stressed_pnl": -7.464785351559918,
+        "trades": 419,
+        "up_trade_share": 0.548926014319809,
+        "wins": 285,
+        "wins_to_recover_average_loss": 2.1625671824182544,
+        "worst_loss": -3.7455599999999993
+      },
+      "twap_single_regime": {
+        "accuracy": 0.6814516129032258,
+        "average_loss": -3.3707986392405065,
+        "average_win": 1.5307093366891718,
+        "bootstrap_stressed_expectancy": {
+          "lower": -0.29313584189578823,
+          "median": -0.03260069672648515,
+          "resamples": 2000,
+          "unit": "stressed_pnl_per_trade",
+          "upper": 0.34090544541137624
+        },
+        "calibration_period": {
+          "brier_score": 0.20030153436765316,
+          "expected_calibration_error": 0.0640990489705933,
+          "log_loss": 0.593153086438628,
+          "margin_mae_bps": 3.943064097630163,
+          "markets": 3417,
+          "mean_probability_up": 0.511508945952414,
+          "rows": 85425
+        },
+        "capacity": {
+          "10": {
+            "net_pnl": 18.58967113929996,
+            "stressed_expectancy": -0.06252082431592738,
+            "stressed_pnl": -31.010328860699985,
+            "supported_trades": 496
+          },
+          "100": {
+            "net_pnl": 74.93028686548021,
+            "stressed_expectancy": -0.8489308732550803,
+            "stressed_pnl": -421.0697131345198,
+            "supported_trades": 496
+          },
+          "125": {
+            "net_pnl": 62.81396758829095,
+            "stressed_expectancy": -1.1233589363139294,
+            "stressed_pnl": -557.186032411709,
+            "supported_trades": 496
+          },
+          "15": {
+            "net_pnl": 26.755869873902075,
+            "stressed_expectancy": -0.09605671396390733,
+            "stressed_pnl": -47.644130126098034,
+            "supported_trades": 496
+          },
+          "150": {
+            "net_pnl": 40.75840680299365,
+            "stressed_expectancy": -1.4178257927358997,
+            "stressed_pnl": -703.2415931970063,
+            "supported_trades": 496
+          },
+          "175": {
+            "net_pnl": 4.117495733778242,
+            "stressed_expectancy": -1.7416985973109307,
+            "stressed_pnl": -863.8825042662216,
+            "supported_trades": 496
+          },
+          "20": {
+            "net_pnl": 34.41143988421992,
+            "stressed_expectancy": -0.1306220970076209,
+            "stressed_pnl": -64.78856011577996,
+            "supported_trades": 496
+          },
+          "200": {
+            "net_pnl": -44.71404357577683,
+            "stressed_expectancy": -2.090149281402776,
+            "stressed_pnl": -1036.714043575777,
+            "supported_trades": 496
+          },
+          "25": {
+            "net_pnl": 41.36482329902391,
+            "stressed_expectancy": -0.1666031788326131,
+            "stressed_pnl": -82.6351767009761,
+            "supported_trades": 496
+          },
+          "30": {
+            "net_pnl": 47.766979182009955,
+            "stressed_expectancy": -0.2036956064878836,
+            "stressed_pnl": -101.03302081799026,
+            "supported_trades": 496
+          },
+          "40": {
+            "net_pnl": 58.13471625360734,
+            "stressed_expectancy": -0.2827929107790171,
+            "stressed_pnl": -140.26528374639247,
+            "supported_trades": 496
+          },
+          "5": {
+            "net_pnl": 9.593570800939975,
+            "stressed_expectancy": -0.030658123385201613,
+            "stressed_pnl": -15.20642919906,
+            "supported_trades": 496
+          },
+          "50": {
+            "net_pnl": 65.64729625216589,
+            "stressed_expectancy": -0.3676465801367624,
+            "stressed_pnl": -182.35270374783414,
+            "supported_trades": 496
+          },
+          "75": {
+            "net_pnl": 76.11013284837136,
+            "stressed_expectancy": -0.5965521515153805,
+            "stressed_pnl": -295.8898671516288,
+            "supported_trades": 496
+          }
+        },
+        "coverage": 0.13522355507088332,
+        "cvar_10": -3.690233699999999,
+        "daily": {
+          "2026-08-14": {
+            "net_pnl": -3.256585,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1,
+            "wins": 0
+          },
+          "2026-08-16": {
+            "net_pnl": 1.7434150000000002,
+            "stressed_pnl": 1.6934150000000001,
+            "trades": 1,
+            "wins": 1
+          },
+          "2026-08-17": {
+            "net_pnl": -2.949934999999998,
+            "stressed_pnl": -3.3499349999999977,
+            "trades": 8,
+            "wins": 5
+          },
+          "2026-08-18": {
+            "net_pnl": -0.48936500000000116,
+            "stressed_pnl": -0.7393650000000007,
+            "trades": 5,
+            "wins": 3
+          },
+          "2026-08-19": {
+            "net_pnl": 23.286725000000004,
+            "stressed_pnl": 21.186725000000006,
+            "trades": 42,
+            "wins": 32
+          },
+          "2026-08-20": {
+            "net_pnl": -22.698849999999982,
+            "stressed_pnl": -26.648849999999978,
+            "trades": 79,
+            "wins": 50
+          },
+          "2026-08-21": {
+            "net_pnl": -23.976399999999984,
+            "stressed_pnl": -30.67639999999998,
+            "trades": 134,
+            "wins": 87
+          },
+          "2026-08-22": {
+            "net_pnl": 27.147220000000008,
+            "stressed_pnl": 24.647220000000008,
+            "trades": 50,
+            "wins": 39
+          },
+          "2026-08-23": {
+            "net_pnl": 7.8313458009400065,
+            "stressed_pnl": 6.231345800940008,
+            "trades": 32,
+            "wins": 23
+          },
+          "2026-08-24": {
+            "net_pnl": -38.471699999999984,
+            "stressed_pnl": -42.221699999999984,
+            "trades": 75,
+            "wins": 43
+          },
+          "2026-08-25": {
+            "net_pnl": 41.42770000000001,
+            "stressed_pnl": 37.977700000000006,
+            "trades": 69,
+            "wins": 55
+          }
+        },
+        "down_trade_share": 0.4637096774193548,
+        "entry_bands": {
+          "120-151": {
+            "accuracy": 0.580952380952381,
+            "average_loss": -3.3467472727272725,
+            "average_win": 1.513290573770492,
+            "losses": 44,
+            "mean_entry_second": 132.8095238095238,
+            "stressed_expectancy": -0.523296714285714,
+            "stressed_pnl": -54.946154999999976,
+            "trades": 105,
+            "wins": 61
+          },
+          "30-60": {
+            "accuracy": 0.696551724137931,
+            "average_loss": -3.4533010227272727,
+            "average_win": 1.586576831683168,
+            "losses": 44,
+            "mean_entry_second": 43.793103448275865,
+            "stressed_expectancy": 0.057234586206896754,
+            "stressed_pnl": 8.29901500000003,
+            "trades": 145,
+            "wins": 101
+          },
+          "60-90": {
+            "accuracy": 0.6861313868613139,
+            "average_loss": -3.29295476744186,
+            "average_win": 1.4905360191589363,
+            "losses": 43,
+            "mean_entry_second": 72.18978102189782,
+            "stressed_expectancy": -0.010851599993138462,
+            "stressed_pnl": -1.4866691990599694,
+            "trades": 137,
+            "wins": 94
+          },
+          "90-120": {
+            "accuracy": 0.7522935779816514,
+            "average_loss": -3.3995187037037033,
+            "average_win": 1.5209071341463416,
+            "losses": 27,
+            "mean_entry_second": 101.65137614678899,
+            "stressed_expectancy": 0.30208605504587166,
+            "stressed_pnl": 32.927380000000014,
+            "trades": 109,
+            "wins": 82
+          }
+        },
+        "fold_stressed_pnl": {
+          "official_20260814_15": -3.3065849999999997,
+          "official_20260816_17": -1.6565199999999975,
+          "official_20260818_19": 20.447360000000007,
+          "official_20260820_21": -57.325249999999954,
+          "official_20260822_23": 30.878565800940017,
+          "official_20260824_25": -4.243999999999976
+        },
+        "folds": [
+          {
+            "economic": {
+              "accuracy": 0.0,
+              "coverage": 0.001736111111111111,
+              "mean_entry_second": 135.0,
+              "stressed_pnl": -3.3065849999999997,
+              "trades": 1
+            },
+            "name": "official_20260814_15",
+            "predictive": {
+              "brier_score": 0.22194149989480896,
+              "expected_calibration_error": 0.067248300956713,
+              "log_loss": 0.6389483165085523,
+              "markets": 575,
+              "mean_probability_up": 0.5110529380236799,
+              "rows": 14375
+            },
+            "test_end": "2026-08-16T00:00:00+00:00",
+            "test_start": "2026-08-14T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 18133
+          },
+          {
+            "economic": {
+              "accuracy": 0.6666666666666666,
+              "coverage": 0.015706806282722512,
+              "mean_entry_second": 109.44444444444444,
+              "stressed_pnl": -1.6565199999999975,
+              "trades": 9
+            },
+            "name": "official_20260816_17",
+            "predictive": {
+              "brier_score": 0.21673792320188284,
+              "expected_calibration_error": 0.060954821947094034,
+              "log_loss": 0.6227347740859692,
+              "markets": 572,
+              "mean_probability_up": 0.5049200531909306,
+              "rows": 14300
+            },
+            "test_end": "2026-08-18T00:00:00+00:00",
+            "test_start": "2026-08-16T00:00:00+00:00",
+            "testing_markets": 573,
+            "training_markets": 18709
+          },
+          {
+            "economic": {
+              "accuracy": 0.7446808510638298,
+              "coverage": 0.08333333333333333,
+              "mean_entry_second": 68.40425531914893,
+              "stressed_pnl": 20.447360000000007,
+              "trades": 47
+            },
+            "name": "official_20260818_19",
+            "predictive": {
+              "brier_score": 0.20012982646307695,
+              "expected_calibration_error": 0.05845674900344817,
+              "log_loss": 0.6105117230631733,
+              "markets": 563,
+              "mean_probability_up": 0.5149587782941929,
+              "rows": 14075
+            },
+            "test_end": "2026-08-20T00:00:00+00:00",
+            "test_start": "2026-08-18T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19282
+          },
+          {
+            "economic": {
+              "accuracy": 0.6431924882629108,
+              "coverage": 0.3776595744680851,
+              "mean_entry_second": 82.44131455399061,
+              "stressed_pnl": -57.32524999999994,
+              "trades": 213
+            },
+            "name": "official_20260820_21",
+            "predictive": {
+              "brier_score": 0.22391882744067107,
+              "expected_calibration_error": 0.127169997714282,
+              "log_loss": 0.8460027332458857,
+              "markets": 563,
+              "mean_probability_up": 0.503275862717983,
+              "rows": 14075
+            },
+            "test_end": "2026-08-22T00:00:00+00:00",
+            "test_start": "2026-08-20T00:00:00+00:00",
+            "testing_markets": 564,
+            "training_markets": 19846
+          },
+          {
+            "economic": {
+              "accuracy": 0.7560975609756098,
+              "coverage": 0.1423611111111111,
+              "mean_entry_second": 87.92682926829268,
+              "stressed_pnl": 30.878565800940006,
+              "trades": 82
+            },
+            "name": "official_20260822_23",
+            "predictive": {
+              "brier_score": 0.19167573395695622,
+              "expected_calibration_error": 0.062093016693691744,
+              "log_loss": 0.6178261792568877,
+              "markets": 575,
+              "mean_probability_up": 0.5337170288967555,
+              "rows": 14375
+            },
+            "test_end": "2026-08-24T00:00:00+00:00",
+            "test_start": "2026-08-22T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20410
+          },
+          {
+            "economic": {
+              "accuracy": 0.6805555555555556,
+              "coverage": 0.25,
+              "mean_entry_second": 84.44444444444444,
+              "stressed_pnl": -4.243999999999978,
+              "trades": 144
+            },
+            "name": "official_20260824_25",
+            "predictive": {
+              "brier_score": 0.21613949657927792,
+              "expected_calibration_error": 0.10107609148942868,
+              "log_loss": 0.7155049211829534,
+              "markets": 575,
+              "mean_probability_up": 0.5000525909586631,
+              "rows": 14375
+            },
+            "test_end": "2026-08-26T00:00:00+00:00",
+            "test_start": "2026-08-24T00:00:00+00:00",
+            "testing_markets": 576,
+            "training_markets": 20986
+          },
+          {
+            "economic": {
+              "accuracy": null,
+              "coverage": 0.0,
+              "stressed_pnl": 0.0,
+              "trades": 0
+            },
+            "name": "official_20260826_27",
+            "predictive": {
+              "brier_score": 0.20421678386816183,
+              "expected_calibration_error": 0.082825927337983,
+              "log_loss": 0.602529355961195,
+              "markets": 239,
+              "mean_probability_up": 0.5335833096890724,
+              "rows": 5975
+            },
+            "test_end": "2026-08-28T00:00:00+00:00",
+            "test_start": "2026-08-26T00:00:00+00:00",
+            "testing_markets": 239,
+            "training_markets": 21562
+          }
+        ],
+        "gross_pnl": 60.36890000000001,
+        "loss_percentiles": {
+          "p25": -3.6485,
+          "p5": -3.7455599999999993,
+          "p50": -3.502385,
+          "p75": -3.159,
+          "p95": -2.7049702499999992
+        },
+        "losses": 158,
+        "markets": 3668,
+        "maximum_drawdown": 79.17830419905994,
+        "maximum_positive_pnl_day_share": 0.41398722424778983,
+        "maximum_quote_loss_recovery_ratio": 2.985842288192341,
+        "mean_entry_second": 83.19556451612904,
+        "median_entry_second": 80.0,
+        "net_pnl": 9.593570800940046,
+        "p10_entry_second": 40.0,
+        "p25_entry_second": 55.0,
+        "p75_entry_second": 110.0,
+        "p90_entry_second": 132.5,
+        "per_direction": {
+          "DOWN": {
+            "accuracy": 0.6695652173913044,
+            "average_loss": -3.4550663157894737,
+            "average_win": 1.5184225974025976,
+            "losses": 76,
+            "mean_entry_second": 84.43478260869566,
+            "stressed_expectancy": -0.12499113043478241,
+            "stressed_pnl": -28.747959999999953,
+            "trades": 230,
+            "wins": 154
+          },
+          "UP": {
+            "accuracy": 0.6917293233082706,
+            "average_loss": -3.292696890243902,
+            "average_win": 1.5409928032659785,
+            "losses": 82,
+            "mean_entry_second": 82.12406015037594,
+            "stressed_expectancy": 0.05090801052984983,
+            "stressed_pnl": 13.541530800940054,
+            "trades": 266,
+            "wins": 184
+          }
+        },
+        "predictive": {
+          "brier_score": 0.21125926148597146,
+          "expected_calibration_error": 0.06743158664008472,
+          "log_loss": 0.6702040170669652,
+          "markets": 3662,
+          "mean_probability_up": 0.5128016808059086,
+          "rows": 91550
+        },
+        "price_bands": {
+          "0-0.65": {
+            "accuracy": 0.6013071895424836,
+            "average_loss": -3.0028287704918037,
+            "average_win": 1.9172847826086958,
+            "losses": 61,
+            "mean_entry_second": 82.05882352941177,
+            "stressed_expectancy": -0.04432911764705864,
+            "stressed_pnl": -6.7823549999999715,
+            "trades": 153,
+            "wins": 92
+          },
+          "0.65-0.75": {
+            "accuracy": 0.717201166180758,
+            "average_loss": -3.60220237113402,
+            "average_win": 1.3861364056948777,
+            "losses": 97,
+            "mean_entry_second": 83.70262390670554,
+            "stressed_expectancy": -0.024559983087638307,
+            "stressed_pnl": -8.42407419905994,
+            "trades": 343,
+            "wins": 246
+          },
+          "0.75-0.85": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.85-1.01": {
+            "accuracy": null,
+            "average_loss": null,
+            "average_win": null,
+            "losses": 0,
+            "mean_entry_second": null,
+            "stressed_expectancy": null,
+            "stressed_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "profit_factor": 0.9714479465909167,
+        "profitable_fold_ratio": 0.2857142857142857,
+        "qualification": {
+          "checks": {
+            "accuracy": false,
+            "average_entry": true,
+            "average_loss_recovery": true,
+            "both_directions": true,
+            "coverage": true,
+            "cvar_nonworse": true,
+            "every_quote_recovery": true,
+            "maximum_drawdown_nonworse": true,
+            "official_development_period_complete": false,
+            "pnl_day_concentration": true,
+            "positive_bootstrap_lower": false,
+            "positive_stressed_expectancy": false,
+            "positive_stressed_pnl": false,
+            "positive_vwap5_capacity": false,
+            "profit_factor": false,
+            "profitable_folds": false,
+            "refprice_admission": true,
+            "trade_support": true
+          },
+          "passed": false,
+          "reasons": [
+            "official_development_period_complete",
+            "accuracy",
+            "profit_factor",
+            "positive_stressed_pnl",
+            "positive_stressed_expectancy",
+            "positive_bootstrap_lower",
+            "profitable_folds",
+            "positive_vwap5_capacity"
+          ]
+        },
+        "selected_configuration": "state_12",
+        "stressed_expectancy": -0.030658123385201415,
+        "stressed_pnl": -15.206429199059901,
+        "trades": 496,
+        "up_trade_share": 0.5362903225806451,
+        "wins": 338,
+        "wins_to_recover_average_loss": 2.2021154235142593,
+        "worst_loss": -3.7455599999999993
+      }
+    },
+    "corrected_twap_comparator": {
+      "accuracy": 0.7032590051457976,
+      "cvar_10": -4.015021186440678,
+      "identity": "frozen_chainlink_stratified_payoff",
+      "maximum_drawdown": 114.09139653903993,
+      "source_metrics": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-latent-twap-settlement-risk/packages/btc-directional-model/training-results/btc-5m-twap60-challenger-tournament-20260607-20260825/20260826T021146Z/metrics.json",
+      "stressed_pnl": -113.34927660836004
+    },
+    "folds": {
+      "twap_refprice_regime_switching": [
+        {
+          "economic": {
+            "accuracy": 0.0,
+            "coverage": 0.001736111111111111,
+            "mean_entry_second": 135.0,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1
+          },
+          "name": "official_20260814_15",
+          "predictive": {
+            "brier_score": 0.21951188987940123,
+            "expected_calibration_error": 0.0709655576941013,
+            "log_loss": 0.6338518492338447,
+            "markets": 575,
+            "mean_probability_up": 0.5113608138358189,
+            "rows": 14375
+          },
+          "test_end": "2026-08-16T00:00:00+00:00",
+          "test_start": "2026-08-14T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 18133
+        },
+        {
+          "economic": {
+            "accuracy": 0.7142857142857143,
+            "coverage": 0.012216404886561954,
+            "mean_entry_second": 97.14285714285714,
+            "stressed_pnl": -0.44068999999999825,
+            "trades": 7
+          },
+          "name": "official_20260816_17",
+          "predictive": {
+            "brier_score": 0.21433627765436714,
+            "expected_calibration_error": 0.06443179993623432,
+            "log_loss": 0.6177669469550713,
+            "markets": 572,
+            "mean_probability_up": 0.5054339985277834,
+            "rows": 14300
+          },
+          "test_end": "2026-08-18T00:00:00+00:00",
+          "test_start": "2026-08-16T00:00:00+00:00",
+          "testing_markets": 573,
+          "training_markets": 18709
+        },
+        {
+          "economic": {
+            "accuracy": 0.7021276595744681,
+            "coverage": 0.08333333333333333,
+            "mean_entry_second": 63.61702127659574,
+            "stressed_pnl": 4.361445000000009,
+            "trades": 47
+          },
+          "name": "official_20260818_19",
+          "predictive": {
+            "brier_score": 0.1960910615727186,
+            "expected_calibration_error": 0.06369462544761482,
+            "log_loss": 0.6017349996399806,
+            "markets": 563,
+            "mean_probability_up": 0.5156005664846499,
+            "rows": 14075
+          },
+          "test_end": "2026-08-20T00:00:00+00:00",
+          "test_start": "2026-08-18T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19282
+        },
+        {
+          "economic": {
+            "accuracy": 0.6391304347826087,
+            "coverage": 0.4078014184397163,
+            "mean_entry_second": 76.19565217391305,
+            "stressed_pnl": -73.62061499999999,
+            "trades": 230
+          },
+          "name": "official_20260820_21",
+          "predictive": {
+            "brier_score": 0.22016054218084735,
+            "expected_calibration_error": 0.12914217961629948,
+            "log_loss": 0.8432108674734226,
+            "markets": 563,
+            "mean_probability_up": 0.5042400108344423,
+            "rows": 14075
+          },
+          "test_end": "2026-08-22T00:00:00+00:00",
+          "test_start": "2026-08-20T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19846
+        },
+        {
+          "economic": {
+            "accuracy": 0.775,
+            "coverage": 0.1388888888888889,
+            "mean_entry_second": 83.25,
+            "stressed_pnl": 32.18203580094001,
+            "trades": 80
+          },
+          "name": "official_20260822_23",
+          "predictive": {
+            "brier_score": 0.18728429379651407,
+            "expected_calibration_error": 0.06240846672418011,
+            "log_loss": 0.6083487819792934,
+            "markets": 575,
+            "mean_probability_up": 0.5347652986695627,
+            "rows": 14375
+          },
+          "test_end": "2026-08-24T00:00:00+00:00",
+          "test_start": "2026-08-22T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20410
+        },
+        {
+          "economic": {
+            "accuracy": 0.6690140845070423,
+            "coverage": 0.2465277777777778,
+            "mean_entry_second": 79.8943661971831,
+            "stressed_pnl": -23.54709499999997,
+            "trades": 142
+          },
+          "name": "official_20260824_25",
+          "predictive": {
+            "brier_score": 0.21282501588879943,
+            "expected_calibration_error": 0.10366319172779968,
+            "log_loss": 0.7158526588867138,
+            "markets": 575,
+            "mean_probability_up": 0.4995983357930436,
+            "rows": 14375
+          },
+          "test_end": "2026-08-26T00:00:00+00:00",
+          "test_start": "2026-08-24T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20986
+        },
+        {
+          "economic": {
+            "accuracy": null,
+            "coverage": 0.0,
+            "stressed_pnl": 0.0,
+            "trades": 0
+          },
+          "name": "official_20260826_27",
+          "predictive": {
+            "brier_score": 0.20023122968474072,
+            "expected_calibration_error": 0.08490880568574555,
+            "log_loss": 0.5936174005418284,
+            "markets": 239,
+            "mean_probability_up": 0.5359909636191391,
+            "rows": 5975
+          },
+          "test_end": "2026-08-28T00:00:00+00:00",
+          "test_start": "2026-08-26T00:00:00+00:00",
+          "testing_markets": 239,
+          "training_markets": 21562
+        }
+      ],
+      "twap_refprice_single_regime": [
+        {
+          "economic": {
+            "accuracy": 0.0,
+            "coverage": 0.001736111111111111,
+            "mean_entry_second": 135.0,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1
+          },
+          "name": "official_20260814_15",
+          "predictive": {
+            "brier_score": 0.21791785862572946,
+            "expected_calibration_error": 0.0702828216867205,
+            "log_loss": 0.6308552577974953,
+            "markets": 575,
+            "mean_probability_up": 0.5108689829663311,
+            "rows": 14375
+          },
+          "test_end": "2026-08-16T00:00:00+00:00",
+          "test_start": "2026-08-14T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 18133
+        },
+        {
+          "economic": {
+            "accuracy": 0.7142857142857143,
+            "coverage": 0.012216404886561954,
+            "mean_entry_second": 96.42857142857143,
+            "stressed_pnl": -0.44068999999999825,
+            "trades": 7
+          },
+          "name": "official_20260816_17",
+          "predictive": {
+            "brier_score": 0.21252880968635798,
+            "expected_calibration_error": 0.06357978577908749,
+            "log_loss": 0.6137840553440004,
+            "markets": 572,
+            "mean_probability_up": 0.5056709296179495,
+            "rows": 14300
+          },
+          "test_end": "2026-08-18T00:00:00+00:00",
+          "test_start": "2026-08-16T00:00:00+00:00",
+          "testing_markets": 573,
+          "training_markets": 18709
+        },
+        {
+          "economic": {
+            "accuracy": 0.7346938775510204,
+            "coverage": 0.08687943262411348,
+            "mean_entry_second": 63.265306122448976,
+            "stressed_pnl": 10.93499127454001,
+            "trades": 49
+          },
+          "name": "official_20260818_19",
+          "predictive": {
+            "brier_score": 0.19420127003280696,
+            "expected_calibration_error": 0.060940751015266095,
+            "log_loss": 0.5992070650863519,
+            "markets": 563,
+            "mean_probability_up": 0.5153355814638061,
+            "rows": 14075
+          },
+          "test_end": "2026-08-20T00:00:00+00:00",
+          "test_start": "2026-08-18T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19282
+        },
+        {
+          "economic": {
+            "accuracy": 0.6475409836065574,
+            "coverage": 0.4326241134751773,
+            "mean_entry_second": 74.18032786885246,
+            "stressed_pnl": -67.00648999999996,
+            "trades": 244
+          },
+          "name": "official_20260820_21",
+          "predictive": {
+            "brier_score": 0.2191653389024044,
+            "expected_calibration_error": 0.1311571932245431,
+            "log_loss": 0.8529901944655893,
+            "markets": 563,
+            "mean_probability_up": 0.5047956143066176,
+            "rows": 14075
+          },
+          "test_end": "2026-08-22T00:00:00+00:00",
+          "test_start": "2026-08-20T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19846
+        },
+        {
+          "economic": {
+            "accuracy": 0.7804878048780488,
+            "coverage": 0.1423611111111111,
+            "mean_entry_second": 81.34146341463415,
+            "stressed_pnl": 33.71635961398002,
+            "trades": 82
+          },
+          "name": "official_20260822_23",
+          "predictive": {
+            "brier_score": 0.1861971238279917,
+            "expected_calibration_error": 0.060051940508985435,
+            "log_loss": 0.6104063439269117,
+            "markets": 575,
+            "mean_probability_up": 0.5347729633551248,
+            "rows": 14375
+          },
+          "test_end": "2026-08-24T00:00:00+00:00",
+          "test_start": "2026-08-22T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20410
+        },
+        {
+          "economic": {
+            "accuracy": 0.668918918918919,
+            "coverage": 0.2569444444444444,
+            "mean_entry_second": 79.5945945945946,
+            "stressed_pnl": -22.93665547399997,
+            "trades": 148
+          },
+          "name": "official_20260824_25",
+          "predictive": {
+            "brier_score": 0.2119176811335732,
+            "expected_calibration_error": 0.10439399946967655,
+            "log_loss": 0.7160204506492434,
+            "markets": 575,
+            "mean_probability_up": 0.49944897220870427,
+            "rows": 14375
+          },
+          "test_end": "2026-08-26T00:00:00+00:00",
+          "test_start": "2026-08-24T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20986
+        },
+        {
+          "economic": {
+            "accuracy": null,
+            "coverage": 0.0,
+            "stressed_pnl": 0.0,
+            "trades": 0
+          },
+          "name": "official_20260826_27",
+          "predictive": {
+            "brier_score": 0.19941549635413142,
+            "expected_calibration_error": 0.08688409499256493,
+            "log_loss": 0.5923881403151883,
+            "markets": 239,
+            "mean_probability_up": 0.5367647367021333,
+            "rows": 5975
+          },
+          "test_end": "2026-08-28T00:00:00+00:00",
+          "test_start": "2026-08-26T00:00:00+00:00",
+          "testing_markets": 239,
+          "training_markets": 21562
+        }
+      ],
+      "twap_regime_switching": [
+        {
+          "economic": {
+            "accuracy": 0.0,
+            "coverage": 0.001736111111111111,
+            "mean_entry_second": 135.0,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1
+          },
+          "name": "official_20260814_15",
+          "predictive": {
+            "brier_score": 0.22632436348359233,
+            "expected_calibration_error": 0.069929444596522,
+            "log_loss": 0.6466749903165883,
+            "markets": 575,
+            "mean_probability_up": 0.5123279296024524,
+            "rows": 14375
+          },
+          "test_end": "2026-08-16T00:00:00+00:00",
+          "test_start": "2026-08-14T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 18133
+        },
+        {
+          "economic": {
+            "accuracy": 0.7777777777777778,
+            "coverage": 0.015706806282722512,
+            "mean_entry_second": 105.0,
+            "stressed_pnl": 4.026820000000001,
+            "trades": 9
+          },
+          "name": "official_20260816_17",
+          "predictive": {
+            "brier_score": 0.22190604160866642,
+            "expected_calibration_error": 0.06150472733107182,
+            "log_loss": 0.6344422729636554,
+            "markets": 572,
+            "mean_probability_up": 0.5044331096310152,
+            "rows": 14300
+          },
+          "test_end": "2026-08-18T00:00:00+00:00",
+          "test_start": "2026-08-16T00:00:00+00:00",
+          "testing_markets": 573,
+          "training_markets": 18709
+        },
+        {
+          "economic": {
+            "accuracy": 0.7441860465116279,
+            "coverage": 0.07624113475177305,
+            "mean_entry_second": 75.11627906976744,
+            "stressed_pnl": 15.842215000000007,
+            "trades": 43
+          },
+          "name": "official_20260818_19",
+          "predictive": {
+            "brier_score": 0.20563198320379403,
+            "expected_calibration_error": 0.06539601886844763,
+            "log_loss": 0.6180247372459006,
+            "markets": 563,
+            "mean_probability_up": 0.5156442300396953,
+            "rows": 14075
+          },
+          "test_end": "2026-08-20T00:00:00+00:00",
+          "test_start": "2026-08-18T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19282
+        },
+        {
+          "economic": {
+            "accuracy": 0.6184971098265896,
+            "coverage": 0.3067375886524823,
+            "mean_entry_second": 85.0,
+            "stressed_pnl": -62.10293237599997,
+            "trades": 173
+          },
+          "name": "official_20260820_21",
+          "predictive": {
+            "brier_score": 0.2266439109522485,
+            "expected_calibration_error": 0.12061386258955153,
+            "log_loss": 0.8122060419531811,
+            "markets": 563,
+            "mean_probability_up": 0.5016119732806344,
+            "rows": 14075
+          },
+          "test_end": "2026-08-22T00:00:00+00:00",
+          "test_start": "2026-08-20T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19846
+        },
+        {
+          "economic": {
+            "accuracy": 0.7536231884057971,
+            "coverage": 0.11979166666666667,
+            "mean_entry_second": 90.43478260869566,
+            "stressed_pnl": 25.23400080094002,
+            "trades": 69
+          },
+          "name": "official_20260822_23",
+          "predictive": {
+            "brier_score": 0.19522511586915364,
+            "expected_calibration_error": 0.06599532113601302,
+            "log_loss": 0.6161503221824312,
+            "markets": 575,
+            "mean_probability_up": 0.53336726834164,
+            "rows": 14375
+          },
+          "test_end": "2026-08-24T00:00:00+00:00",
+          "test_start": "2026-08-22T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20410
+        },
+        {
+          "economic": {
+            "accuracy": 0.7016129032258065,
+            "coverage": 0.2152777777777778,
+            "mean_entry_second": 89.35483870967742,
+            "stressed_pnl": 12.841696223500023,
+            "trades": 124
+          },
+          "name": "official_20260824_25",
+          "predictive": {
+            "brier_score": 0.2179735873920128,
+            "expected_calibration_error": 0.08928193584913068,
+            "log_loss": 0.7081367329669666,
+            "markets": 575,
+            "mean_probability_up": 0.5001439874100195,
+            "rows": 14375
+          },
+          "test_end": "2026-08-26T00:00:00+00:00",
+          "test_start": "2026-08-24T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20986
+        },
+        {
+          "economic": {
+            "accuracy": null,
+            "coverage": 0.0,
+            "stressed_pnl": 0.0,
+            "trades": 0
+          },
+          "name": "official_20260826_27",
+          "predictive": {
+            "brier_score": 0.20661380945792832,
+            "expected_calibration_error": 0.08250328196574,
+            "log_loss": 0.6072771303637641,
+            "markets": 239,
+            "mean_probability_up": 0.5302260504590253,
+            "rows": 5975
+          },
+          "test_end": "2026-08-28T00:00:00+00:00",
+          "test_start": "2026-08-26T00:00:00+00:00",
+          "testing_markets": 239,
+          "training_markets": 21562
+        }
+      ],
+      "twap_single_regime": [
+        {
+          "economic": {
+            "accuracy": 0.0,
+            "coverage": 0.001736111111111111,
+            "mean_entry_second": 135.0,
+            "stressed_pnl": -3.3065849999999997,
+            "trades": 1
+          },
+          "name": "official_20260814_15",
+          "predictive": {
+            "brier_score": 0.22194149989480896,
+            "expected_calibration_error": 0.067248300956713,
+            "log_loss": 0.6389483165085523,
+            "markets": 575,
+            "mean_probability_up": 0.5110529380236799,
+            "rows": 14375
+          },
+          "test_end": "2026-08-16T00:00:00+00:00",
+          "test_start": "2026-08-14T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 18133
+        },
+        {
+          "economic": {
+            "accuracy": 0.6666666666666666,
+            "coverage": 0.015706806282722512,
+            "mean_entry_second": 109.44444444444444,
+            "stressed_pnl": -1.6565199999999975,
+            "trades": 9
+          },
+          "name": "official_20260816_17",
+          "predictive": {
+            "brier_score": 0.21673792320188284,
+            "expected_calibration_error": 0.060954821947094034,
+            "log_loss": 0.6227347740859692,
+            "markets": 572,
+            "mean_probability_up": 0.5049200531909306,
+            "rows": 14300
+          },
+          "test_end": "2026-08-18T00:00:00+00:00",
+          "test_start": "2026-08-16T00:00:00+00:00",
+          "testing_markets": 573,
+          "training_markets": 18709
+        },
+        {
+          "economic": {
+            "accuracy": 0.7446808510638298,
+            "coverage": 0.08333333333333333,
+            "mean_entry_second": 68.40425531914893,
+            "stressed_pnl": 20.447360000000007,
+            "trades": 47
+          },
+          "name": "official_20260818_19",
+          "predictive": {
+            "brier_score": 0.20012982646307695,
+            "expected_calibration_error": 0.05845674900344817,
+            "log_loss": 0.6105117230631733,
+            "markets": 563,
+            "mean_probability_up": 0.5149587782941929,
+            "rows": 14075
+          },
+          "test_end": "2026-08-20T00:00:00+00:00",
+          "test_start": "2026-08-18T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19282
+        },
+        {
+          "economic": {
+            "accuracy": 0.6431924882629108,
+            "coverage": 0.3776595744680851,
+            "mean_entry_second": 82.44131455399061,
+            "stressed_pnl": -57.32524999999994,
+            "trades": 213
+          },
+          "name": "official_20260820_21",
+          "predictive": {
+            "brier_score": 0.22391882744067107,
+            "expected_calibration_error": 0.127169997714282,
+            "log_loss": 0.8460027332458857,
+            "markets": 563,
+            "mean_probability_up": 0.503275862717983,
+            "rows": 14075
+          },
+          "test_end": "2026-08-22T00:00:00+00:00",
+          "test_start": "2026-08-20T00:00:00+00:00",
+          "testing_markets": 564,
+          "training_markets": 19846
+        },
+        {
+          "economic": {
+            "accuracy": 0.7560975609756098,
+            "coverage": 0.1423611111111111,
+            "mean_entry_second": 87.92682926829268,
+            "stressed_pnl": 30.878565800940006,
+            "trades": 82
+          },
+          "name": "official_20260822_23",
+          "predictive": {
+            "brier_score": 0.19167573395695622,
+            "expected_calibration_error": 0.062093016693691744,
+            "log_loss": 0.6178261792568877,
+            "markets": 575,
+            "mean_probability_up": 0.5337170288967555,
+            "rows": 14375
+          },
+          "test_end": "2026-08-24T00:00:00+00:00",
+          "test_start": "2026-08-22T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20410
+        },
+        {
+          "economic": {
+            "accuracy": 0.6805555555555556,
+            "coverage": 0.25,
+            "mean_entry_second": 84.44444444444444,
+            "stressed_pnl": -4.243999999999978,
+            "trades": 144
+          },
+          "name": "official_20260824_25",
+          "predictive": {
+            "brier_score": 0.21613949657927792,
+            "expected_calibration_error": 0.10107609148942868,
+            "log_loss": 0.7155049211829534,
+            "markets": 575,
+            "mean_probability_up": 0.5000525909586631,
+            "rows": 14375
+          },
+          "test_end": "2026-08-26T00:00:00+00:00",
+          "test_start": "2026-08-24T00:00:00+00:00",
+          "testing_markets": 576,
+          "training_markets": 20986
+        },
+        {
+          "economic": {
+            "accuracy": null,
+            "coverage": 0.0,
+            "stressed_pnl": 0.0,
+            "trades": 0
+          },
+          "name": "official_20260826_27",
+          "predictive": {
+            "brier_score": 0.20421678386816183,
+            "expected_calibration_error": 0.082825927337983,
+            "log_loss": 0.602529355961195,
+            "markets": 239,
+            "mean_probability_up": 0.5335833096890724,
+            "rows": 5975
+          },
+          "test_end": "2026-08-28T00:00:00+00:00",
+          "test_start": "2026-08-26T00:00:00+00:00",
+          "testing_markets": 239,
+          "training_markets": 21562
+        }
+      ]
+    },
+    "official_evidence_completeness": {
+      "complete": false,
+      "daily_market_counts": {
+        "2026-08-14": 288,
+        "2026-08-15": 288,
+        "2026-08-16": 288,
+        "2026-08-17": 285,
+        "2026-08-18": 288,
+        "2026-08-19": 276,
+        "2026-08-20": 276,
+        "2026-08-21": 288,
+        "2026-08-22": 288,
+        "2026-08-23": 288,
+        "2026-08-24": 288,
+        "2026-08-25": 288,
+        "2026-08-26": 239
+      },
+      "expected_complete_utc_days": 14,
+      "expected_markets_per_day": 288,
+      "observed_markets": 3668,
+      "observed_utc_days": 13
+    },
+    "refprice_contribution": {
+      "regime_switching": {
+        "admitted": false,
+        "brier_score_difference_refprice_minus_twap": {
+          "lower": -0.008324572921646942,
+          "mean": -0.007187490626097942,
+          "resamples": 2000,
+          "upper": -0.00600316160901642
+        },
+        "checks": {
+          "both_directions_improve": false,
+          "brier_upper_below_zero": true,
+          "calibration_not_degraded": false,
+          "drawdown_not_worse": false,
+          "loss_recovery_not_worse": false,
+          "multiple_positive_folds": false,
+          "stressed_expectancy_lower_positive": false
+        },
+        "direction_differences": {
+          "DOWN": -39.608216223499994,
+          "UP": -17.298502624000015
+        },
+        "fold_differences": {
+          "official_20260814_15": 0.0,
+          "official_20260816_17": -4.467509999999999,
+          "official_20260818_19": -11.480769999999998,
+          "official_20260820_21": -11.517682623999988,
+          "official_20260822_23": 6.948035000000004,
+          "official_20260824_25": -36.38879122350001,
+          "official_20260826_27": 0.0
+        },
+        "matching_twap_candidate": "twap_regime_switching",
+        "paired_markets": 3662,
+        "refprice_candidate": "twap_refprice_regime_switching",
+        "stressed_pnl_per_scheduled_market_difference": {
+          "lower": -0.03147334739505853,
+          "mean": -0.015539792148416163,
+          "resamples": 2000,
+          "upper": -0.0011825407071641353
+        }
+      },
+      "single_regime": {
+        "admitted": false,
+        "brier_score_difference_refprice_minus_twap": {
+          "lower": -0.005300951259451618,
+          "mean": -0.004768009393548643,
+          "resamples": 2000,
+          "upper": -0.004226729627320746
+        },
+        "checks": {
+          "both_directions_improve": false,
+          "brier_upper_below_zero": true,
+          "calibration_not_degraded": false,
+          "drawdown_not_worse": false,
+          "loss_recovery_not_worse": false,
+          "multiple_positive_folds": true,
+          "stressed_expectancy_lower_positive": false
+        },
+        "direction_differences": {
+          "DOWN": -39.518971186960016,
+          "UP": 5.686330800540002
+        },
+        "fold_differences": {
+          "official_20260814_15": 0.0,
+          "official_20260816_17": 1.21583,
+          "official_20260818_19": -9.51236872546,
+          "official_20260820_21": -9.681239999999997,
+          "official_20260822_23": 2.83779381304,
+          "official_20260824_25": -18.692655474,
+          "official_20260826_27": 0.0
+        },
+        "matching_twap_candidate": "twap_single_regime",
+        "paired_markets": 3662,
+        "refprice_candidate": "twap_refprice_single_regime",
+        "stressed_pnl_per_scheduled_market_difference": {
+          "lower": -0.01955020057964459,
+          "mean": -0.009238842268274166,
+          "resamples": 2000,
+          "upper": -0.0003737135875224864
+        }
+      }
+    },
+    "selection": {
+      "qualified_candidates": [],
+      "refprice_conclusion": "RefPrice does not provide qualified incremental value under the current TWAP settlement mechanism.",
+      "selected_candidate": null,
+      "selection_order": [
+        "highest bootstrap lower stressed expectancy",
+        "highest trade count",
+        "earliest average entry",
+        "lowest maximum drawdown"
+      ],
+      "status": "no_candidate_qualified"
+    }
+  },
+  "evidence_separation": {
+    "authentic_counterfactual_calibration": {
+      "evidentiary_role": "selection and calibration only; cannot qualify",
+      "label_sources": [
+        "authentic_counterfactual_twap60"
+      ],
+      "markets": 3423,
+      "rows": 85575
+    },
+    "official_development": {
+      "evidentiary_role": "official development qualification",
+      "label_sources": [
+        "authentic_official_twap60"
+      ],
+      "markets": 3668,
+      "rows": 91700
+    },
+    "prospective": {
+      "evidentiary_role": "untouched prospective qualification only",
+      "label_sources": [],
+      "markets": 0,
+      "rows": 0
+    },
+    "synthetic_chainlink_historical_fit": {
+      "evidentiary_role": "historical fitting only; cannot qualify",
+      "label_sources": [
+        "chainlink_reconstructed_twap60"
+      ],
+      "markets": 14710,
+      "rows": 367750
+    }
+  },
+  "limitations": [
+    "Synthetic Chainlink-reconstructed TWAP evidence was used only for historical fitting and did not qualify a candidate.",
+    "Projected economics assume the recorded executable ask VWAP was fillable at each selected checkpoint.",
+    "No model was deployed and no trading process, ingester, SQL source, table, migration, or database row was changed.",
+    "The immutable extract ends at the 2026-08-28 freeze boundary, so no prospective market was read or scored.",
+    "Official development evidence is incomplete: 13 of 14 UTC days and 3668 official markets were available.",
+    "No development candidate passed every frozen qualification gate."
+  ],
+  "migrations": false,
+  "model_artifact": {
+    "deployment_status": "not_deployed",
+    "path": "model-family.joblib",
+    "qualification_status": "no_candidate_qualified",
+    "sha256": "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80",
+    "training_run_id": "20260828T174703Z"
+  },
+  "model_family": "btc-5m-latent-twap-settlement-risk",
+  "new_data_sources": false,
+  "new_ingesters": false,
+  "new_tables": false,
+  "paper_only": true,
+  "profile": "btc_5m_latent_twap_settlement_risk",
+  "prospective": {
+    "checks": {
+      "development_candidate_exists": false,
+      "development_gates_repeat": false,
+      "minimum_blocks": false,
+      "minimum_complete_days": false,
+      "minimum_markets": false,
+      "minimum_trades": false,
+      "refprice_admission_repeats_if_applicable": false
+    },
+    "evidence": {
+      "chronological_blocks": 0,
+      "complete_utc_days": 0,
+      "markets": 0,
+      "trades": 0
+    },
+    "requirements": {
+      "minimum_blocks": 5,
+      "minimum_complete_days": 10,
+      "minimum_markets": 2500,
+      "minimum_trades": 100
+    },
+    "status": "not_applicable_no_development_candidate",
+    "tuning_performed": false,
+    "untouched": true
+  },
+  "run_id": "20260828T174703Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "scikit_learn": "1.9.0",
+    "scipy": "1.18.0"
+  },
+  "runtime_exported": false,
+  "schema_version": "btc-latent-twap-settlement-risk-tournament-v1",
+  "search": {
+    "twap_refprice_regime_switching": {
+      "budget": 12,
+      "rows": [
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20127415460557044,
+            "expected_calibration_error": 0.07548592498952202,
+            "log_loss": 0.5964846834142634,
+            "margin_mae_bps": 3.929385431224628,
+            "markets": 3417,
+            "mean_probability_up": 0.5115920422708427,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3523232.875151929,
+          "configuration": {
+            "identifier": "state_01",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.18867857484546757,
+          "process_velocity_variance": 0.18867857484546757,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19922234976941244,
+            "expected_calibration_error": 0.07118938705644962,
+            "log_loss": 0.5918596637298532,
+            "margin_mae_bps": 3.8976545251444694,
+            "markets": 3417,
+            "mean_probability_up": 0.5117697608325623,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3522056.8147595725,
+          "configuration": {
+            "identifier": "state_02",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.37735714969093515,
+          "process_velocity_variance": 0.37735714969093515,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19767401337242768,
+            "expected_calibration_error": 0.06820085627149078,
+            "log_loss": 0.5881454486999607,
+            "margin_mae_bps": 3.8743263314220195,
+            "markets": 3417,
+            "mean_probability_up": 0.5118900599050813,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524959.299532649,
+          "configuration": {
+            "identifier": "state_03",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.7547142993818703,
+          "process_velocity_variance": 0.5660357245364027,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.199961465008613,
+            "expected_calibration_error": 0.0730098526338418,
+            "log_loss": 0.5935663048658447,
+            "margin_mae_bps": 3.9089082596020415,
+            "markets": 3417,
+            "mean_probability_up": 0.5117044306585815,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520566.516319204,
+          "configuration": {
+            "identifier": "state_04",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.1897688747067414,
+          "process_velocity_variance": 0.3795377494134828,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20021070628736484,
+            "expected_calibration_error": 0.07348479525501433,
+            "log_loss": 0.5941591659642136,
+            "margin_mae_bps": 3.912195867608161,
+            "markets": 3417,
+            "mean_probability_up": 0.5116627357056911,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524500.645880227,
+          "configuration": {
+            "identifier": "state_05",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.3795377494134828,
+          "process_velocity_variance": 0.1897688747067414,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19752357673522328,
+            "expected_calibration_error": 0.06762301383875502,
+            "log_loss": 0.5877638797958278,
+            "margin_mae_bps": 3.8727851329033425,
+            "markets": 3417,
+            "mean_probability_up": 0.5119345569559939,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520483.119465898,
+          "configuration": {
+            "identifier": "state_06",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.5,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.5693066241202241,
+          "process_velocity_variance": 0.7590754988269656,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19993262476660184,
+            "expected_calibration_error": 0.07296279167566382,
+            "log_loss": 0.5935222262025188,
+            "margin_mae_bps": 3.9082372184157728,
+            "markets": 3417,
+            "mean_probability_up": 0.5117001705742197,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3521661.826965149,
+          "configuration": {
+            "identifier": "state_07",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.75,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.29060969326745456,
+          "process_velocity_variance": 0.29060969326745456,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.1984059265868694,
+            "expected_calibration_error": 0.06934183173704088,
+            "log_loss": 0.5899286256465168,
+            "margin_mae_bps": 3.8861172732345715,
+            "markets": 3417,
+            "mean_probability_up": 0.5118763411706203,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520037.123844949,
+          "configuration": {
+            "identifier": "state_08",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.38747959102327273,
+          "process_velocity_variance": 0.5812193865349091,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19830031852793115,
+            "expected_calibration_error": 0.06957981688154814,
+            "log_loss": 0.5896740208454794,
+            "margin_mae_bps": 3.8836391447160254,
+            "markets": 3417,
+            "mean_probability_up": 0.5118402458269873,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3525129.898978223,
+          "configuration": {
+            "identifier": "state_09",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.7749591820465455,
+          "process_velocity_variance": 0.29060969326745456,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.1987694688834637,
+            "expected_calibration_error": 0.07029722537283992,
+            "log_loss": 0.5907947720251608,
+            "margin_mae_bps": 3.891013896669469,
+            "markets": 3417,
+            "mean_probability_up": 0.5118147994736295,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524882.8906710716,
+          "configuration": {
+            "identifier": "state_10",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.1988625044879265,
+          "process_velocity_variance": 0.5965875134637795,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19951081101677473,
+            "expected_calibration_error": 0.07192183154295723,
+            "log_loss": 0.5925641366749761,
+            "margin_mae_bps": 3.9021978477457973,
+            "markets": 3417,
+            "mean_probability_up": 0.5117556446087727,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520719.6172706224,
+          "configuration": {
+            "identifier": "state_11",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.25,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.49715626121981626,
+          "process_velocity_variance": 0.1988625044879265,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19698608570623216,
+            "expected_calibration_error": 0.06671862920410818,
+            "log_loss": 0.5864790504486459,
+            "margin_mae_bps": 3.8643772920669526,
+            "markets": 3417,
+            "mean_probability_up": 0.5119596196258592,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3532527.291667641,
+          "configuration": {
+            "identifier": "state_12",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.795450017951706,
+          "process_velocity_variance": 0.795450017951706,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        }
+      ],
+      "selected_configuration": "state_12"
+    },
+    "twap_refprice_single_regime": {
+      "budget": 12,
+      "rows": [
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2020894650115772,
+            "expected_calibration_error": 0.07711309270812773,
+            "log_loss": 0.5982294000096846,
+            "margin_mae_bps": 3.9416743105478074,
+            "markets": 3417,
+            "mean_probability_up": 0.5114917806974106,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3523232.875151929,
+          "configuration": {
+            "identifier": "state_01",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.18867857484546757,
+          "process_velocity_variance": 0.18867857484546757,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20005184083690164,
+            "expected_calibration_error": 0.07317424564953949,
+            "log_loss": 0.5937677741890435,
+            "margin_mae_bps": 3.9097770263016884,
+            "markets": 3417,
+            "mean_probability_up": 0.5116784269333223,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3522056.8147595725,
+          "configuration": {
+            "identifier": "state_02",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.37735714969093515,
+          "process_velocity_variance": 0.37735714969093515,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.1983019489980904,
+            "expected_calibration_error": 0.06964331716146753,
+            "log_loss": 0.5896588601759871,
+            "margin_mae_bps": 3.8832088918296748,
+            "markets": 3417,
+            "mean_probability_up": 0.5118168142698278,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524959.299532649,
+          "configuration": {
+            "identifier": "state_03",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.7547142993818703,
+          "process_velocity_variance": 0.5660357245364027,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.47730844182778676
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19953861995857158,
+            "expected_calibration_error": 0.0722549768992975,
+            "log_loss": 0.5925262501006822,
+            "margin_mae_bps": 3.9008682429058346,
+            "markets": 3417,
+            "mean_probability_up": 0.5116862371712354,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520566.516319204,
+          "configuration": {
+            "identifier": "state_04",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.1897688747067414,
+          "process_velocity_variance": 0.3795377494134828,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19994365901091002,
+            "expected_calibration_error": 0.07340991549721948,
+            "log_loss": 0.5934992309588083,
+            "margin_mae_bps": 3.9072084456959013,
+            "markets": 3417,
+            "mean_probability_up": 0.5116467332428405,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524500.645880227,
+          "configuration": {
+            "identifier": "state_05",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.3795377494134828,
+          "process_velocity_variance": 0.1897688747067414,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19724237541486986,
+            "expected_calibration_error": 0.06739510795457253,
+            "log_loss": 0.5870552976922682,
+            "margin_mae_bps": 3.867353967962862,
+            "markets": 3417,
+            "mean_probability_up": 0.5118950467225556,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520483.119465898,
+          "configuration": {
+            "identifier": "state_06",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.5,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.5693066241202241,
+          "process_velocity_variance": 0.7590754988269656,
+          "regime_transition": [
+            [
+              0.7207347678182936,
+              0.17429910821718167,
+              0.10496612396452482
+            ],
+            [
+              0.15366603795257766,
+              0.7496832659407834,
+              0.09665069610663896
+            ],
+            [
+              0.14094335807029276,
+              0.1645087957743395,
+              0.6945478461553677
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.5773084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19857338059284135,
+            "expected_calibration_error": 0.07042866457790316,
+            "log_loss": 0.5902377848110401,
+            "margin_mae_bps": 3.885741578328687,
+            "markets": 3417,
+            "mean_probability_up": 0.5117257848576569,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3521661.826965149,
+          "configuration": {
+            "identifier": "state_07",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.75,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.29060969326745456,
+          "process_velocity_variance": 0.29060969326745456,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19700599972013533,
+            "expected_calibration_error": 0.06677572951446002,
+            "log_loss": 0.586456463152768,
+            "margin_mae_bps": 3.863265920680217,
+            "markets": 3417,
+            "mean_probability_up": 0.5118721903238033,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520037.123844949,
+          "configuration": {
+            "identifier": "state_08",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.38747959102327273,
+          "process_velocity_variance": 0.5812193865349091,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19749393010976773,
+            "expected_calibration_error": 0.06821136863616627,
+            "log_loss": 0.5876646773806434,
+            "margin_mae_bps": 3.8704644244042696,
+            "markets": 3417,
+            "mean_probability_up": 0.5118289072642879,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3525129.898978223,
+          "configuration": {
+            "identifier": "state_09",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.7749591820465455,
+          "process_velocity_variance": 0.29060969326745456,
+          "regime_transition": [
+            [
+              0.7650787439014856,
+              0.14662249618165488,
+              0.08829875991685958
+            ],
+            [
+              0.1300060663539459,
+              0.7882245525999152,
+              0.08176938104613891
+            ],
+            [
+              0.10932418011312728,
+              0.12760295671725091,
+              0.7630728631696218
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6523084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.1962651937718295,
+            "expected_calibration_error": 0.06590696911278794,
+            "log_loss": 0.5846165896266535,
+            "margin_mae_bps": 3.851687850226202,
+            "markets": 3417,
+            "mean_probability_up": 0.5118424759015142,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3524882.8906710716,
+          "configuration": {
+            "identifier": "state_10",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.1988625044879265,
+          "process_velocity_variance": 0.5965875134637795,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.19790849466309718,
+            "expected_calibration_error": 0.06892436406483154,
+            "log_loss": 0.5886317211089389,
+            "margin_mae_bps": 3.876240349703639,
+            "markets": 3417,
+            "mean_probability_up": 0.5117754112070281,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3520719.6172706224,
+          "configuration": {
+            "identifier": "state_11",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.25,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.49715626121981626,
+          "process_velocity_variance": 0.1988625044879265,
+          "regime_transition": [
+            [
+              0.7972698629914404,
+              0.1265309033039512,
+              0.07619923370460832
+            ],
+            [
+              0.11265982456256694,
+              0.816480988773271,
+              0.07085918666416209
+            ],
+            [
+              0.08929236564400235,
+              0.10422186433652864,
+              0.8064857700194691
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.1952476386358854,
+            "expected_calibration_error": 0.06362839886353774,
+            "log_loss": 0.5820833540679267,
+            "margin_mae_bps": 3.837536147299665,
+            "markets": 3417,
+            "mean_probability_up": 0.5119387107269332,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -3532527.291667641,
+          "configuration": {
+            "identifier": "state_12",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.795450017951706,
+          "process_velocity_variance": 0.795450017951706,
+          "regime_transition": [
+            [
+              0.8217019394869817,
+              0.11128199776781202,
+              0.06701606274520619
+            ],
+            [
+              0.09939756500506466,
+              0.8380847571980423,
+              0.0625176777968931
+            ],
+            [
+              0.07546472582055685,
+              0.08808227175904924,
+              0.8364530024203939
+            ]
+          ],
+          "sensor_variances": {
+            "refprice_margin_bps": 85.83567241618995,
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7123084418277867
+        }
+      ],
+      "selected_configuration": "state_12"
+    },
+    "twap_regime_switching": {
+      "budget": 12,
+      "rows": [
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2087040266395502,
+            "expected_calibration_error": 0.07927404964492234,
+            "log_loss": 0.6133360960028125,
+            "margin_mae_bps": 4.063849223250425,
+            "markets": 3417,
+            "mean_probability_up": 0.5110783079826888,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2366605.5264787027,
+          "configuration": {
+            "identifier": "state_01",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03904828370635979,
+          "process_velocity_variance": 0.03904828370635979,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20749563437350382,
+            "expected_calibration_error": 0.07671847475597474,
+            "log_loss": 0.610760680178803,
+            "margin_mae_bps": 4.046092567474838,
+            "markets": 3417,
+            "mean_probability_up": 0.5112441723091736,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2366196.2875078428,
+          "configuration": {
+            "identifier": "state_02",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.07809656741271959,
+          "process_velocity_variance": 0.07809656741271959,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20638256751880318,
+            "expected_calibration_error": 0.07465046246736903,
+            "log_loss": 0.6083321463568748,
+            "margin_mae_bps": 4.02899486967787,
+            "markets": 3417,
+            "mean_probability_up": 0.5113755987252234,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367706.4805347905,
+          "configuration": {
+            "identifier": "state_03",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.15619313482543917,
+          "process_velocity_variance": 0.11714485111907938,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20811017569873974,
+            "expected_calibration_error": 0.07786475601080219,
+            "log_loss": 0.6120793209167441,
+            "margin_mae_bps": 4.054753049845226,
+            "markets": 3417,
+            "mean_probability_up": 0.5111454449910644,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2363795.7097429074,
+          "configuration": {
+            "identifier": "state_04",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03317046452976712,
+          "process_velocity_variance": 0.06634092905953425,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20844359723350908,
+            "expected_calibration_error": 0.07933715410291341,
+            "log_loss": 0.6128026520713272,
+            "margin_mae_bps": 4.057998713948449,
+            "markets": 3417,
+            "mean_probability_up": 0.5110402990710726,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367892.702489106,
+          "configuration": {
+            "identifier": "state_05",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.06634092905953425,
+          "process_velocity_variance": 0.03317046452976712,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2064073500907967,
+            "expected_calibration_error": 0.07411211349051901,
+            "log_loss": 0.6083691076519876,
+            "margin_mae_bps": 4.031228616460827,
+            "markets": 3417,
+            "mean_probability_up": 0.5114517867259236,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2361457.6790725286,
+          "configuration": {
+            "identifier": "state_06",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.5,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.09951139358930136,
+          "process_velocity_variance": 0.1326818581190685,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2080695432769179,
+            "expected_calibration_error": 0.07809272618227148,
+            "log_loss": 0.6119986956721986,
+            "margin_mae_bps": 4.053435188878877,
+            "markets": 3417,
+            "mean_probability_up": 0.5111246234362317,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2364125.108996498,
+          "configuration": {
+            "identifier": "state_07",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.75,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.04625131370476498,
+          "process_velocity_variance": 0.04625131370476498,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20698758990959068,
+            "expected_calibration_error": 0.07546201424392578,
+            "log_loss": 0.6096611601947117,
+            "margin_mae_bps": 4.040010271725394,
+            "markets": 3417,
+            "mean_probability_up": 0.5113783998086392,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2361353.754003471,
+          "configuration": {
+            "identifier": "state_08",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.06166841827301997,
+          "process_velocity_variance": 0.09250262740952996,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2072695354783045,
+            "expected_calibration_error": 0.07647410861940694,
+            "log_loss": 0.6102853267190904,
+            "margin_mae_bps": 4.041761666493872,
+            "markets": 3417,
+            "mean_probability_up": 0.5112354697980055,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2365728.579701794,
+          "configuration": {
+            "identifier": "state_09",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.12333683654603994,
+          "process_velocity_variance": 0.04625131370476498,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20669737904879198,
+            "expected_calibration_error": 0.0751253367163317,
+            "log_loss": 0.6090259661544842,
+            "margin_mae_bps": 4.034103164189047,
+            "markets": 3417,
+            "mean_probability_up": 0.5113562501005533,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367725.972467891,
+          "configuration": {
+            "identifier": "state_10",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03024399208380277,
+          "process_velocity_variance": 0.09073197625140832,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20789575401183602,
+            "expected_calibration_error": 0.07769947171952407,
+            "log_loss": 0.6116273673214477,
+            "margin_mae_bps": 4.051730738131762,
+            "markets": 3417,
+            "mean_probability_up": 0.5111775689363739,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2362638.979861481,
+          "configuration": {
+            "identifier": "state_11",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.25,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.07560998020950693,
+          "process_velocity_variance": 0.03024399208380277,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20554147058312972,
+            "expected_calibration_error": 0.07305695252131916,
+            "log_loss": 0.606369236518288,
+            "margin_mae_bps": 4.016996178475946,
+            "markets": 3417,
+            "mean_probability_up": 0.5115084415629205,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2371419.352679307,
+          "configuration": {
+            "identifier": "state_12",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.12097596833521108,
+          "process_velocity_variance": 0.12097596833521108,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        }
+      ],
+      "selected_configuration": "state_12"
+    },
+    "twap_single_regime": {
+      "budget": 12,
+      "rows": [
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20760523310885648,
+            "expected_calibration_error": 0.07713270479069116,
+            "log_loss": 0.6109477035889345,
+            "margin_mae_bps": 4.047252469056741,
+            "markets": 3417,
+            "mean_probability_up": 0.5112115778470555,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2366605.5264787027,
+          "configuration": {
+            "identifier": "state_01",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03904828370635979,
+          "process_velocity_variance": 0.03904828370635979,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20608214427376195,
+            "expected_calibration_error": 0.07411612157777851,
+            "log_loss": 0.6075874542406114,
+            "margin_mae_bps": 4.02369395992631,
+            "markets": 3417,
+            "mean_probability_up": 0.511382217008426,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2366196.2875078428,
+          "configuration": {
+            "identifier": "state_02",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.07809656741271959,
+          "process_velocity_variance": 0.07809656741271959,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20485270435597577,
+            "expected_calibration_error": 0.0719460455903376,
+            "log_loss": 0.6046583143674606,
+            "margin_mae_bps": 4.004619496205891,
+            "markets": 3417,
+            "mean_probability_up": 0.5114926137945761,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367706.4805347905,
+          "configuration": {
+            "identifier": "state_03",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.45
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.15619313482543917,
+          "process_velocity_variance": 0.11714485111907938,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.6861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2046279817295384,
+            "expected_calibration_error": 0.07156276800524082,
+            "log_loss": 0.6040498055934951,
+            "margin_mae_bps": 4.0005201529869625,
+            "markets": 3417,
+            "mean_probability_up": 0.5114662307962585,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2363795.7097429074,
+          "configuration": {
+            "identifier": "state_04",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.0,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03317046452976712,
+          "process_velocity_variance": 0.06634092905953425,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20575021536019494,
+            "expected_calibration_error": 0.07448352021237771,
+            "log_loss": 0.6067932119358925,
+            "margin_mae_bps": 4.015525126303829,
+            "markets": 3417,
+            "mean_probability_up": 0.5112513056171171,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367892.702489106,
+          "configuration": {
+            "identifier": "state_05",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.06634092905953425,
+          "process_velocity_variance": 0.03317046452976712,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20292884246065346,
+            "expected_calibration_error": 0.06817761648018557,
+            "log_loss": 0.5998551923042729,
+            "margin_mae_bps": 3.9764959042529693,
+            "markets": 3417,
+            "mean_probability_up": 0.51167657822759,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2361457.6790725286,
+          "configuration": {
+            "identifier": "state_06",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.5,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 8.0,
+            "velocity_decay": 0.65
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.09951139358930136,
+          "process_velocity_variance": 0.1326818581190685,
+          "regime_transition": [
+            [
+              0.7879289992981666,
+              0.14794079930113194,
+              0.06413020140070136
+            ],
+            [
+              0.11651465664938508,
+              0.83577734950756,
+              0.047707993843054936
+            ],
+            [
+              0.0929746398827203,
+              0.12395345272043723,
+              0.7830719073968424
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.7861542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20338938387916825,
+            "expected_calibration_error": 0.07012451594910767,
+            "log_loss": 0.6009486280344281,
+            "margin_mae_bps": 3.9809169021738504,
+            "markets": 3417,
+            "mean_probability_up": 0.5114015558413338,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2364125.108996498,
+          "configuration": {
+            "identifier": "state_07",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.75,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.04625131370476498,
+          "process_velocity_variance": 0.04625131370476498,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20216789290107684,
+            "expected_calibration_error": 0.0668711328600346,
+            "log_loss": 0.5979027961165133,
+            "margin_mae_bps": 3.9657792050571405,
+            "markets": 3417,
+            "mean_probability_up": 0.5116183233057805,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2361353.754003471,
+          "configuration": {
+            "identifier": "state_08",
+            "initial_variance_scale": 0.75,
+            "process_margin_scale": 1.0,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.06166841827301997,
+          "process_velocity_variance": 0.09250262740952996,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20313686955485594,
+            "expected_calibration_error": 0.06968341910702534,
+            "log_loss": 0.6003393595690834,
+            "margin_mae_bps": 3.9771654220804145,
+            "markets": 3417,
+            "mean_probability_up": 0.5113982519154167,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2365728.579701794,
+          "configuration": {
+            "identifier": "state_09",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 0.75,
+            "regime_stickiness": 12.0,
+            "velocity_decay": 0.8
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.12333683654603994,
+          "process_velocity_variance": 0.04625131370476498,
+          "regime_transition": [
+            [
+              0.8216006949476303,
+              0.12445141342696496,
+              0.0539478916254047
+            ],
+            [
+              0.10004643207119696,
+              0.8589886395452848,
+              0.04096492838351825
+            ],
+            [
+              0.06899159879297236,
+              0.09197934931374172,
+              0.8390290518932859
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.8611542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.2008624792817016,
+            "expected_calibration_error": 0.06474774445000482,
+            "log_loss": 0.5945738507625964,
+            "margin_mae_bps": 3.9503116511404412,
+            "markets": 3417,
+            "mean_probability_up": 0.5114703233392212,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2367725.972467891,
+          "configuration": {
+            "identifier": "state_10",
+            "initial_variance_scale": 1.25,
+            "process_margin_scale": 0.5,
+            "process_velocity_scale": 1.5,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.03024399208380277,
+          "process_velocity_variance": 0.09073197625140832,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20252398029092533,
+            "expected_calibration_error": 0.0689617720117678,
+            "log_loss": 0.598703602451901,
+            "margin_mae_bps": 3.9705753061374702,
+            "markets": 3417,
+            "mean_probability_up": 0.5113430360323705,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2362638.979861481,
+          "configuration": {
+            "identifier": "state_11",
+            "initial_variance_scale": 1.0,
+            "process_margin_scale": 1.25,
+            "process_velocity_scale": 0.5,
+            "regime_stickiness": 16.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.07560998020950693,
+          "process_velocity_variance": 0.03024399208380277,
+          "regime_transition": [
+            [
+              0.8460449905176475,
+              0.10739906485967596,
+              0.04655594462267658
+            ],
+            [
+              0.087656964371432,
+              0.8764510883251707,
+              0.035891947303397335
+            ],
+            [
+              0.054844359082492744,
+              0.07311830063649334,
+              0.872037340281014
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        },
+        {
+          "calibration_metrics": {
+            "brier_score": 0.20030153436765316,
+            "expected_calibration_error": 0.0640990489705933,
+            "log_loss": 0.593153086438628,
+            "margin_mae_bps": 3.943064097630163,
+            "markets": 3417,
+            "mean_probability_up": 0.511508945952414,
+            "rows": 85425
+          },
+          "chronological_log_likelihood": -2371419.352679307,
+          "configuration": {
+            "identifier": "state_12",
+            "initial_variance_scale": 1.5,
+            "process_margin_scale": 2.0,
+            "process_velocity_scale": 2.0,
+            "regime_stickiness": 20.0,
+            "velocity_decay": 0.92
+          },
+          "fit_markets": 14458,
+          "fit_rows": 361450,
+          "process_margin_variance": 0.12097596833521108,
+          "process_velocity_variance": 0.12097596833521108,
+          "regime_transition": [
+            [
+              0.8645978151800605,
+              0.09445660832027324,
+              0.04094557649966637
+            ],
+            [
+              0.07799792192201488,
+              0.8900651142157979,
+              0.03193696386218724
+            ],
+            [
+              0.04551182198341593,
+              0.06067619602031682,
+              0.8938119819962673
+            ]
+          ],
+          "sensor_variances": {
+            "twap30_margin_bps": 90.7907946871811,
+            "twap60_margin_bps": 95.5193809324044
+          },
+          "transition_phi": 0.9211542445289833
+        }
+      ],
+      "selected_configuration": "state_12"
+    }
+  },
+  "source_commit": "f05e55772bd418688fa003266f0d7c65bff76f5d",
+  "strictly_training_only": true,
+  "trading_processes_changed": false
+}
