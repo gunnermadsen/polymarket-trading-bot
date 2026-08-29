@@ -1,0 +1,73 @@
+{
+  "candidate_metric_deltas_corrected_minus_contaminated": {
+    "dual_twap_state": {
+      "brier": -0.0007109653024100215,
+      "log_loss": -0.0010983897964476075,
+      "stressed_expectancy_per_trade": 0.13479431300348568
+    },
+    "refprice_dual_twap_binance_extension": {
+      "brier": 0.1241297844582879,
+      "log_loss": 0.3438780112127199,
+      "stressed_expectancy_per_trade": -1.3530872366129136
+    },
+    "refprice_dual_twap_margin_calibrated": {
+      "brier": -0.006314378970053741,
+      "log_loss": -0.021498902539138,
+      "stressed_expectancy_per_trade": 0.0001818408493381718
+    },
+    "refprice_dual_twap_state": {
+      "brier": -0.0006562352826179618,
+      "log_loss": -0.0009461523734026756,
+      "stressed_expectancy_per_trade": 0.008605226869861607
+    },
+    "refprice_dual_twap_uncertainty_guard": {
+      "brier": 0.128676719211743,
+      "log_loss": 0.35930416936194853,
+      "stressed_expectancy_per_trade": -1.1843917998574696
+    },
+    "refprice_state_control": {
+      "brier": -0.00023166644512170875,
+      "log_loss": -0.0005779520906258329,
+      "stressed_expectancy_per_trade": -0.022313722152325965
+    }
+  },
+  "classification": "retrospective_leakage_impact_only",
+  "contaminated_artifact_status": "non_deployable_abandoned_temporal_leakage",
+  "contaminated_metrics_sha256": "c2e22edf1c33dc40f2f0cdb29f1e933827fb2cdef1eb34f73ca8f2650c14cb33",
+  "feature_metric_deltas_corrected_minus_contaminated": {
+    "combined": {
+      "brier": -0.0028802388505016485,
+      "expected_calibration_error": -0.006764372548325778,
+      "log_loss": -0.010789521543482783
+    },
+    "combined_disagreement": {
+      "brier": 0.12312119646643477,
+      "expected_calibration_error": 0.018930393260453197,
+      "log_loss": 0.3407657123178937
+    },
+    "dual_twap": {
+      "brier": -0.005541568852204137,
+      "expected_calibration_error": -0.01952820158830563,
+      "log_loss": -0.016976452322387425
+    },
+    "refprice_control": {
+      "brier": -0.0006268098953542967,
+      "expected_calibration_error": -0.003440272583915653,
+      "log_loss": -0.0034105298894555602
+    },
+    "twap30": {
+      "brier": -0.000827265665269028,
+      "expected_calibration_error": -0.001364210061274844,
+      "log_loss": -0.003963659725733648
+    },
+    "twap60": {
+      "brier": -0.0006271824575939944,
+      "expected_calibration_error": -0.002288161788393063,
+      "log_loss": -0.004976812261214492
+    }
+  },
+  "same_consumed_dates": true,
+  "same_execution_assumptions": true,
+  "same_folds": true,
+  "same_seed": true
+}

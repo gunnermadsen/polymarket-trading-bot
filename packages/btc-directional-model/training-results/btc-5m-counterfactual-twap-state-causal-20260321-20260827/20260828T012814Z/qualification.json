@@ -1,0 +1,96 @@
+{
+  "prospective": {
+    "days": 1,
+    "economics": {
+      "accuracy": null,
+      "bootstrap_lower": "-inf",
+      "capacity_curve": {
+        "10": null,
+        "100": null,
+        "125": null,
+        "15": null,
+        "150": null,
+        "175": null,
+        "20": null,
+        "200": null,
+        "25": null,
+        "30": null,
+        "40": null,
+        "5": null,
+        "50": null,
+        "75": null
+      },
+      "coverage": 0.0,
+      "cvar_5pct": 0.0,
+      "daily_pnl": [],
+      "down_trades": 0,
+      "entry_time_distribution": [],
+      "losing_trade_pnl": 0.0,
+      "losing_trades": 0,
+      "maximum_day_profit_share": "inf",
+      "maximum_drawdown": 0.0,
+      "profit_factor": 0.0,
+      "stressed_expectancy_per_trade": 0.0,
+      "stressed_pnl": 0.0,
+      "trades": 0,
+      "up_trades": 0
+    },
+    "end": "2026-08-27T00:00:00+00:00",
+    "folds": 1,
+    "policy": {
+      "minimum_margin_bound_bps": 0.25,
+      "minimum_probability_edge": 0.02,
+      "minimum_stressed_edge": 0.005
+    },
+    "post_freeze_tuning": false,
+    "probability": {
+      "brier": 0.1695153402257129,
+      "expected_calibration_error": 0.04289402538952576,
+      "log_loss": 0.5111280449674758,
+      "markets": 239
+    },
+    "start": "2026-08-26T00:00:00+00:00"
+  },
+  "qualification": {
+    "checks": {
+      "base_capacity_positive": false,
+      "binance_fidelity": true,
+      "both_directions": false,
+      "chainlink_fidelity": true,
+      "drawdown_and_cvar_reported": true,
+      "ece": true,
+      "market_coverage": false,
+      "no_single_day_majority": false,
+      "paired_predictive_improvement": false,
+      "positive_bootstrap_lower": false,
+      "positive_stressed_expectancy": false,
+      "positive_stressed_pnl": false,
+      "profit_factor": false,
+      "profitable_temporal_folds": false,
+      "prospective_days": false,
+      "prospective_folds": false,
+      "prospective_markets": false
+    },
+    "deployment_status": "not_deployed_training_only",
+    "passed": false,
+    "reasons": [
+      "paired_predictive_improvement",
+      "positive_stressed_pnl",
+      "positive_stressed_expectancy",
+      "profit_factor",
+      "positive_bootstrap_lower",
+      "profitable_temporal_folds",
+      "market_coverage",
+      "both_directions",
+      "no_single_day_majority",
+      "prospective_markets",
+      "prospective_days",
+      "prospective_folds",
+      "base_capacity_positive"
+    ]
+  },
+  "selection": {
+    "provisional_candidate": "dual_twap_state",
+    "status": "no_deployable_challenger_qualified"
+  }
+}

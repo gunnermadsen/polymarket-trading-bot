@@ -1,0 +1,60 @@
+{
+  "authentic_label_up": {
+    "role": "target",
+    "source": "authentic completed TWAP-60"
+  },
+  "authentic_margin_bps": {
+    "role": "target",
+    "source": "authentic completed TWAP-60"
+  },
+  "base_label_weight": {
+    "role": "weight",
+    "source": "frozen label-source confidence"
+  },
+  "binance_corrected_margin_bps": {
+    "role": "target",
+    "source": "offline corrected completed Binance TWAP-60"
+  },
+  "binance_margin_correction_bps": {
+    "role": "diagnostic",
+    "source": "offline Binance terminal-margin correction"
+  },
+  "binance_raw_margin_bps": {
+    "role": "target",
+    "source": "completed Binance TWAP-60"
+  },
+  "estimated_synthetic_label_error": {
+    "permitted_use": "Binance synthetic sample weighting only",
+    "role": "weight",
+    "source": "offline Binance synthetic-label reliability"
+  },
+  "label_source": {
+    "role": "diagnostic",
+    "source": "priority label assignment"
+  },
+  "label_up": {
+    "role": "target",
+    "source": "priority terminal label"
+  },
+  "official_outcome": {
+    "role": "diagnostic",
+    "source": "completed official market outcome"
+  },
+  "proxy_label_up": {
+    "role": "target",
+    "source": "completed Chainlink reconstruction"
+  },
+  "proxy_margin_bps": {
+    "role": "target",
+    "source": "completed Chainlink reconstruction"
+  },
+  "raw_corrected_synthetic_margin_disagreement_bps": {
+    "permitted_use": "offline leakage-impact reporting only",
+    "role": "diagnostic",
+    "source": "completed Binance terminal margins"
+  },
+  "target_margin_bps": {
+    "role": "target",
+    "source": "priority terminal margin"
+  }
+}
