@@ -1,0 +1,113 @@
+[training]
+profile = "btc_5m_twap_conformal_risk_admission"
+model_family = "btc-5m-twap-conformal-risk-admission"
+strictly_training_only = true
+live_capital_allowed = false
+random_seed = 20260828
+
+[upstream]
+model_family = "btc-5m-latent-twap-settlement-risk"
+candidate = "twap_single_regime"
+model_tag = "model/btc-5m-latent-twap-settlement-risk-20260828T174703Z"
+artifact_sha256 = "18b35a8cec12cfc10dbbd002fbe38eaa16108ee10edc15097f3831557dbe4e80"
+artifact_recording_commit = "e1eb28d68999503b34cad5344ddb40b33036520f"
+source_manifest_sha256 = "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+source_identity = "2e3a5c852cadd7e328c1be959d8b547e543de9fe0b27d6b0f773d4136440b679"
+training_frame_manifest_sha256 = "747e26406f520595baa356623fdd7d918a4b7c4e9f34c15e26702ad7e0981bf7"
+feature_registry_sha256 = "d0c7251bdb3f203d964214cc491bca76df186d564a064292c32dbf12c9f1d70b"
+package_root = "../../../btc-latent-twap-settlement-risk/packages/btc-directional-model"
+artifact_path = "training-results/btc-5m-latent-twap-settlement-risk-20260607-20260828/20260828T174703Z/model-family.joblib"
+source_manifest_path = "data/btc-latent-twap-settlement-risk-20260607-20260828/source-manifest.json"
+training_frame_manifest_path = "runs/btc-5m-latent-twap-settlement-risk-20260607-20260828/45982e48ea367324ce21/training-frame-manifest.json"
+checkpoint_root = "runs/btc-5m-latent-twap-settlement-risk-20260607-20260828/45982e48ea367324ce21/checkpoints"
+
+[[upstream.fold_ledgers]]
+name = "official_20260814_15"
+start = "2026-08-14T00:00:00Z"
+end = "2026-08-16T00:00:00Z"
+sha256 = "7532b1215522b18de2b8c7a2f918c233a6bfbf0eacb6f57118d6c902b3253eb1"
+
+[[upstream.fold_ledgers]]
+name = "official_20260816_17"
+start = "2026-08-16T00:00:00Z"
+end = "2026-08-18T00:00:00Z"
+sha256 = "cc5c1c11021053cc76adae970d39b6727cf663571d672e659ad6ad2fd0e03647"
+
+[[upstream.fold_ledgers]]
+name = "official_20260818_19"
+start = "2026-08-18T00:00:00Z"
+end = "2026-08-20T00:00:00Z"
+sha256 = "bd267d25a6594fa72d89b100eb822505c1d60377d62c6542cdb985d9b1ace994"
+
+[[upstream.fold_ledgers]]
+name = "official_20260820_21"
+start = "2026-08-20T00:00:00Z"
+end = "2026-08-22T00:00:00Z"
+sha256 = "0a1977b383e506c322048df92ef03ee726588b52674265df8cdebed9dec59122"
+
+[[upstream.fold_ledgers]]
+name = "official_20260822_23"
+start = "2026-08-22T00:00:00Z"
+end = "2026-08-24T00:00:00Z"
+sha256 = "28c4274b5e3811ff2922c9fb85e67b22baff4e932c4e522f4a9e4878c4c56301"
+
+[[upstream.fold_ledgers]]
+name = "official_20260824_25"
+start = "2026-08-24T00:00:00Z"
+end = "2026-08-26T00:00:00Z"
+sha256 = "066cfb178e6fa28d9a95ff6b7f3e5d7a0d9c3832047edb2ed6b010af5539817a"
+
+[periods]
+calibration_start = "2026-08-14T00:00:00Z"
+calibration_end = "2026-08-18T00:00:00Z"
+development_start = "2026-08-18T00:00:00Z"
+development_end = "2026-08-22T00:00:00Z"
+recalibration_start = "2026-08-14T00:00:00Z"
+recalibration_end = "2026-08-22T00:00:00Z"
+test_start = "2026-08-22T00:00:00Z"
+test_end = "2026-08-26T00:00:00Z"
+
+[conformal]
+alpha = 0.10
+minimum_cell_markets = 100
+candidates = [
+  "frozen_probability_control",
+  "global_market_block_conformal",
+  "direction_price_block_conformal",
+  "direction_time_price_block_conformal",
+]
+
+[entry]
+start_second = 30
+end_second = 120
+cadence_seconds = 5
+minimum_correctness_lower_bound = 0.90
+maximum_error_risk_upper_bound = 0.10
+maximum_wins_per_loss = 3.0
+maximum_average_entry_second = 90.0
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+evaluation_quantity = 5
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[qualification]
+minimum_accuracy = 0.90
+minimum_conformal_coverage = 0.90
+minimum_profit_factor = 1.25
+minimum_coverage = 0.03
+minimum_trades = 50
+minimum_direction_share = 0.20
+maximum_positive_pnl_day_share = 0.50
+bootstrap_resamples = 2000
+bootstrap_confidence = 0.95
+material_band_minimum_trades = 10
+material_band_minimum_accuracy = 0.80
+
+[reporting]
+predicted_margin_bands_bps = [0.0, 5.0, 10.0, 20.0]
+
+[paths]
+runs = "runs/btc-5m-twap-conformal-risk-admission"
+committed_results = "training-results/btc-5m-twap-conformal-risk-admission-20260814-20260825"
