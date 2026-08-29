@@ -2048,6 +2048,29 @@ impl IngestionRepository {
         batch_write_result(records.len(), inserted, "Chainlink candle")
     }
 
+    pub async fn existing_chainlink_candle_timestamps(
+        &self,
+        symbol: &str,
+        timestamps: &[DateTime<Utc>],
+    ) -> Result<HashSet<DateTime<Utc>>> {
+        if timestamps.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let existing = sqlx::query_scalar::<_, DateTime<Utc>>(
+            r#"
+            SELECT open_timestamp
+            FROM polymarket.chainlink_btcusd_one_minute_candles
+            WHERE symbol = $1 AND open_timestamp = ANY($2)
+            "#,
+        )
+        .bind(symbol)
+        .bind(timestamps)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to inspect existing Chainlink candle timestamps")?;
+        Ok(existing.into_iter().collect())
+    }
+
     pub async fn insert_binance_open_interest_batch(
         &self,
         claim: &ClaimedJob,

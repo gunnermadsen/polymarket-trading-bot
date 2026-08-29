@@ -65,3 +65,57 @@ def insert_artifact(
         ),
     ).fetchone()
     return row["artifact_id"]
+
+
+def insert_immutable_artifact(
+    conn: Connection,
+    *,
+    provider: str,
+    logical_key: str,
+    source_uri: str,
+    sha256: str,
+    compressed_bytes: int,
+    record_count: int,
+    metadata: dict,
+    source_start=None,
+    source_end=None,
+) -> str:
+    """Insert an immutable source ledger row or verify an identical prior insert."""
+    row = conn.execute(
+        """
+        INSERT INTO weather.source_artifacts (
+          provider, logical_key, source_uri, source_start, source_end,
+          sha256, compressed_bytes, record_count, metadata
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (provider, logical_key) DO NOTHING
+        RETURNING artifact_id::text
+        """,
+        (
+            provider,
+            logical_key,
+            source_uri,
+            source_start,
+            source_end,
+            sha256,
+            compressed_bytes,
+            record_count,
+            psycopg.types.json.Jsonb(metadata),
+        ),
+    ).fetchone()
+    if row:
+        return row["artifact_id"]
+    existing = conn.execute(
+        """
+        SELECT artifact_id::text, source_uri, sha256, compressed_bytes
+        FROM weather.source_artifacts
+        WHERE provider=%s AND logical_key=%s
+        """,
+        (provider, logical_key),
+    ).fetchone()
+    if not existing or (
+        existing["source_uri"] != source_uri
+        or existing["sha256"] != sha256
+        or existing["compressed_bytes"] != compressed_bytes
+    ):
+        raise RuntimeError(f"immutable artifact conflict for {provider}:{logical_key}")
+    return existing["artifact_id"]

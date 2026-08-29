@@ -8,6 +8,9 @@ x-weather-environment: &weather-environment
   WEATHER_CACHE_DIR: "/var/lib/weather/cache"
   WEATHER_MODEL_DIR: "/var/lib/weather/models"
   WEATHER_REPORT_DIR: "/var/lib/weather/reports"
+  GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
+  HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
+  WEATHER_TRAINING_SNAPSHOT_DIR: "/var/lib/weather/training-snapshots"
   POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
   POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
   POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
@@ -23,6 +26,8 @@ x-weather-environment: &weather-environment
   HRRR_SOURCE_PRIORITY: "google,aws,nomads"
   PMXT_DOWNLOAD_ATTEMPTS: "6"
   PMXT_RETRY_BASE_SECONDS: "2"
+  NOAA_DOWNLOAD_ATTEMPTS: "6"
+  NOAA_RETRY_BASE_SECONDS: "2"
   HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
 
 x-weather-worker: &weather-worker
@@ -103,6 +108,9 @@ services:
     volumes:
       - ./packages/db-migrate/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:/usr/src/app/src/migrations/weather/1787331600000-AddTemperaturePmxtLastTradePrices.ts:ro
       - ./packages/db-migrate/src/migrations/weather/1787659200000-AddTemperaturePmxtTradeWindowCoverage.ts:/usr/src/app/src/migrations/weather/1787659200000-AddTemperaturePmxtTradeWindowCoverage.ts:ro
+      - ./packages/db-migrate/src/migrations/weather/1787760000000-AddTemperatureEnvironmentalFeatures.ts:/usr/src/app/src/migrations/weather/1787760000000-AddTemperatureEnvironmentalFeatures.ts:ro
+      - ./packages/db-migrate/src/migrations/weather/1787763600000-RequeueEnvironmentalSourceAliasRecovery.ts:/usr/src/app/src/migrations/weather/1787763600000-RequeueEnvironmentalSourceAliasRecovery.ts:ro
+      - ./packages/db-migrate/src/migrations/weather/1787767200000-AddTemperatureSpatialGradients.ts:/usr/src/app/src/migrations/weather/1787767200000-AddTemperatureSpatialGradients.ts:ro
     networks:
       - temperature-data
     depends_on:
@@ -185,6 +193,28 @@ services:
       WEATHER_WORKER_ID: "temperature-price-history-worker-4"
       WEATHER_WORKER_INGESTERS: "polymarket_temperature_price_history"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/price-history-worker-4"
+
+  temperature-environment-worker-1:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 4g
+    cpus: "2.0"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-environment-worker-1"
+      WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/environment-worker-1"
+
+  temperature-environment-worker-2:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 4g
+    cpus: "2.0"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-environment-worker-2"
+      WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/environment-worker-2"
 
   temperature-model:
     <<: *weather-worker

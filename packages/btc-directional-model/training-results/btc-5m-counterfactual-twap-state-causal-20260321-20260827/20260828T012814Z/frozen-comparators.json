@@ -1,0 +1,81 @@
+{
+  "btc-5m-chainlink-full-combined-paper-20260820": {
+    "artifact_sha256": "cd178add748c7ebd18cbce638747fb33b73b84a98c95172b9f1454ae5be4a9df",
+    "candidate": "chainlink_full_combined",
+    "status": "frozen_external_comparator_not_retrained"
+  },
+  "btc-5m-chainlink-regime-calibrated-paper-20260820": {
+    "artifact_sha256": "7473fc33a9bd1438e432462ce9d06a4cfb4cd5a73ea5e4c3aec0024c9ead2369",
+    "candidate": "chainlink_regime_calibrated",
+    "status": "frozen_external_comparator_not_retrained"
+  },
+  "btc-5m-chainlink-stratified-payoff-paper-20260820": {
+    "artifact_sha256": "4379f5e1279a4d77afccf9dc510c1061e551aa6686f5945dea53f830df0f12ac",
+    "candidate": "chainlink_stratified_payoff",
+    "status": "frozen_external_comparator_not_retrained"
+  },
+  "btc-5m-payoff-aware-q5-paper-20260820": {
+    "artifact_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e",
+    "candidate": "payoff_aware_q5",
+    "status": "frozen_external_comparator_not_retrained"
+  },
+  "btc-5m-specialist-distilled-fair-value-paper-20260823-v1": {
+    "artifact_sha256": "9ec96d8aaedd7ab656230fa12012122ea934f7a350995ada4d0bc2802464f799",
+    "candidate": "specialist_distilled_fair_value",
+    "status": "frozen_external_comparator_not_retrained"
+  },
+  "contaminated_counterfactual_metrics": {
+    "path": "training-results/btc-5m-counterfactual-twap-state-20260321-20260826/20260827T161918Z/metrics.json",
+    "reported_selection": {
+      "checks": {
+        "both_directions": true,
+        "chainlink_fidelity": true,
+        "ece": true,
+        "market_coverage": true,
+        "no_single_day_majority": false,
+        "paired_predictive_improvement": true,
+        "positive_bootstrap_lower": true,
+        "positive_stressed_expectancy": true,
+        "positive_stressed_pnl": true,
+        "profit_factor": true,
+        "profitable_temporal_folds": true,
+        "prospective_days": false,
+        "prospective_folds": false,
+        "prospective_markets": false
+      },
+      "deployment_status": "not_deployed_training_only",
+      "passed": false,
+      "reasons": [
+        "no_single_day_majority",
+        "prospective_markets",
+        "prospective_days",
+        "prospective_folds"
+      ]
+    },
+    "sha256": "c2e22edf1c33dc40f2f0cdb29f1e933827fb2cdef1eb34f73ca8f2650c14cb33",
+    "status": "abandoned_temporal_leakage_diagnostic_only"
+  },
+  "fair_value_comparator_metrics": {
+    "path": "training-results/btc-5m-fair-value-challenger-tournament-20260525-20260802/20260822T152633Z/metrics.json",
+    "reported_selection": {},
+    "sha256": "e08f1e715b7945a5794a960f8bd311685a5ba13db7f97541cfdf163673128b01",
+    "status": "immutable_external_comparator"
+  },
+  "previous_twap_metrics": {
+    "path": "training-results/btc-5m-twap60-challenger-tournament-20260607-20260825/20260826T021146Z/metrics.json",
+    "reported_selection": {
+      "independent_holdout_required": true,
+      "provisional_challenger": "twap60_similarity_weighted_stratified",
+      "qualified_candidates": [],
+      "status": "no_deployable_challenger_qualified"
+    },
+    "sha256": "54fe504e4cbe03e2ffac5db37a0cdd7489ef12f69dbb2f77142565cf1ba1785b",
+    "status": "immutable_external_comparator"
+  },
+  "q5_comparator_metrics": {
+    "path": "training-results/btc-5m-q5-optimal-stopping-tournament-20260525-20260802/20260822T041758Z/metrics.json",
+    "reported_selection": {},
+    "sha256": "bcab9026cc42b737df0afc69b6a35eb8e414fbc92c0892002bb0416bf8f82c8d",
+    "status": "immutable_external_comparator"
+  }
+}

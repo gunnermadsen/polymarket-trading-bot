@@ -1,0 +1,134 @@
+{
+  "fidelity": {
+    "binance_extension": {
+      "authentic_agreement": 0.9990997479294202,
+      "authentic_overlap_markets": 5554,
+      "eligible_markets": 19781,
+      "passed": true,
+      "weekly": [
+        {
+          "agreement": 1.0,
+          "markets": 399,
+          "week": "2026-07-27 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9978134110787172,
+          "markets": 1372,
+          "week": "2026-08-03 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9993060374739764,
+          "markets": 1441,
+          "week": "2026-08-10 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9994469026548672,
+          "markets": 1808,
+          "week": "2026-08-17 00:00:00+00:00"
+        },
+        {
+          "agreement": 1.0,
+          "markets": 534,
+          "week": "2026-08-24 00:00:00+00:00"
+        }
+      ]
+    },
+    "chainlink_reconstruction": {
+      "markets": 6852,
+      "outside_uncertainty_agreement": 1.0,
+      "overall_agreement": 0.9938704028021016,
+      "p99_price_error_bps": 0.46302091288729064,
+      "passed": true
+    }
+  },
+  "frame_manifest": {
+    "binance_fidelity": {
+      "authentic_agreement": 0.9990997479294202,
+      "authentic_overlap_markets": 5554,
+      "eligible_markets": 19781,
+      "weekly": [
+        {
+          "agreement": 1.0,
+          "markets": 399,
+          "week": "2026-07-27 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9978134110787172,
+          "markets": 1372,
+          "week": "2026-08-03 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9993060374739764,
+          "markets": 1441,
+          "week": "2026-08-10 00:00:00+00:00"
+        },
+        {
+          "agreement": 0.9994469026548672,
+          "markets": 1808,
+          "week": "2026-08-17 00:00:00+00:00"
+        },
+        {
+          "agreement": 1.0,
+          "markets": 534,
+          "week": "2026-08-24 00:00:00+00:00"
+        }
+      ]
+    },
+    "binance_margin_correction": {
+      "authentic_confirmation": {
+        "agreement": 0.9988888888888889,
+        "margin_mae_bps": null,
+        "markets": 2700
+      },
+      "features": [
+        "binance_raw_margin_bps",
+        "binance_open_twap60"
+      ],
+      "fit": {
+        "end": "2026-07-16T00:00:00+00:00",
+        "markets": 11162,
+        "start": "2026-06-07T00:00:00+00:00"
+      },
+      "residual_p90_bps": 0.9105689512670824,
+      "target": "five_minute_twap_margin_residual_bps",
+      "validation": {
+        "agreement": 0.9984689971931615,
+        "margin_mae_bps": 0.33433614800077,
+        "markets": 3919
+      }
+    },
+    "chainlink_uncertainty_bps": 0.526,
+    "completed_information_semantics": "[T-W,T)",
+    "database_mutations": false,
+    "frame_sha256": "016c68314aa70199dcfea746e44e48a4833791a5e5cf644f57e3b0d0dd687e6d",
+    "label_audit_sha256": "8a0c44df42bea5a9526a79070a5ab77f37149b6f2b392a03265752cd08227582",
+    "label_coverage": [
+      {
+        "label_source": "authentic_counterfactual_twap60",
+        "len": 3423
+      },
+      {
+        "label_source": "authentic_official_twap60",
+        "len": 3429
+      },
+      {
+        "label_source": "binance_synthetic_twap60",
+        "len": 19781
+      },
+      {
+        "label_source": "chainlink_reconstructed_twap60",
+        "len": 15012
+      },
+      {
+        "label_source": "excluded",
+        "len": 3855
+      }
+    ],
+    "label_markets": 41645,
+    "markets": 41575,
+    "new_sources": false,
+    "new_tables": false,
+    "rows": 997800,
+    "schema_version": "btc-counterfactual-twap-state-frame-v1"
+  }
+}

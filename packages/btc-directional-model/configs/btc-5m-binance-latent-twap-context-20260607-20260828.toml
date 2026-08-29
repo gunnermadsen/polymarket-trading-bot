@@ -1,0 +1,113 @@
+[training]
+profile = "btc_5m_binance_latent_twap_context"
+model_family = "btc-5m-binance-latent-twap-context"
+paper_only = true
+live_capital_allowed = false
+strictly_training_only = true
+random_seed = 20260828
+freeze_at = "2026-08-28T00:00:00Z"
+
+[periods]
+historical_fit_start = "2026-06-07T00:00:00Z"
+historical_fit_end = "2026-08-01T00:00:00Z"
+calibration_start = "2026-08-01T00:00:00Z"
+calibration_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-28T00:00:00Z"
+prospective_start = "2026-08-28T00:00:00Z"
+
+[entry]
+start_second = 30
+end_second = 150
+cadence_seconds = 5
+minimum_calibrated_correctness = 0.90
+maximum_wins_per_loss = 3.0
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+evaluation_quantity = 5
+freshness_seconds = 10
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[search]
+configurations_per_candidate = 12
+reconstruction_p99_error_bps = 0.463
+residual_ridge_alphas = [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0]
+
+[binance]
+kline_horizons_seconds = [5, 15, 30]
+open_interest_history_minutes = 65
+open_interest_max_age_seconds = 300
+l2_max_age_seconds = 2
+l2_extract_end = "2026-08-02T00:00:00Z"
+minimum_source_development_market_coverage = 0.03
+
+[gates]
+minimum_accuracy = 0.90
+minimum_profit_factor = 1.25
+minimum_coverage = 0.03
+minimum_trades = 30
+maximum_average_entry_second = 90.0
+maximum_wins_per_loss = 3.0
+minimum_profitable_fold_ratio = 0.70
+minimum_direction_share = 0.20
+maximum_positive_pnl_day_share = 0.50
+bootstrap_resamples = 2000
+bootstrap_confidence = 0.95
+
+[prospective]
+minimum_markets = 2500
+minimum_complete_days = 10
+minimum_blocks = 5
+minimum_trades = 100
+
+[paths]
+source_cache = "data/btc-latent-twap-settlement-risk-20260607-20260828"
+source_frame = "data/btc-latent-twap-settlement-risk-20260607-20260828/tournament-frame.parquet"
+source_manifest = "data/btc-latent-twap-settlement-risk-20260607-20260828/source-manifest.json"
+label_audit = "data/btc-latent-twap-settlement-risk-20260607-20260828/label-audit.parquet"
+source_frame_sha256 = "223f70125de38f5d0143a5ddb13067d1ac3d12928fb4f8c8bfe4f68352c82d26"
+source_manifest_sha256 = "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+label_audit_sha256 = "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130"
+corrected_comparator_metrics = "training-results/btc-5m-twap60-challenger-tournament-20260607-20260825/20260826T021146Z/metrics.json"
+context_cache = "data/btc-binance-latent-twap-context-20260607-20260828"
+runs = "runs/btc-5m-binance-latent-twap-context-20260607-20260828"
+committed_results = "training-results/btc-5m-binance-latent-twap-context-20260607-20260828"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+l2_source_sql = "sql/btc-spot-l2-source.sql"
+
+[[folds]]
+name = "official_20260814_15"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-16T00:00:00Z"
+
+[[folds]]
+name = "official_20260816_17"
+test_start = "2026-08-16T00:00:00Z"
+test_end = "2026-08-18T00:00:00Z"
+
+[[folds]]
+name = "official_20260818_19"
+test_start = "2026-08-18T00:00:00Z"
+test_end = "2026-08-20T00:00:00Z"
+
+[[folds]]
+name = "official_20260820_21"
+test_start = "2026-08-20T00:00:00Z"
+test_end = "2026-08-22T00:00:00Z"
+
+[[folds]]
+name = "official_20260822_23"
+test_start = "2026-08-22T00:00:00Z"
+test_end = "2026-08-24T00:00:00Z"
+
+[[folds]]
+name = "official_20260824_25"
+test_start = "2026-08-24T00:00:00Z"
+test_end = "2026-08-26T00:00:00Z"
+
+[[folds]]
+name = "official_20260826_27"
+test_start = "2026-08-26T00:00:00Z"
+test_end = "2026-08-28T00:00:00Z"

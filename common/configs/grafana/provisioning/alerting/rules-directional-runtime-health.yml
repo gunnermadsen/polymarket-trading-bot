@@ -190,7 +190,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
-              expr: increase(polymarket_btc_clob_transport_disconnects_total{reason=~"remote_close_1013|reset_without_close|websocket_eof"}[10m])
+              expr: increase(polymarket_btc_clob_transport_disconnects_total{reason=~"reset_without_close|websocket_eof"}[10m])
               instant: true
               intervalMs: 1000
               legendFormat: __auto
@@ -229,8 +229,8 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          description: The CLOB connection ended through a 1013 remote close, reset without a closing handshake, or WebSocket EOF during the last 10 minutes.
-          summary: An abrupt CLOB upstream transport disconnect was observed
+          description: The polymarket-bot shared trading hot-path CLOB connection ended through a reset without a closing handshake or WebSocket EOF during the last 10 minutes. Remote close 1013 has a dedicated alert and is excluded here to avoid duplicate incidents. This alert does not observe the independent market-data-ingester connection.
+          summary: An abrupt trading hot-path CLOB upstream disconnect was observed
         labels:
           condition: clob_abrupt_upstream_disconnect
           environment: $GRAFANA_ALERT_ENVIRONMENT

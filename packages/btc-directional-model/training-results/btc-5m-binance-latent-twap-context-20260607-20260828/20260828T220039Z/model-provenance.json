@@ -1,0 +1,14 @@
+{
+  "artifact_path": "model-family.joblib",
+  "binance_context_manifest_sha256": "560ab63366a24f4a716f8db6624f30aeda5f2d72ed27e60566c24991d5a0bee3",
+  "configuration_sha256": "39da424b887d3590c7aed2ea1482dcfdfa02b2ea1e0e3984044382814d1bfc73",
+  "deployment_status": "not_deployed",
+  "model_artifact_sha256": "e138443d269fb02517cb7c218625b5a6e85a3b63aad76af7f0b8d014e9d3d709",
+  "producing_commit": "a5309b089601003c1372ccbc08f94863cbc1ff38",
+  "prospective_status": "not_applicable_no_development_candidate",
+  "qualification_status": "no_candidate_qualified",
+  "schema_version": "btc-model-provenance-v1",
+  "source_identity": "28de39a36793692f78c3e7d6a2822cb28b731e93c833304ab0fb00b2bc3e9215",
+  "training_run_id": "20260828T220039Z",
+  "twap_source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4"
+}

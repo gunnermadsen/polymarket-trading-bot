@@ -1528,6 +1528,9 @@ impl BinanceSpotAggregateTradesStrategy {
                 error,
             )
         })?;
+        if detection.inserted {
+            warn!(strategy = %STRATEGY_KEY, error_code = "binance_aggregate_trade_id_jump", gap_id = %detection.gap.gap_id, start_id, end_id, "new Binance aggregate-trade ID gap detected");
+        }
 
         let recovery = self
             .recover_exact_range(state, start_id, end_id, shutdown)
@@ -1575,6 +1578,15 @@ impl BinanceSpotAggregateTradesStrategy {
                         database,
                     )
                 })?;
+                warn!(
+                    strategy = %STRATEGY_KEY,
+                    error_code = "binance_aggregate_trade_gap_unrecoverable",
+                    gap_id = %detection.gap.gap_id,
+                    start_id,
+                    end_id,
+                    repair_attempts = repairing_gap.repair_attempts,
+                    "Binance aggregate-trade gap repair became terminal"
+                );
                 Err(integrity_error(
                     "binance_aggregate_trade_gap_unrecoverable",
                     format!(

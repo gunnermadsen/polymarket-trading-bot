@@ -1,0 +1,118 @@
+{
+  "classification": "historical_synthetic_transfer_folds",
+  "folds": [
+    {
+      "brier": 0.250000489567041,
+      "expected_calibration_error": 0.002670278589231745,
+      "fit_markets": 2836,
+      "fold": "march_april",
+      "label_sources": [
+        {
+          "label_source": "binance_synthetic_twap60",
+          "markets": 7567
+        }
+      ],
+      "log_loss": 0.6931481607408714,
+      "markets": 7567,
+      "status": "diagnostic_only"
+    },
+    {
+      "brier": 0.2500170924790912,
+      "expected_calibration_error": 0.004666642123770215,
+      "fit_markets": 10403,
+      "fold": "may",
+      "label_sources": [
+        {
+          "label_source": "binance_synthetic_twap60",
+          "markets": 7623
+        }
+      ],
+      "log_loss": 0.6931813658557575,
+      "markets": 7623,
+      "status": "diagnostic_only"
+    },
+    {
+      "brier": 0.25008487678383773,
+      "expected_calibration_error": 0.014461173790245363,
+      "fit_markets": 18026,
+      "fold": "june",
+      "label_sources": [
+        {
+          "label_source": "binance_synthetic_twap60",
+          "markets": 1687
+        },
+        {
+          "label_source": "chainlink_reconstructed_twap60",
+          "markets": 6432
+        }
+      ],
+      "log_loss": 0.6933169367751097,
+      "markets": 8119,
+      "status": "diagnostic_only"
+    },
+    {
+      "brier": 0.16343857573091802,
+      "expected_calibration_error": 0.016512820624356103,
+      "fit_markets": 26145,
+      "fold": "july",
+      "label_sources": [
+        {
+          "label_source": "binance_synthetic_twap60",
+          "markets": 65
+        },
+        {
+          "label_source": "chainlink_reconstructed_twap60",
+          "markets": 8278
+        }
+      ],
+      "log_loss": 0.4953198351049037,
+      "markets": 8343,
+      "status": "diagnostic_only"
+    },
+    {
+      "brier": 0.15373546027081247,
+      "expected_calibration_error": 0.017839675865735545,
+      "fit_markets": 34488,
+      "fold": "august_1_6",
+      "label_sources": [
+        {
+          "label_source": "authentic_counterfactual_twap60",
+          "markets": 1695
+        },
+        {
+          "label_source": "chainlink_reconstructed_twap60",
+          "markets": 25
+        }
+      ],
+      "log_loss": 0.4718072660681048,
+      "markets": 1720,
+      "status": "diagnostic_only"
+    },
+    {
+      "brier": 0.16987930186213296,
+      "expected_calibration_error": 0.017444471877185834,
+      "fit_markets": 36208,
+      "fold": "august_7_13",
+      "label_sources": [
+        {
+          "label_source": "authentic_counterfactual_twap60",
+          "markets": 1728
+        },
+        {
+          "label_source": "binance_synthetic_twap60",
+          "markets": 3
+        },
+        {
+          "label_source": "chainlink_reconstructed_twap60",
+          "markets": 186
+        }
+      ],
+      "log_loss": 0.5114688730350925,
+      "markets": 1917,
+      "status": "diagnostic_only"
+    }
+  ],
+  "history_arm": "uncertainty_weighted_hybrid",
+  "synthetic_economics_qualifying": false,
+  "treatment": "refprice_control"
+}

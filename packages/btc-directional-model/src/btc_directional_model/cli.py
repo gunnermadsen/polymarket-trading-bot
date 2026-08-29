@@ -43,6 +43,24 @@ from .core_extract import extract_core_source, snapshot_residual_admission_sourc
 from .core_features import build_core_features
 from .core_report import generate_core_report
 from .core_training import develop_core_models, evaluate_core_holdout
+from .counterfactual_twap_state_tournament import (
+    load_config as load_counterfactual_twap_state_config,
+)
+from .counterfactual_twap_state_tournament import (
+    run_tournament as run_counterfactual_twap_state_tournament,
+)
+from .causal_twap_attribution_tournament import (
+    load_config as load_causal_twap_attribution_config,
+)
+from .causal_twap_attribution_tournament import (
+    run_tournament as run_causal_twap_attribution_tournament,
+)
+from .early_entry_settlement_consensus_tournament import (
+    load_config as load_early_entry_consensus_config,
+)
+from .early_entry_settlement_consensus_tournament import (
+    run_tournament as run_early_entry_consensus_tournament,
+)
 from .early_value_benchmark import run_early_value_benchmark
 from .early_value_config import load_early_value_config
 from .entry_benchmark import run_entry_benchmark
@@ -224,6 +242,20 @@ def main() -> None:
     )
     settlement_bridge_run.add_argument("--config", type=Path, required=True)
     settlement_bridge_run.add_argument("--force", action="store_true")
+    causal_twap_attribution = subparsers.add_parser(
+        "causal-twap-attribution-tournament-run"
+    )
+    causal_twap_attribution.add_argument("--config", type=Path, required=True)
+    causal_twap_attribution.add_argument("--force", action="store_true")
+    counterfactual_twap_state = subparsers.add_parser(
+        "counterfactual-twap-state-tournament-run"
+    )
+    counterfactual_twap_state.add_argument("--config", type=Path, required=True)
+    counterfactual_twap_state.add_argument("--force", action="store_true")
+    early_entry_consensus_run = subparsers.add_parser(
+        "early-entry-settlement-consensus-tournament-run"
+    )
+    early_entry_consensus_run.add_argument("--config", type=Path, required=True)
     chainlink_oi_run = subparsers.add_parser(
         "chainlink-oi-champion-benchmark-run"
     )
@@ -586,6 +618,40 @@ def main() -> None:
         print(f"report: {run_dir / 'report.md'}")
         print(f"conclusion: {result['conclusion']}")
         print(f"deployment status: {result['deployment_status']}")
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "causal-twap-attribution-tournament-run":
+        config = load_causal_twap_attribution_config(args.config)
+        run_dir, result = run_causal_twap_attribution_tournament(
+            config, force_extract=args.force
+        )
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"status: {result['selection']['status']}")
+        print(
+            "provisional candidate: "
+            f"{result['selection']['provisional_candidate']}"
+        )
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "counterfactual-twap-state-tournament-run":
+        config = load_counterfactual_twap_state_config(args.config)
+        run_dir, result = run_counterfactual_twap_state_tournament(
+            config, force_extract=args.force
+        )
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"status: {result['selection']['status']}")
+        print(
+            "provisional candidate: "
+            f"{result['selection']['provisional_candidate']}"
+        )
+        print("runtime/database/trading processes changed: false")
+        return
+    if args.command == "early-entry-settlement-consensus-tournament-run":
+        config = load_early_entry_consensus_config(args.config)
+        run_dir, result = run_early_entry_consensus_tournament(config)
+        print(f"report: {run_dir / 'report.md'}")
+        print(f"qualification status: {result['qualification_status']}")
+        print(f"top candidate: {result['ranking'][0]}")
         print("runtime/database/trading processes changed: false")
         return
     if args.command == "chainlink-oi-champion-benchmark-run":
