@@ -128,6 +128,7 @@ class ModelBundle:
     candidate: str
     history_arm: str
     feature_names: tuple[str, ...]
+    active_indices: tuple[int, ...]
     classifier: HistGradientBoostingClassifier
     calibrator: Calibrator
     margin: HistGradientBoostingRegressor
@@ -670,6 +671,17 @@ def _matrix(frame: pl.DataFrame, names: tuple[str, ...]) -> np.ndarray:
     return np.column_stack((values, missing.astype(np.float64)))
 
 
+def _active_indices(matrix: np.ndarray) -> tuple[int, ...]:
+    active = tuple(
+        index
+        for index in range(matrix.shape[1])
+        if np.unique(matrix[np.isfinite(matrix[:, index]), index]).size > 1
+    )
+    if not active:
+        raise RuntimeError("feature matrix has no non-constant finite columns")
+    return active
+
+
 def _history(frame: pl.DataFrame, arm: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     official = frame["official_label_up"].to_numpy()
     reconstructed = frame["reconstructed_twap60_label_up"].to_numpy()
@@ -770,8 +782,10 @@ def fit_model(
         validation_fraction=0.1,
     )
     matrix = _matrix(selected, names)
-    classifier.fit(matrix[fit_mask], labels[fit_mask], sample_weight=weights[fit_mask])
-    raw_cal = classifier.predict_proba(matrix[calibration_mask])[:, 1]
+    active_indices = _active_indices(matrix[fit_mask])
+    active_matrix = matrix[:, active_indices]
+    classifier.fit(active_matrix[fit_mask], labels[fit_mask], sample_weight=weights[fit_mask])
+    raw_cal = classifier.predict_proba(active_matrix[calibration_mask])[:, 1]
     calibrator = _fit_calibrator(raw_cal, labels[calibration_mask], weights[calibration_mask])
     margin = HistGradientBoostingRegressor(
         learning_rate=spec.learning_rate,
@@ -784,12 +798,15 @@ def fit_model(
         validation_fraction=0.1,
     )
     target_margin = selected["target_margin_bps"].to_numpy()
-    margin.fit(matrix, target_margin, sample_weight=weights)
-    residual = np.abs(target_margin[calibration_mask] - margin.predict(matrix[calibration_mask]))
+    margin.fit(active_matrix, target_margin, sample_weight=weights)
+    residual = np.abs(
+        target_margin[calibration_mask] - margin.predict(active_matrix[calibration_mask])
+    )
     return ModelBundle(
         candidate,
         arm,
         names,
+        active_indices,
         classifier,
         calibrator,
         margin,
@@ -799,7 +816,7 @@ def fit_model(
 
 
 def score_model(frame: pl.DataFrame, bundle: ModelBundle) -> pl.DataFrame:
-    matrix = _matrix(frame, bundle.feature_names)
+    matrix = _matrix(frame, bundle.feature_names)[:, bundle.active_indices]
     probability = bundle.calibrator.predict(bundle.classifier.predict_proba(matrix)[:, 1])
     margin = bundle.margin.predict(matrix)
     return frame.select(*KEYS, "official_label_up", "target_margin_bps").with_columns(

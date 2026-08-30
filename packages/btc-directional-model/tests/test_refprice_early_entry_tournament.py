@@ -15,6 +15,7 @@ from btc_directional_model.refprice_early_entry_tournament import (
     HISTORY_ARMS,
     POLICIES,
     Calibrator,
+    _active_indices,
     _asof_feature,
     _history,
     _wide_base_predictions,
@@ -48,6 +49,17 @@ def test_all_declared_inference_features_exclude_twap_and_completed_fields() -> 
 def test_calibrator_is_monotone() -> None:
     values = Calibrator(1.2, -0.1).predict(np.array([0.1, 0.5, 0.9]))
     assert np.all(np.diff(values) > 0)
+
+
+def test_active_indices_remove_all_missing_and_constant_columns() -> None:
+    matrix = np.array(
+        [
+            [np.nan, 1.0, 0.0],
+            [np.nan, 1.0, 1.0],
+            [np.nan, 1.0, 0.0],
+        ]
+    )
+    assert _active_indices(matrix) == (2,)
 
 
 def test_predictive_metrics_reports_brier() -> None:
