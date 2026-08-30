@@ -1,0 +1,52 @@
+{
+  "duplicate_keys": 0,
+  "folds": [
+    {
+      "fold": "20260621_20260705",
+      "overlap": 0,
+      "test_markets": 4000,
+      "train_markets": 3905
+    },
+    {
+      "fold": "20260706_20260720",
+      "overlap": 0,
+      "test_markets": 4127,
+      "train_markets": 7905
+    },
+    {
+      "fold": "20260721_20260731",
+      "overlap": 0,
+      "test_markets": 3155,
+      "train_markets": 12032
+    },
+    {
+      "fold": "20260801_20260813",
+      "overlap": 0,
+      "test_markets": 3693,
+      "train_markets": 15187
+    },
+    {
+      "fold": "20260814_20260820",
+      "overlap": 0,
+      "test_markets": 1994,
+      "train_markets": 18880
+    },
+    {
+      "fold": "20260821_20260826",
+      "overlap": 0,
+      "test_markets": 1661,
+      "train_markets": 20874
+    },
+    {
+      "fold": "20260827_20260828",
+      "overlap": 0,
+      "test_markets": 555,
+      "train_markets": 22535
+    }
+  ],
+  "forbidden_feature_names": [],
+  "future_refprice_rows": 0,
+  "market_disjoint": true,
+  "outside_entry_window_rows": 0,
+  "passed": true
+}

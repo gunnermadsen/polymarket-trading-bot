@@ -1,0 +1,9 @@
+{
+  "artifact_sha256": "4d334d343217d52727d511bc3fa9ff312bba78720186674852b34e240250f901",
+  "deployment_status": "not_deployed",
+  "execution_manifest_sha256": "a93655ffd2d119cc225d178e1fa78abfbf3da4970c2d6db7ac5543f93ef9f014",
+  "producing_revision": "b2179e1fee40621b271ba173eafe17dc6b445e2d",
+  "qualification_status": "historical_tournament_complete",
+  "run_id": "refprice-early-entry-20260829",
+  "source_manifest_sha256": "4245191f10a419a1c6e940881b129a631b0bfe17ba8cb0d08cbce6e183ecbd24"
+}
