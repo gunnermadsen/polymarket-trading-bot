@@ -2,18 +2,25 @@ use std::{
     fs::File,
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Days, NaiveDate, Timelike, Utc};
+use futures_util::{stream, StreamExt};
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::{fs, io::AsyncWriteExt, sync::watch, time::sleep};
+use tokio::{
+    fs,
+    io::AsyncWriteExt,
+    sync::{watch, Mutex},
+    time::{sleep, Instant},
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -25,6 +32,7 @@ pub const ARCHIVE_ROOT: &str = "/var/lib/kraken-data/spot-l2/cryptohftdata";
 pub const END_EXCLUSIVE: &str = "2026-08-31";
 pub const START_TIERS: [&str; 3] = ["2026-04-01", "2026-05-01", "2026-06-01"];
 pub const REQUEST_INTERVAL: Duration = Duration::from_millis(1_100);
+pub const DOWNLOAD_CONCURRENCY: usize = 4;
 const MAXIMUM_COMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAXIMUM_DECODED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const REQUIRED_COLUMNS: [&str; 13] = [
@@ -100,6 +108,7 @@ impl HourSpec {
 pub struct KrakenSpotL2ArchiveWorker {
     client: reqwest::Client,
     root: PathBuf,
+    next_request_at: Arc<Mutex<Instant>>,
 }
 
 impl KrakenSpotL2ArchiveWorker {
@@ -113,6 +122,7 @@ impl KrakenSpotL2ArchiveWorker {
         Ok(Self {
             client,
             root: PathBuf::from(ARCHIVE_ROOT),
+            next_request_at: Arc::new(Mutex::new(Instant::now())),
         })
     }
 
@@ -133,43 +143,65 @@ impl KrakenSpotL2ArchiveWorker {
 
         let mut instant = start.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end_instant = end.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let mut specs = Vec::with_capacity(usize::try_from(expected_hours(start)?)?);
         while instant < end_instant {
-            if *shutdown.borrow() {
-                info!("Kraken Spot L2 archive worker stopped cleanly");
-                return Ok(());
-            }
-            let spec = HourSpec::new(
+            specs.push(HourSpec::new(
                 &self.root,
                 instant.date_naive(),
                 u8::try_from(instant.hour()).context("invalid UTC hour")?,
-            )?;
-            let mut attempt = 0u32;
-            loop {
-                match self.archive_hour(&spec).await {
-                    Ok(reused) => {
-                        info!(date = %spec.date, hour = spec.hour, reused, "Kraken Spot L2 hour archived");
-                        break;
-                    }
-                    Err(error) => {
-                        attempt = attempt.saturating_add(1);
-                        let delay = Duration::from_secs(5 * u64::from(attempt.min(12)));
-                        warn!(date = %spec.date, hour = spec.hour, attempt, error = %error, retry_seconds = delay.as_secs(), "Kraken Spot L2 hour failed; retrying");
-                        tokio::select! {
-                            _ = sleep(delay) => {}
-                            changed = shutdown.changed() => {
-                                if changed.is_err() || *shutdown.borrow() {
-                                    return Ok(());
-                                }
+            )?);
+            instant += chrono::Duration::hours(1);
+        }
+
+        let worker = self.clone();
+        let operations = stream::iter(specs)
+            .map(move |spec| {
+                let worker = worker.clone();
+                let shutdown = shutdown.clone();
+                async move { worker.archive_with_retry(spec, shutdown).await }
+            })
+            .buffer_unordered(DOWNLOAD_CONCURRENCY);
+        tokio::pin!(operations);
+        while let Some(result) = operations.next().await {
+            if !result? {
+                info!("Kraken Spot L2 archive worker stopped cleanly");
+                return Ok(());
+            }
+        }
+        info!(%start, %end, "Kraken Spot L2 archive backfill completed");
+        Ok(())
+    }
+
+    async fn archive_with_retry(
+        &self,
+        spec: HourSpec,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<bool> {
+        let mut attempt = 0u32;
+        loop {
+            if *shutdown.borrow() {
+                return Ok(false);
+            }
+            match self.archive_hour(&spec).await {
+                Ok(reused) => {
+                    info!(date = %spec.date, hour = spec.hour, reused, "Kraken Spot L2 hour archived");
+                    return Ok(true);
+                }
+                Err(error) => {
+                    attempt = attempt.saturating_add(1);
+                    let delay = Duration::from_secs(5 * u64::from(attempt.min(12)));
+                    warn!(date = %spec.date, hour = spec.hour, attempt, error = %error, retry_seconds = delay.as_secs(), "Kraken Spot L2 hour failed; retrying");
+                    tokio::select! {
+                        _ = sleep(delay) => {}
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return Ok(false);
                             }
                         }
                     }
                 }
             }
-            instant += chrono::Duration::hours(1);
-            sleep(REQUEST_INTERVAL).await;
         }
-        info!(%start, %end, "Kraken Spot L2 archive backfill completed");
-        Ok(())
     }
 
     async fn select_start_tier(&self, shutdown: &mut watch::Receiver<bool>) -> Result<NaiveDate> {
@@ -224,6 +256,7 @@ impl KrakenSpotL2ArchiveWorker {
         compressed_path: &Path,
         decoded_path: &Path,
     ) -> Result<()> {
+        self.wait_for_request_slot().await;
         let response = self.client.get(&spec.source_uri).send().await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             bail!("source_unavailable: {} returned 404", spec.remote_file);
@@ -278,6 +311,15 @@ impl KrakenSpotL2ArchiveWorker {
         persist_manifest(&spec.manifest_path, &manifest).await?;
         fs::remove_file(compressed_path).await?;
         Ok(())
+    }
+
+    async fn wait_for_request_slot(&self) {
+        let mut next = self.next_request_at.lock().await;
+        let now = Instant::now();
+        if *next > now {
+            sleep(*next - now).await;
+        }
+        *next = Instant::now() + REQUEST_INTERVAL;
     }
 }
 
