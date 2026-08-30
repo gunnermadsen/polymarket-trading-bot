@@ -32,7 +32,7 @@ prospective_start = "2026-08-27T00:00:00Z"
 [paths]
 source_config = "configs/btc-5m-refprice-context-source-20260607-20260829.toml"
 source_cache = "data/btc-refprice-context-source-20260607-20260829"
-execution_cache = "data/btc-refprice-early-entry-execution-20260814-20260826"
+execution_cache = "data/btc-refprice-early-entry-capacity-20260814-20260826"
 runs = "runs/btc-5m-refprice-early-entry-tournament-20260607-20260829"
 committed_results = "training-results/btc-5m-refprice-early-entry-tournament-20260607-20260829"
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +19,7 @@ from btc_directional_model.refprice_early_entry_tournament import (
     _active_indices,
     _asof_feature,
     _history,
+    _qualify_capacity_execution,
     _wide_base_predictions,
     apply_policy,
     load_config,
@@ -108,6 +109,32 @@ def test_policy_uses_existing_fee_helper_contract() -> None:
     trades = apply_policy(prediction, execution, policy)
     assert trades.height == 1
     assert trades["fee_per_share"][0] == 0.005
+
+
+def test_capacity_execution_requires_causal_fresh_depth_and_quality() -> None:
+    observed = datetime(2026, 8, 21, 0, 1, tzinfo=UTC)
+    frame = pl.DataFrame(
+        {
+            "market_id": ["a", "b"],
+            "seconds_elapsed": [60, 60],
+            "observed_at": [observed, observed],
+            "up_provider_received_at": [
+                observed - timedelta(seconds=1),
+                observed - timedelta(seconds=3),
+            ],
+            "down_provider_received_at": [
+                observed - timedelta(seconds=1),
+                observed - timedelta(seconds=1),
+            ],
+            "up_ask_vwap_5": [0.50, 0.50],
+            "down_ask_vwap_5": [0.51, 0.51],
+            "up_ask_depth": [25.0, 25.0],
+            "down_ask_depth": [25.0, 25.0],
+            "quality_flags": [0, 0],
+        }
+    )
+    qualified = _qualify_capacity_execution(frame)
+    assert qualified["strict_both_side_eligible"].to_list() == [True, False]
 
 
 def test_asof_feature_never_uses_future_availability() -> None:

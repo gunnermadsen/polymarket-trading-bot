@@ -16,7 +16,7 @@ import json
 import subprocess
 import tomllib
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +26,8 @@ import polars as pl
 from scipy.optimize import minimize
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
-from .core_execution import (
-    ExecutionEvidenceConfig,
-    extract_execution_evidence,
-    taker_fee_per_share,
-)
+from .core_execution import taker_fee_per_share
+from .core_extract import configure_read_only_connection, database_connection
 from .early_entry_settlement_consensus_tournament import economic_metrics
 from .refprice_context_data import (
     ENTRY_SECONDS,
@@ -41,6 +38,7 @@ from .refprice_context_data import (
 from .refprice_context_data import (
     load_config as load_source_config,
 )
+from .refprice_twap_training import _query_frame
 
 PROFILE = "btc_5m_refprice_early_entry_tournament"
 CANDIDATES = (
@@ -953,20 +951,115 @@ def predictive_metrics(frame: pl.DataFrame) -> dict[str, Any]:
 
 
 def _load_execution(config: Config) -> tuple[dict[str, Any], pl.DataFrame]:
-    evidence_config = ExecutionEvidenceConfig(
-        range_start=config.official_start,
-        range_end=config.economic_end,
-        output_dir=config.execution_cache,
-        sample_interval_seconds=5,
-        min_seconds_after_open=60,
-        max_seconds_after_open=180,
-        decision_min_seconds_after_open=65,
-    )
-    manifest = extract_execution_evidence(evidence_config)
-    frames = [
-        pl.read_parquet(config.execution_cache / row["path"]) for row in manifest["partitions"]
-    ]
+    cache = config.execution_cache
+    cache.mkdir(parents=True, exist_ok=True)
+    query_path = config.package_root / "sql" / "btc-refprice-twap-capacity-source.sql"
+    query = query_path.read_text()
+    contract = {
+        "schema_version": "btc-refprice-early-entry-capacity-v1",
+        "range_start": config.official_start.isoformat(),
+        "range_end": config.economic_end.isoformat(),
+        "entry_seconds": list(ENTRY_SECONDS),
+        "quantity": 5,
+        "maximum_depth_participation": 0.25,
+        "freshness_seconds": 2,
+        "query_sha256": file_sha256(query_path),
+        "source_table": "polymarket.btc_market_capacity_execution_snapshots",
+        "source_providers": [
+            "pmxt_v2_capacity_execution_snapshots_v2",
+            "polymarket_local_orderbook_capacity_execution_snapshots_v1",
+        ],
+    }
+    manifest_path = cache / "manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        mismatches = [key for key, value in contract.items() if manifest.get(key) != value]
+        if mismatches:
+            raise RuntimeError(
+                "capacity execution manifest contract changed: " + ", ".join(mismatches)
+            )
+        for row in manifest["partitions"]:
+            path = cache / row["path"]
+            if not path.is_file() or file_sha256(path) != row["sha256"]:
+                raise RuntimeError(f"capacity execution partition changed: {row['path']}")
+    else:
+        partitions: list[dict[str, Any]] = []
+        connection = database_connection()
+        configure_read_only_connection(connection)
+        try:
+            day = config.official_start
+            while day < config.economic_end:
+                end = min(day + timedelta(days=1), config.economic_end)
+                raw = _query_frame(
+                    connection,
+                    query,
+                    {"batch_start": day, "batch_end": end},
+                    f"refprice_early_capacity_{day:%Y%m%d}",
+                )
+                frame = _qualify_capacity_execution(raw)
+                path = cache / f"{day.date().isoformat()}.parquet"
+                _write_parquet(path, frame)
+                partitions.append(
+                    {
+                        "date": day.date().isoformat(),
+                        "path": path.name,
+                        "rows": frame.height,
+                        "markets": frame["market_id"].n_unique() if frame.height else 0,
+                        "strict_rows": (
+                            frame.filter(pl.col("strict_both_side_eligible")).height
+                            if frame.height
+                            else 0
+                        ),
+                        "sha256": file_sha256(path),
+                    }
+                )
+                print(
+                    f"capacity execution {day.date()}: {frame.height} rows, "
+                    f"{partitions[-1]['strict_rows']} strict",
+                    flush=True,
+                )
+                day = end
+        finally:
+            connection.close()
+        manifest = {
+            **contract,
+            "created_at": datetime.now(UTC).isoformat(),
+            "partitions": partitions,
+            "totals": {
+                "rows": sum(row["rows"] for row in partitions),
+                "markets": sum(row["markets"] for row in partitions),
+                "strict_both_side_eligible_rows": sum(row["strict_rows"] for row in partitions),
+            },
+        }
+        _write_json(manifest_path, manifest)
+    frames = [pl.read_parquet(cache / row["path"]) for row in manifest["partitions"]]
     return manifest, pl.concat(frames, how="vertical_relaxed")
+
+
+def _qualify_capacity_execution(frame: pl.DataFrame) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame.with_columns(pl.lit(False).alias("strict_both_side_eligible"))
+    fresh = (
+        pl.col("up_provider_received_at").is_not_null()
+        & pl.col("down_provider_received_at").is_not_null()
+        & (pl.col("up_provider_received_at") <= pl.col("observed_at"))
+        & (pl.col("down_provider_received_at") <= pl.col("observed_at"))
+        & (pl.col("up_provider_received_at") >= pl.col("observed_at") - pl.duration(seconds=2))
+        & (pl.col("down_provider_received_at") >= pl.col("observed_at") - pl.duration(seconds=2))
+    )
+    executable = (
+        pl.col("up_ask_vwap_5").is_finite()
+        & pl.col("down_ask_vwap_5").is_finite()
+        & pl.col("up_ask_vwap_5").is_between(0.0, 1.0, closed="none")
+        & pl.col("down_ask_vwap_5").is_between(0.0, 1.0, closed="none")
+        & (pl.col("up_ask_depth") >= 20.0)
+        & (pl.col("down_ask_depth") >= 20.0)
+    )
+    return frame.filter(pl.col("seconds_elapsed").is_in(ENTRY_SECONDS)).with_columns(
+        (((pl.col("quality_flags") & 63) == 0) & fresh & executable).alias(
+            "strict_both_side_eligible"
+        )
+    )
 
 
 def apply_policy(frame: pl.DataFrame, execution: pl.DataFrame, policy: Policy) -> pl.DataFrame:
@@ -1299,6 +1392,121 @@ def run(config: Config) -> dict[str, Any]:
     return {**report, "committed_result": str(committed), "run_dir": str(run_dir)}
 
 
+def recompute_post_training_evaluation(config: Config, result_dir: Path) -> dict[str, Any]:
+    """Correct economics from immutable OOF predictions without fitting any model."""
+
+    result_dir = result_dir.resolve()
+    original = json.loads((result_dir / "metrics.json").read_text())
+    run_dir = config.run_root / config.run_id
+    predictions = pl.read_parquet(run_dir / "oof-predictions.parquet")
+    panel = pl.read_parquet(run_dir / "training-panel.parquet")
+    execution_manifest, execution = _load_execution(config)
+    if execution.is_empty() or not execution["strict_both_side_eligible"].any():
+        raise RuntimeError("corrected capacity execution evidence is empty or ineligible")
+
+    candidate_rows: list[dict[str, Any]] = []
+    economic_rows: list[dict[str, Any]] = []
+    for candidate in CANDIDATES:
+        for arm in HISTORY_ARMS:
+            selected = predictions.filter(
+                (pl.col("candidate") == candidate)
+                & (pl.col("history_arm") == arm)
+                & (pl.col("window_start") >= config.official_start)
+            )
+            candidate_rows.append(
+                {
+                    "candidate": candidate,
+                    "history_arm": arm,
+                    "overall": predictive_metrics(selected),
+                    "development": predictive_metrics(
+                        selected.filter(pl.col("window_start") < config.policy_development_end)
+                    ),
+                    "sealed": predictive_metrics(
+                        selected.filter(
+                            pl.col("window_start").is_between(
+                                config.sealed_start,
+                                config.economic_end,
+                                closed="left",
+                            )
+                        )
+                    ),
+                    "prospective": predictive_metrics(
+                        selected.filter(pl.col("window_start") >= config.prospective_start)
+                    ),
+                }
+            )
+            economic_source = selected.filter(pl.col("window_start") < config.economic_end)
+            for policy in config.policies:
+                trades = apply_policy(economic_source, execution, policy)
+                development = trades.filter(pl.col("window_start") < config.policy_development_end)
+                sealed = trades.filter(pl.col("window_start") >= config.sealed_start)
+                scheduled_development = panel.filter(
+                    pl.col("official_label_up").is_not_null()
+                    & pl.col("window_start").is_between(
+                        config.official_start,
+                        config.policy_development_end,
+                        closed="left",
+                    )
+                )["market_id"].n_unique()
+                scheduled_sealed = panel.filter(
+                    pl.col("official_label_up").is_not_null()
+                    & pl.col("window_start").is_between(
+                        config.sealed_start, config.economic_end, closed="left"
+                    )
+                )["market_id"].n_unique()
+                economic_rows.append(
+                    {
+                        "candidate": candidate,
+                        "history_arm": arm,
+                        "policy": policy.name,
+                        "development": economic_metrics(development, scheduled_development),
+                        "sealed": economic_metrics(sealed, scheduled_sealed),
+                    }
+                )
+    ranking = sorted(
+        economic_rows,
+        key=lambda row: (
+            row["development"]["stressed_pnl"],
+            row["development"]["profit_factor"] or 0.0,
+            -next(
+                item["development"]["brier"]
+                for item in candidate_rows
+                if item["candidate"] == row["candidate"]
+                and item["history_arm"] == row["history_arm"]
+            ),
+        ),
+        reverse=True,
+    )
+    corrected = {
+        **original,
+        "schema_version": "btc-refprice-early-entry-corrected-evaluation-v1",
+        "evaluation_status": "corrected_without_model_retraining",
+        "original_evaluation_invalid_reason": (
+            "retired execution artifact identity produced zero execution rows"
+        ),
+        "model_artifact_qualified": False,
+        "model_artifact_qualification_reason": (
+            "post-training evaluation defect changed the selection evidence; "
+            "no retraining was performed"
+        ),
+        "execution_totals": execution_manifest["totals"],
+        "execution_manifest_sha256": file_sha256(config.execution_cache / "manifest.json"),
+        "candidate_metrics": candidate_rows,
+        "economic_metrics": economic_rows,
+        "selected": ranking[0],
+    }
+    _write_json(result_dir / "corrected-metrics.json", corrected)
+    warning = (
+        "# Post-training evaluation correction\n\n"
+        "No model was retrained. The original zero-trade economics were invalid "
+        "because they queried a retired execution artifact identity. The table "
+        "below uses the existing capacity execution table. The model artifact "
+        "remains unqualified and receives no model tag.\n\n"
+    )
+    (result_dir / "corrected-report.md").write_text(warning + render_report(corrected))
+    return corrected
+
+
 def integrity_audit(panel: pl.DataFrame, config: Config) -> dict[str, Any]:
     forbidden = [
         name
@@ -1414,8 +1622,14 @@ def _fmt(value: Any) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--evaluation-only-result", type=Path)
     args = parser.parse_args()
-    result = run(load_config(args.config))
+    config = load_config(args.config)
+    if args.evaluation_only_result:
+        result = recompute_post_training_evaluation(config, args.evaluation_only_result)
+        print(json.dumps({"selected": result["selected"]}, indent=2, default=str))
+        return
+    result = run(config)
     print(
         json.dumps(
             {"selected": result["selected"], "committed_result": result["committed_result"]},
