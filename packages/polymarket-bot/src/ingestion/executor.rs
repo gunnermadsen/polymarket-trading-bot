@@ -46,6 +46,10 @@ use super::{
         BINANCE_L2_HISTORICAL_END_EPOCH, BINANCE_L2_HISTORICAL_START_EPOCH,
         BINANCE_SPOT_L2_HISTORICAL_END_EPOCH, BINANCE_SPOT_L2_HISTORICAL_START_EPOCH,
     },
+    kraken_spot_trades::{
+        fetch_and_publish_day as fetch_and_publish_kraken_spot_day, KrakenSpotTradeConfig,
+        KRAKEN_SPOT_PROVIDER, KRAKEN_SPOT_SCHEMA_VERSION,
+    },
     pmdata_twap::{
         parse_archive as parse_pmdata_archive, parse_refprice_archive, PmdataTwapConfig,
         PmdataTwapWindow, PMDATA_REFPRICE_PROVIDER, PMDATA_TWAP_PROVIDER,
@@ -83,6 +87,7 @@ pub struct IngestionExecutorConfig {
     pub cryptohft_binance_l2: Option<CryptoHftBinanceL2Config>,
     pub cryptohft_binance_spot_l2: Option<CryptoHftBinanceL2Config>,
     pub huggingface_binance_spot_l2: Option<HuggingFaceBinanceL2Config>,
+    pub kraken_spot: KrakenSpotTradeConfig,
     pub cache_directory: PathBuf,
     pub batch_rows: usize,
     pub pmxt_prefetch_concurrency: usize,
@@ -112,6 +117,7 @@ impl IngestionExecutorConfig {
         if let Some(config) = &self.huggingface_binance_spot_l2 {
             config.validate()?;
         }
+        self.kraken_spot.validate()?;
         if !(1..=4_000).contains(&self.batch_rows) {
             bail!("POLYMARKET_BACKFILL_BATCH_ROWS must be between 1 and 4000");
         }
@@ -269,6 +275,16 @@ impl IngestionExecutor {
                 )
                 .await
             }
+            IngesterKey::KrakenSpotBtcusdTradePrintsOneSecondOhlcv => {
+                self.ingest_kraken_spot_trades(
+                    claim,
+                    range_start,
+                    range_end,
+                    progress,
+                    &cancellation,
+                )
+                .await
+            }
             IngesterKey::PolymarketBtcFiveMinuteOrderbooks => {
                 self.ingest_pmxt_orderbooks(claim, range_start, range_end, progress, cancellation)
                     .await
@@ -362,6 +378,152 @@ impl IngestionExecutor {
                     .await
             }
         }
+    }
+
+    async fn ingest_kraken_spot_trades(
+        &self,
+        claim: &ClaimedJob,
+        range_start: DateTime<Utc>,
+        range_end: DateTime<Utc>,
+        mut progress: BackfillProgress,
+        cancellation: &ArchiveCancellation,
+    ) -> std::result::Result<BackfillJobSummary, IngestionExecutionError> {
+        let mut summary = summary_from_progress(&progress);
+        let date = range_start.date_naive();
+        let logical_key = format!(
+            "kraken-spot-btcusd-trades-ohlcv-1s:{}:{}",
+            range_start.format("%Y%m%dT%H%M%SZ"),
+            range_end.format("%Y%m%dT%H%M%SZ")
+        );
+        progress.current_logical_key = Some(logical_key.clone());
+        let prepared = self
+            .repository
+            .prepare_artifact(
+                claim,
+                &ArtifactSpec {
+                    job_id: claim.job.job_id,
+                    ingester: IngesterKey::KrakenSpotBtcusdTradePrintsOneSecondOhlcv,
+                    logical_key,
+                    provider: KRAKEN_SPOT_PROVIDER.to_string(),
+                    source_uri: format!(
+                        "{}/0/public/Trades?pair=XBTUSD",
+                        self.config.kraken_spot.base_url.trim_end_matches('/')
+                    ),
+                    source_date: Some(date),
+                    expected_checksum: None,
+                    metadata: serde_json::json!({
+                        "symbol": "BTC/USD",
+                        "schema_version": KRAKEN_SPOT_SCHEMA_VERSION,
+                        "outputs": ["trade_prints_parquet", "ohlcv_1s_parquet"],
+                    }),
+                },
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        if prepared.disposition == ArtifactDisposition::AlreadyCompleted {
+            observe_reused_artifact(&mut progress, &mut summary, &prepared.artifact);
+            self.finish_work_unit(
+                claim,
+                &mut progress,
+                range_end,
+                Some(range_end.date_naive()),
+            )
+            .await?;
+            summary.completed_work_units = progress.completed_work_units;
+            return Ok(summary);
+        }
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Downloading,
+        )
+        .await?;
+        let published = match fetch_and_publish_kraken_spot_day(
+            &self.client,
+            &self.config.kraken_spot,
+            range_start,
+            range_end,
+            cancellation,
+        )
+        .await
+        {
+            Ok(published) => published,
+            Err(error) => {
+                let _ = self
+                    .repository
+                    .fail_artifact(claim, prepared.artifact.artifact_id, &error.to_string())
+                    .await;
+                return Err(classify_kraken_spot_error(error));
+            }
+        };
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Downloaded,
+        )
+        .await?;
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Verified,
+        )
+        .await?;
+        self.set_artifact_status(
+            claim,
+            prepared.artifact.artifact_id,
+            BackfillArtifactStatus::Ingesting,
+        )
+        .await?;
+        let total_bytes = published.trade_bytes.saturating_add(published.candle_bytes);
+        progress.bytes_downloaded = progress.bytes_downloaded.saturating_add(total_bytes);
+        progress.records_read = progress.records_read.saturating_add(published.trade_count);
+        progress.records_committed = progress
+            .records_committed
+            .saturating_add(published.trade_count.saturating_add(published.candle_count));
+        summary.records_read = summary.records_read.saturating_add(published.trade_count);
+        summary.records_committed = summary
+            .records_committed
+            .saturating_add(published.trade_count.saturating_add(published.candle_count));
+        self.repository
+            .complete_artifact(
+                claim,
+                prepared.artifact.artifact_id,
+                &ArtifactCompletion {
+                    actual_checksum: published.combined_sha256,
+                    compressed_bytes: total_bytes,
+                    record_count: published.trade_count.saturating_add(published.candle_count),
+                    minimum_source_timestamp: Some(published.minimum_timestamp),
+                    maximum_source_timestamp: Some(published.maximum_timestamp),
+                    metadata: serde_json::json!({
+                        "schema_version": KRAKEN_SPOT_SCHEMA_VERSION,
+                        "trade_path": published.trade_path,
+                        "candle_path": published.candle_path,
+                        "trade_sha256": published.trade_sha256,
+                        "candle_sha256": published.candle_sha256,
+                        "trade_count": published.trade_count,
+                        "candle_count": published.candle_count,
+                        "pages": published.pages,
+                        "sparse_candles": true,
+                    }),
+                },
+            )
+            .await
+            .map_err(IngestionExecutionError::transient)?;
+        summary.artifacts_completed = summary.artifacts_completed.saturating_add(1);
+        self.finish_work_unit(
+            claim,
+            &mut progress,
+            range_end,
+            Some(range_end.date_naive()),
+        )
+        .await?;
+        summary.completed_work_units = progress.completed_work_units;
+        summary.details = serde_json::json!({
+            "provider": KRAKEN_SPOT_PROVIDER,
+            "schema_version": KRAKEN_SPOT_SCHEMA_VERSION,
+            "parquet_only": true,
+        });
+        Ok(summary)
     }
 
     async fn ingest_btc_markets(
@@ -3691,6 +3853,20 @@ fn classify_chainlink_error(error: anyhow::Error) -> IngestionExecutionError {
     }
 }
 
+fn classify_kraken_spot_error(error: anyhow::Error) -> IngestionExecutionError {
+    let message = error.to_string();
+    if message.contains("must not")
+        || message.contains("was invalid")
+        || message.contains("omitted")
+        || message.contains("shorter than")
+        || message.contains("failed content verification")
+    {
+        IngestionExecutionError::permanent(error)
+    } else {
+        IngestionExecutionError::transient(error)
+    }
+}
+
 fn classify_pmdata_error(error: anyhow::Error) -> IngestionExecutionError {
     let status = error.chain().find_map(|cause| {
         cause
@@ -4441,6 +4617,11 @@ mod tests {
             cryptohft_binance_l2: None,
             cryptohft_binance_spot_l2: None,
             huggingface_binance_spot_l2: None,
+            kraken_spot: KrakenSpotTradeConfig {
+                base_url: "https://api.kraken.example".to_string(),
+                lake_root: PathBuf::from("/kraken-spot"),
+                request_delay: std::time::Duration::from_millis(250),
+            },
             cache_directory: PathBuf::from("/tmp/cache"),
             batch_rows: 4_000,
             pmxt_prefetch_concurrency: 4,

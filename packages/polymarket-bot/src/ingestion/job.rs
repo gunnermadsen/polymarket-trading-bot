@@ -71,6 +71,7 @@ pub enum IngesterKey {
     BinanceBtcusdtL2OneSecondFeatures,
     BinanceSpotBtcusdtL2OneSecondFeatures,
     BinanceBtcusdtOneSecondKlines,
+    KrakenSpotBtcusdTradePrintsOneSecondOhlcv,
     PolymarketBtcFiveMinuteOrderbooks,
     PolymarketBtcFiveMinuteExecutionSnapshots,
     ChainlinkBtcusdReferenceTicks,
@@ -86,13 +87,14 @@ pub enum IngesterKey {
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
         Self::BinanceBtcusdtL2OneSecondFeatures,
         Self::BinanceSpotBtcusdtL2OneSecondFeatures,
         Self::BinanceBtcusdtOneSecondKlines,
+        Self::KrakenSpotBtcusdTradePrintsOneSecondOhlcv,
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
@@ -104,13 +106,14 @@ impl IngesterKey {
         Self::PmdataChainlinkBtcusdTwap60s,
     ];
 
-    pub const DEFAULT_WORKER: [Self; 12] = [
+    pub const DEFAULT_WORKER: [Self; 13] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
         Self::BinanceBtcusdtL2OneSecondFeatures,
         Self::BinanceSpotBtcusdtL2OneSecondFeatures,
         Self::BinanceBtcusdtOneSecondKlines,
+        Self::KrakenSpotBtcusdTradePrintsOneSecondOhlcv,
         Self::PolymarketBtcFiveMinuteOrderbooks,
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
@@ -129,6 +132,9 @@ impl IngesterKey {
                 "binance_spot_btcusdt_l2_one_second_features"
             }
             Self::BinanceBtcusdtOneSecondKlines => "binance_btcusdt_one_second_klines",
+            Self::KrakenSpotBtcusdTradePrintsOneSecondOhlcv => {
+                "kraken_spot_btcusd_trade_prints_one_second_ohlcv"
+            }
             Self::PolymarketBtcFiveMinuteOrderbooks => "polymarket_btc_five_minute_orderbooks",
             Self::PolymarketBtcFiveMinuteExecutionSnapshots => {
                 "polymarket_btc_five_minute_execution_snapshots"
@@ -158,6 +164,7 @@ impl IngesterKey {
             Self::BtcFiveMinuteMarkets | Self::BtcFiveMinuteResolutions => 300,
             Self::PolymarketBtcFiveMinuteOrderbooks
             | Self::PolymarketBtcFiveMinuteExecutionSnapshots => 3_600,
+            Self::KrakenSpotBtcusdTradePrintsOneSecondOhlcv => 1,
             Self::BinanceBtcusdtAggTrades
             | Self::BinanceBtcusdtL2OneSecondFeatures
             | Self::BinanceSpotBtcusdtL2OneSecondFeatures
@@ -204,6 +211,9 @@ impl FromStr for IngesterKey {
                 Ok(Self::BinanceSpotBtcusdtL2OneSecondFeatures)
             }
             "binance_btcusdt_one_second_klines" => Ok(Self::BinanceBtcusdtOneSecondKlines),
+            "kraken_spot_btcusd_trade_prints_one_second_ohlcv" => {
+                Ok(Self::KrakenSpotBtcusdTradePrintsOneSecondOhlcv)
+            }
             "polymarket_btc_five_minute_orderbooks" => Ok(Self::PolymarketBtcFiveMinuteOrderbooks),
             "polymarket_btc_five_minute_execution_snapshots" => {
                 Ok(Self::PolymarketBtcFiveMinuteExecutionSnapshots)
@@ -347,9 +357,19 @@ impl BackfillRequest {
         }
 
         let seconds = (self.range_end - self.range_start).num_seconds();
-        let expected_work_units = u64::try_from(seconds / alignment_seconds).map_err(|_| {
-            BackfillRequestValidationError::new("requested range contains too many work units")
-        })?;
+        let work_unit_seconds =
+            if self.ingester == IngesterKey::KrakenSpotBtcusdTradePrintsOneSecondOhlcv {
+                86_400
+            } else {
+                alignment_seconds
+            };
+        let expected_work_units =
+            u64::try_from(seconds.saturating_add(work_unit_seconds - 1) / work_unit_seconds)
+                .map_err(|_| {
+                    BackfillRequestValidationError::new(
+                        "requested range contains too many work units",
+                    )
+                })?;
         if expected_work_units == 0 {
             return Err(BackfillRequestValidationError::new(
                 "requested range does not contain a complete work unit",
@@ -367,6 +387,13 @@ impl BackfillRequest {
         {
             return Err(BackfillRequestValidationError::new(
                 "daily archive requests must contain exactly one UTC-day shard",
+            ));
+        }
+        if self.ingester == IngesterKey::KrakenSpotBtcusdTradePrintsOneSecondOhlcv
+            && seconds > 86_400
+        {
+            return Err(BackfillRequestValidationError::new(
+                "Kraken spot trade-print requests must not exceed one UTC day",
             ));
         }
         if is_huggingface_goooddy {
