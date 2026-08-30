@@ -137,6 +137,17 @@ impl KrakenSpotL2ArchiveWorker {
         fs::create_dir_all(&self.root)
             .await
             .with_context(|| format!("failed to create {}", self.root.display()))?;
+        let cleanup_root = self.root.clone();
+        let removed_partials =
+            tokio::task::spawn_blocking(move || cleanup_partial_files(&cleanup_root))
+                .await
+                .context("Kraken Spot L2 partial-file cleanup panicked")??;
+        if removed_partials > 0 {
+            info!(
+                removed_partials,
+                "removed interrupted Kraken Spot L2 work files"
+            );
+        }
         let start = self.select_start_tier(&mut shutdown).await?;
         let end = parse_date(END_EXCLUSIVE)?;
         info!(%start, %end, root = %self.root.display(), "Kraken Spot L2 archive backfill started");
@@ -427,6 +438,34 @@ fn is_unavailable(error: &anyhow::Error) -> bool {
     error.to_string().starts_with("source_unavailable:")
 }
 
+fn cleanup_partial_files(root: &Path) -> Result<u64> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0u64;
+    let mut directories = vec![root.to_owned()];
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                directories.push(entry.path());
+                continue;
+            }
+            if file_type.is_file()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with('.') && name.ends_with(".part"))
+            {
+                std::fs::remove_file(entry.path())?;
+                removed = removed.saturating_add(1);
+            }
+        }
+    }
+    Ok(removed)
+}
+
 pub fn expected_hours(start: NaiveDate) -> Result<u64> {
     let end = parse_date(END_EXCLUSIVE)?;
     let days = end.signed_duration_since(start).num_days();
@@ -480,5 +519,20 @@ mod tests {
             expected_hours(NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()).unwrap(),
             2_184
         );
+    }
+
+    #[test]
+    fn restart_cleanup_removes_only_atomic_work_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("kraken_spot/2026-04-01/00");
+        std::fs::create_dir_all(&nested).unwrap();
+        let partial = nested.join(".interrupted.zst.part");
+        let parquet = nested.join("BTC_USD_orderbook.parquet");
+        std::fs::write(&partial, b"partial").unwrap();
+        std::fs::write(&parquet, b"parquet").unwrap();
+
+        assert_eq!(cleanup_partial_files(directory.path()).unwrap(), 1);
+        assert!(!partial.exists());
+        assert!(parquet.exists());
     }
 }
