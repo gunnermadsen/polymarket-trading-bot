@@ -1,4 +1,4 @@
-use std::env;
+use std::env::{self, VarError};
 
 use anyhow::{bail, Context, Result};
 use chrono::{Duration as ChronoDuration, NaiveDate, TimeZone, Utc};
@@ -16,6 +16,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 const FIXED_END_EXCLUSIVE: &str = "2026-08-31";
+const RETRY_GENERATION_ENV: &str = "POLYMARKET_KRAKEN_SPOT_RETRY_GENERATION";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,6 +32,7 @@ async fn main() -> Result<()> {
         .context("failed to connect Kraken Spot planner to PostgreSQL")?;
     let repository = IngestionRepository::from_pool(pool);
     let start = tier_start()?;
+    let retry_generation = retry_generation()?;
     let fixed_end = NaiveDate::parse_from_str(FIXED_END_EXCLUSIVE, "%Y-%m-%d")?
         .and_hms_opt(0, 0, 0)
         .unwrap()
@@ -52,10 +54,11 @@ async fn main() -> Result<()> {
             range_end: shard_end,
             parameters: json!({}),
             idempotency_key: format!(
-                "kraken-spot-btcusd:{}:{}:{}",
+                "kraken-spot-btcusd:{}:{}:{}:retry-{}",
                 shard_start.format("%Y%m%dT%H%M%SZ"),
                 shard_end.format("%Y%m%dT%H%M%SZ"),
-                KRAKEN_SPOT_SCHEMA_VERSION
+                KRAKEN_SPOT_SCHEMA_VERSION,
+                retry_generation,
             ),
         }
         .validate()
@@ -67,8 +70,24 @@ async fn main() -> Result<()> {
         inserted = inserted.saturating_add(1);
         shard_start = shard_end;
     }
-    info!(%start, %cutoff, inserted, "Kraken Spot trade-print plan ready");
+    info!(%start, %cutoff, inserted, retry_generation, "Kraken Spot trade-print plan ready");
     Ok(())
+}
+
+fn retry_generation() -> Result<u32> {
+    let raw = match env::var(RETRY_GENERATION_ENV) {
+        Ok(value) => value,
+        Err(VarError::NotPresent) => return Ok(1),
+        Err(VarError::NotUnicode(_)) => bail!("{RETRY_GENERATION_ENV} must contain valid Unicode"),
+    };
+    let generation = raw
+        .trim()
+        .parse::<u32>()
+        .with_context(|| format!("{RETRY_GENERATION_ENV} must be a positive integer"))?;
+    if generation == 0 {
+        bail!("{RETRY_GENERATION_ENV} must be a positive integer");
+    }
+    Ok(generation)
 }
 
 fn tier_start() -> Result<NaiveDate> {
