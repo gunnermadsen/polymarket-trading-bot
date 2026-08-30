@@ -50,11 +50,7 @@ async fn main() -> Result<()> {
             request_version: BACKFILL_REQUEST_VERSION,
             range_start: shard_start,
             range_end: shard_end,
-            parameters: json!({
-                "exchange": "kraken_spot",
-                "symbol": "BTC/USD",
-                "outputs": ["trade_prints_parquet", "ohlcv_1s_parquet"],
-            }),
+            parameters: json!({}),
             idempotency_key: format!(
                 "kraken-spot-btcusd:{}:{}:{}",
                 shard_start.format("%Y%m%dT%H%M%SZ"),
