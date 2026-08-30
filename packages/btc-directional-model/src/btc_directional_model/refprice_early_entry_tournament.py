@@ -300,7 +300,11 @@ def _asof_feature(
 def build_panel(config: Config, manifest: dict[str, Any]) -> pl.DataFrame:
     cache = config.source_cache
     labels = _load_group(cache, manifest, "labels")
-    core = _load_group(cache, manifest, "core").sort(["market_id", "seconds_elapsed"])
+    core = (
+        _load_group(cache, manifest, "core")
+        .rename({"trade_count": "btc_trade_count"})
+        .sort(["market_id", "seconds_elapsed"])
+    )
     ref = _load_group(cache, manifest, "refprice")
     candles = _load_group(cache, manifest, "candles")
     oracle = _load_group(cache, manifest, "oracle")
@@ -329,6 +333,7 @@ def build_panel(config: Config, manifest: dict[str, Any]) -> pl.DataFrame:
         .rolling_sum(30, min_samples=1)
         .over("market_id")
         .alias("btc_trade_count_30s"),
+    ).with_columns(
         pl.col("btc_return_1s_bps")
         .rolling_std(30, min_samples=5)
         .over("market_id")
