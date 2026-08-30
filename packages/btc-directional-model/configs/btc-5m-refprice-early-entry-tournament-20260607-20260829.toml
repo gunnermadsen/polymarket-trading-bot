@@ -1,0 +1,113 @@
+[training]
+profile = "btc_5m_refprice_early_entry_tournament"
+random_seed = 20260829
+training_only = true
+runtime_exported = false
+database_mutations = false
+twap_inference_allowed = false
+primary_history_arm = "uncertainty_weighted_hybrid"
+candidates = [
+  "refprice_path_control",
+  "refprice_chainlink_crossvenue_context",
+  "refprice_binance_microstructure_context",
+  "refprice_nonnegative_consensus",
+]
+history_arms = [
+  "authentic_only",
+  "chainlink_reconstructed",
+  "binance_synthetic_extension",
+  "uncertainty_weighted_hybrid",
+]
+
+[windows]
+data_end = "2026-08-29T00:00:00Z"
+official_start = "2026-08-14T00:00:00Z"
+policy_development_end = "2026-08-21T00:00:00Z"
+sealed_start = "2026-08-21T00:00:00Z"
+economic_end = "2026-08-27T00:00:00Z"
+prospective_start = "2026-08-27T00:00:00Z"
+
+[paths]
+source_config = "configs/btc-5m-refprice-context-source-20260607-20260829.toml"
+source_cache = "data/btc-refprice-context-source-20260607-20260829"
+execution_cache = "data/btc-refprice-early-entry-execution-20260814-20260826"
+runs = "runs/btc-5m-refprice-early-entry-tournament-20260607-20260829"
+committed_results = "training-results/btc-5m-refprice-early-entry-tournament-20260607-20260829"
+
+[tree]
+learning_rate = 0.07
+max_leaf_nodes = 15
+min_samples_leaf = 80
+l2_regularization = 8.0
+max_iter = 100
+
+[[oof_folds]]
+name = "20260621_20260705"
+test_start = "2026-06-21T00:00:00Z"
+test_end = "2026-07-06T00:00:00Z"
+
+[[oof_folds]]
+name = "20260706_20260720"
+test_start = "2026-07-06T00:00:00Z"
+test_end = "2026-07-21T00:00:00Z"
+
+[[oof_folds]]
+name = "20260721_20260731"
+test_start = "2026-07-21T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[oof_folds]]
+name = "20260801_20260813"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[oof_folds]]
+name = "20260814_20260820"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-21T00:00:00Z"
+
+[[oof_folds]]
+name = "20260821_20260826"
+test_start = "2026-08-21T00:00:00Z"
+test_end = "2026-08-27T00:00:00Z"
+
+[[oof_folds]]
+name = "20260827_20260828"
+test_start = "2026-08-27T00:00:00Z"
+test_end = "2026-08-29T00:00:00Z"
+
+[[policies]]
+name = "probability_edge"
+minimum_edge = 0.03
+maximum_debit = 0.99
+slippage_reserve = 0.005
+uncertainty_scale = 0.0
+require_margin_excludes_zero = false
+maximum_loss_recovery_wins = 99.0
+
+[[policies]]
+name = "edge_debit"
+minimum_edge = 0.035
+maximum_debit = 0.62
+slippage_reserve = 0.0075
+uncertainty_scale = 0.0
+require_margin_excludes_zero = false
+maximum_loss_recovery_wins = 2.0
+
+[[policies]]
+name = "edge_uncertainty_margin"
+minimum_edge = 0.04
+maximum_debit = 0.60
+slippage_reserve = 0.01
+uncertainty_scale = 1.0
+require_margin_excludes_zero = true
+maximum_loss_recovery_wins = 1.5
+
+[[policies]]
+name = "edge_loss_compensation_tail"
+minimum_edge = 0.05
+maximum_debit = 0.55
+slippage_reserve = 0.015
+uncertainty_scale = 1.5
+require_margin_excludes_zero = true
+maximum_loss_recovery_wins = 1.2
