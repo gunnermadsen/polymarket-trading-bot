@@ -1,6 +1,8 @@
 [training]
 profile = "btc_5m_refprice_early_entry_tournament"
 random_seed = 20260829
+run_id = "refprice-early-entry-20260829"
+checkpoint_origin_revision = "fe9f5fcf6e7c57bda0076c22bc4e8c10bd5c0040"
 training_only = true
 runtime_exported = false
 database_mutations = false

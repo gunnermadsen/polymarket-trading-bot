@@ -100,6 +100,8 @@ class Config:
     execution_cache: Path
     run_root: Path
     result_root: Path
+    run_id: str
+    checkpoint_origin_revision: str
     random_seed: int
     data_end: datetime
     official_start: datetime
@@ -184,6 +186,8 @@ def load_config(path: Path) -> Config:
         execution_cache=package_root / paths["execution_cache"],
         run_root=package_root / paths["runs"],
         result_root=package_root / paths["committed_results"],
+        run_id=str(training["run_id"]),
+        checkpoint_origin_revision=str(training["checkpoint_origin_revision"]),
         random_seed=int(training["random_seed"]),
         data_end=_utc(windows["data_end"]),
         official_start=_utc(windows["official_start"]),
@@ -206,6 +210,8 @@ def load_config(path: Path) -> Config:
 def _validate_config(config: Config) -> None:
     if config.primary_history_arm not in HISTORY_ARMS:
         raise ValueError("unknown primary history arm")
+    if not config.run_id or "/" in config.run_id or ".." in config.run_id:
+        raise ValueError("invalid frozen run ID")
     if tuple(policy.name for policy in config.policies) != POLICIES:
         raise ValueError("frozen policy roster changed")
     if len(config.folds) != 7:
@@ -991,7 +997,7 @@ def apply_policy(frame: pl.DataFrame, execution: pl.DataFrame, policy: Policy) -
     panel = panel.with_columns(
         pl.Series(
             "fee_per_share",
-            np.asarray(taker_fee_per_share(fee_rate=fee, execution_price=cost), dtype=float),
+            np.asarray(taker_fee_per_share(fee_rate=fee, price=cost), dtype=float),
         ),
         pl.lit(policy.slippage_reserve).alias("slippage_reserve"),
         (pl.col("margin_uncertainty_bps") * policy.uncertainty_scale / 10_000.0).alias(
@@ -1046,14 +1052,7 @@ def run(config: Config) -> dict[str, Any]:
     if source_manifest["readiness"]["status"] != "ready":
         raise RuntimeError("source manifest contains a genuine blocking integrity failure")
     execution_manifest, execution = _load_execution(config)
-    identity = _sha_json(
-        {
-            "config": file_sha256(config.source_path),
-            "source": file_sha256(config.source_cache / "source-manifest.json"),
-            "execution": file_sha256(config.execution_cache / "manifest.json"),
-            "revision": revision,
-        }
-    )[:20]
+    identity = config.run_id
     run_dir = config.run_root / identity
     run_dir.mkdir(parents=True, exist_ok=True)
     panel_path = run_dir / "training-panel.parquet"
@@ -1251,6 +1250,7 @@ def run(config: Config) -> dict[str, Any]:
         "schema_version": "btc-refprice-early-entry-report-v1",
         "run_id": identity,
         "producing_revision": revision,
+        "oof_checkpoint_origin_revision": config.checkpoint_origin_revision,
         "artifact_path": str(artifact_path.relative_to(repository_root)),
         "artifact_sha256": artifact_sha,
         "source_manifest_sha256": file_sha256(config.source_cache / "source-manifest.json"),

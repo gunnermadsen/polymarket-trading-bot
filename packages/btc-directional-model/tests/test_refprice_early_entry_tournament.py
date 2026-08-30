@@ -15,10 +15,12 @@ from btc_directional_model.refprice_early_entry_tournament import (
     HISTORY_ARMS,
     POLICIES,
     Calibrator,
+    Policy,
     _active_indices,
     _asof_feature,
     _history,
     _wide_base_predictions,
+    apply_policy,
     load_config,
     predictive_metrics,
 )
@@ -34,6 +36,8 @@ def test_frozen_tournament_contract() -> None:
     )
     assert config.data_end.isoformat() == "2026-08-29T00:00:00+00:00"
     assert config.economic_end.isoformat() == "2026-08-27T00:00:00+00:00"
+    assert config.run_id == "refprice-early-entry-20260829"
+    assert config.checkpoint_origin_revision == "fe9f5fcf6e7c57bda0076c22bc4e8c10bd5c0040"
     assert tuple(policy.name for policy in config.policies) == POLICIES
     assert len(config.folds) == 7
     assert CANDIDATES[-1] == "refprice_nonnegative_consensus"
@@ -73,6 +77,37 @@ def test_predictive_metrics_reports_brier() -> None:
     metrics = predictive_metrics(frame)
     assert metrics["brier"] == 0.039999999999999994
     assert metrics["accuracy"] == 1.0
+
+
+def test_policy_uses_existing_fee_helper_contract() -> None:
+    observed = datetime(2026, 8, 21, 0, 1, tzinfo=UTC)
+    prediction = pl.DataFrame(
+        {
+            "market_id": ["a"],
+            "window_start": [datetime(2026, 8, 21, tzinfo=UTC)],
+            "observed_at": [observed],
+            "seconds_elapsed": [60],
+            "official_label_up": [1],
+            "target_margin_bps": [3.0],
+            "probability_up": [0.80],
+            "predicted_margin_bps": [4.0],
+            "margin_uncertainty_bps": [1.0],
+        }
+    )
+    execution = pl.DataFrame(
+        {
+            "market_id": ["a"],
+            "seconds_elapsed": [60],
+            "strict_both_side_eligible": [True],
+            "fee_rate": [0.02],
+            "up_ask_vwap_5": [0.50],
+            "down_ask_vwap_5": [0.51],
+        }
+    )
+    policy = Policy("probability_edge", 0.03, 0.99, 0.005, 0.0, False, 99.0)
+    trades = apply_policy(prediction, execution, policy)
+    assert trades.height == 1
+    assert trades["fee_per_share"][0] == 0.005
 
 
 def test_asof_feature_never_uses_future_availability() -> None:
