@@ -929,6 +929,32 @@ services:
       <<: *kraken-worker-env
       KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-6"
 
+  kraken-spot-l2-backfill-worker:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: polymarket/kraken-spot-l2-backfill:latest
+    container_name: kraken-spot-l2-backfill-worker
+    hostname: kraken-spot-l2-backfill-worker
+    entrypoint:
+      - /usr/local/bin/kraken-spot-l2-backfill-worker
+    init: true
+    mem_limit: 768m
+    cpus: "0.75"
+    pids_limit: 128
+    logging: *default-logging
+    environment:
+      RUST_LOG: "info"
+    volumes:
+      - /Volumes/docker-data/kraken-data:/var/lib/kraken-data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 60s
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: prometheus
