@@ -145,3 +145,16 @@ def test_history_nulls_are_excluded_and_base_predictions_join_null_labels() -> N
             )
         )
     assert _wide_base_predictions(pl.concat(prediction_rows)).height == 1
+    assert pl.concat(prediction_rows, how="vertical_relaxed").columns == [
+        "market_id",
+        "window_start",
+        "observed_at",
+        "seconds_elapsed",
+        "official_label_up",
+        "target_margin_bps",
+        "history_arm",
+        "fold",
+        "candidate",
+        "probability_up",
+        "predicted_margin_bps",
+    ]

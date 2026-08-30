@@ -902,13 +902,14 @@ def score_consensus(base: pl.DataFrame, bundle: ConsensusBundle) -> pl.DataFrame
     margin_matrix = wide.select(*(f"m_{name}" for name in CANDIDATES[:3])).to_numpy()
     probability = _sigmoid(bundle.intercept + _logit(probability_matrix) @ bundle.coefficients)
     margin = margin_matrix @ bundle.margin_coefficients
-    return wide.select(
-        *KEYS, "official_label_up", "target_margin_bps", "history_arm", "fold"
-    ).with_columns(
+    fold_name = wide["fold"][0]
+    return wide.select(*KEYS, "official_label_up", "target_margin_bps").with_columns(
         pl.Series("probability_up", probability),
         pl.Series("predicted_margin_bps", margin),
         pl.lit(bundle.margin_error_quantile).alias("margin_uncertainty_bps"),
         pl.lit(CANDIDATES[3]).alias("candidate"),
+        pl.lit(bundle.history_arm).alias("history_arm"),
+        pl.lit(fold_name).alias("fold"),
     )
 
 
