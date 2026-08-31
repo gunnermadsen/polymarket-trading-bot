@@ -425,6 +425,8 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
         .append_pair("api_key", key)
         .append_pair("file_type", "json")
         .append_pair("output_type", "4")
+        .append_pair("realtime_start", "1776-07-04")
+        .append_pair("realtime_end", "9999-12-31")
         .append_pair(
             "observation_start",
             &job.range_start.format("%Y-%m-%d").to_string(),
@@ -433,7 +435,19 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
             "observation_end",
             &job.range_end.format("%Y-%m-%d").to_string(),
         );
-    let bytes = fetch_bytes(client, url.as_str()).await?;
+    let response = client
+        .get(url.as_str())
+        .send()
+        .await
+        .context("FRED request transport failure")?;
+    if !response.status().is_success() {
+        bail!("FRED API returned HTTP {}", response.status());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .context("FRED response body failure")?
+        .to_vec();
     let root: Value = serde_json::from_slice(&bytes)?;
     let observations = root
         .get("observations")
