@@ -440,13 +440,17 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
         .as_deref()
         .context("FRED_API_KEY is required for FRED jobs")?;
     let mut url = Url::parse(FRED_BASE_URL)?;
+    let realtime_end = (job.range_end + ChronoDuration::days(366)).min(Utc::now());
     url.query_pairs_mut()
         .append_pair("series_id", &job.series_id)
         .append_pair("api_key", key)
         .append_pair("file_type", "json")
         .append_pair("output_type", "4")
-        .append_pair("realtime_start", "1776-07-04")
-        .append_pair("realtime_end", "9999-12-31")
+        .append_pair(
+            "realtime_start",
+            &job.range_start.format("%Y-%m-%d").to_string(),
+        )
+        .append_pair("realtime_end", &realtime_end.format("%Y-%m-%d").to_string())
         .append_pair(
             "observation_start",
             &job.range_start.format("%Y-%m-%d").to_string(),
