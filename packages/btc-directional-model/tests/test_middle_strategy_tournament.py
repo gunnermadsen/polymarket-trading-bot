@@ -12,6 +12,8 @@ from btc_directional_model.middle_strategy_data import (
 )
 from btc_directional_model.middle_strategy_tournament import (
     ALL_NAMES,
+    BridgeEnsembleCalibrator,
+    BridgeTreeModel,
     _agreement_predictions,
     _candidate_contract,
     _counterfactual_economics,
@@ -118,6 +120,11 @@ def test_sealed_replay_is_opened_only_after_selection_freeze() -> None:
 def test_round_trip_validation_uses_absolute_package_source_path() -> None:
     source = inspect.getsource(_validate_artifact)
     assert 'str(config.package_root / "src")' in source
+
+
+def test_bridge_estimators_have_stable_import_identity() -> None:
+    assert BridgeTreeModel.__module__ == "btc_directional_model.middle_strategy_tournament"
+    assert BridgeEnsembleCalibrator.__module__ == "btc_directional_model.middle_strategy_tournament"
 
 
 def test_negative_expectancy_is_not_promoted() -> None:

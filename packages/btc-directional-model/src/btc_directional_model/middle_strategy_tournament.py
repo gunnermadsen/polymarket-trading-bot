@@ -59,6 +59,11 @@ ALL_NAMES = (
     "price_time_calibrated_middle_ensemble",
 )
 
+CANONICAL_MODULE = "btc_directional_model.middle_strategy_tournament"
+if __name__ == "__main__":
+    # Keep trained estimators importable when this module is executed with `python -m`.
+    sys.modules[CANONICAL_MODULE] = sys.modules[__name__]
+
 
 @dataclass(frozen=True)
 class BridgeTreeModel:
@@ -75,6 +80,10 @@ class BridgeEnsembleCalibrator:
     def predict_proba(self, matrix: np.ndarray) -> np.ndarray:
         probability = np.clip(expit(self.estimator.predict(matrix)), 1e-6, 1 - 1e-6)
         return np.column_stack((1.0 - probability, probability))
+
+
+BridgeTreeModel.__module__ = CANONICAL_MODULE
+BridgeEnsembleCalibrator.__module__ = CANONICAL_MODULE
 
 
 def _uses_normalized_supervision(config: Any) -> bool:
@@ -867,6 +876,24 @@ def _validate_artifact(config: Any, artifact: Path) -> dict[str, Any]:
     return joblib.load(artifact)
 
 
+def _canonicalize_artifact(config: Any, artifact: Path) -> dict[str, Any]:
+    """Repair a completed transient-module checkpoint without fitting again."""
+
+    try:
+        return _validate_artifact(config, artifact)
+    except subprocess.CalledProcessError:
+        payload = joblib.load(artifact)
+        repaired = artifact.with_suffix(".canonicalizing")
+        joblib.dump(payload, repaired, compress=3)
+        try:
+            validated = _validate_artifact(config, repaired)
+        except Exception:
+            repaired.unlink(missing_ok=True)
+            raise
+        os.replace(repaired, artifact)
+        return validated
+
+
 def _predict_frozen_candidates(
     frame: pl.DataFrame,
     models: dict[str, TreeModel | BridgeTreeModel],
@@ -897,7 +924,7 @@ def finalize_run(config: Any, run_dir: Path) -> Path:
     """Finalize an already-trained checkpoint without fitting any model again."""
 
     artifact = run_dir / "tournament.joblib"
-    payload = _validate_artifact(config, artifact)
+    payload = _canonicalize_artifact(config, artifact)
     if payload["run_id"] != run_dir.name:
         raise RuntimeError("artifact run identity does not match the checkpoint directory")
     oof = pl.read_parquet(run_dir / "ledgers" / "candidate-oof-predictions.parquet")
