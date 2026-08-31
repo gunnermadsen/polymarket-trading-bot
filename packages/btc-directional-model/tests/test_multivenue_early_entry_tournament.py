@@ -53,12 +53,12 @@ def test_sealed_frame_is_opened_only_after_selection_freeze() -> None:
 
 
 def test_missing_and_constant_columns_are_neutralized_for_stable_fitting() -> None:
-    matrix = np.array(
-        [
-            [np.nan, 1.0, 1.0],
-            [np.nan, 1.0, 2.0],
-            [np.nan, np.nan, 3.0],
-        ]
+    matrix = np.column_stack(
+        (
+            np.full(1_100, np.nan),
+            np.ones(1_100),
+            np.arange(1_100, dtype=float),
+        )
     )
     assert _neutralized_feature_indices(matrix) == (0, 1)
     frame = pl.DataFrame({"missing": [None, None], "constant": [1.0, 1.0], "signal": [1.0, 2.0]})
@@ -66,7 +66,13 @@ def test_missing_and_constant_columns_are_neutralized_for_stable_fitting() -> No
 
 
 def test_float64_variation_that_collapses_in_float32_is_excluded() -> None:
-    matrix = np.array([[-1.0], [-0.9999999999]])
+    matrix = np.linspace(-1.0, -0.9999999999, 1_100).reshape(-1, 1)
+    assert _neutralized_feature_indices(matrix) == (0,)
+
+
+def test_sparse_optional_feature_is_excluded_from_histogram_sampling() -> None:
+    matrix = np.full((2_000, 1), np.nan)
+    matrix[:999, 0] = np.arange(999, dtype=float)
     assert _neutralized_feature_indices(matrix) == (0,)
 
 

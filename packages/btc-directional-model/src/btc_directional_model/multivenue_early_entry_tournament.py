@@ -35,6 +35,7 @@ SCHEMA_VERSION = "btc-multivenue-early-entry-tournament-v1"
 ARTIFACT_SCHEMA_VERSION = "btc-multivenue-early-entry-model-v1"
 PREDICTION_COLUMNS = (*KEY_COLUMNS, "label_up", "fold", "candidate", "probability")
 FORBIDDEN_INFERENCE_TOKENS = ("twap", "official_outcome", "label_up", "final_price", "resolution")
+MINIMUM_FINITE_FEATURE_ROWS = 1_000
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -123,12 +124,12 @@ def _matrix(
 
 
 def _neutralized_feature_indices(matrix: np.ndarray) -> tuple[int, ...]:
-    """Return columns that cannot be binned because they are missing or constant."""
+    """Return columns that cannot be stably binned on sklearn's row sample."""
 
     neutralized = []
     for index in range(matrix.shape[1]):
         finite = matrix[np.isfinite(matrix[:, index]), index].astype(np.float32)
-        if not len(finite) or float(finite.min()) == float(finite.max()):
+        if len(finite) < MINIMUM_FINITE_FEATURE_ROWS or float(finite.min()) == float(finite.max()):
             neutralized.append(index)
     return tuple(neutralized)
 
