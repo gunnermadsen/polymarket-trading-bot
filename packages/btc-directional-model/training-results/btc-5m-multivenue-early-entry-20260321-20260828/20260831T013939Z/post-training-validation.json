@@ -1,0 +1,13 @@
+{
+  "artifact_path": "training-results/btc-5m-multivenue-early-entry-20260321-20260828/20260831T013939Z/tournament.joblib",
+  "artifact_sha256": "40fc48b3a43bf417f85dceff353c6917713cdac929c0b9b0afab43bc65c5e310",
+  "artifact_sha256_verified": true,
+  "error": "AttributeError: Can't get attribute 'CandidateModel' on <module '__main__'>",
+  "failure_class": "artifact_deserialization",
+  "passed": false,
+  "qualification_status": "disqualified_artifact_deserialization_failure",
+  "reason": "The training CLI serialized module dataclasses under __main__, so the immutable model artifact cannot be loaded from an importing process.",
+  "retraining_performed": false,
+  "sealed_rerun_performed": false,
+  "deployment_status": "not_deployed"
+}

@@ -1,0 +1,57 @@
+{
+  "frozen_at": "2026-08-31T01:44:30.210610+00:00",
+  "nominated_predictive_model": "full_history_price_control",
+  "predictive_ranking": [
+    "full_history_price_control",
+    "kraken_crossvenue",
+    "dual_venue_flow_agreement",
+    "full_history_refprice_residual",
+    "settlement_aligned_oracle",
+    "multivenue_consensus",
+    "binance_flow",
+    "time_specialist_ensemble"
+  ],
+  "sealed_metrics_accessed": false,
+  "selected_policies": {
+    "binance_flow": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.55,
+      "minimum_edge": 0.1
+    },
+    "dual_venue_flow_agreement": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.075
+    },
+    "full_history_price_control": {
+      "maximum_share_cost": 0.85,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.1
+    },
+    "full_history_refprice_residual": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.01
+    },
+    "kraken_crossvenue": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.65,
+      "minimum_edge": 0.075
+    },
+    "multivenue_consensus": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.1
+    },
+    "settlement_aligned_oracle": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.075
+    },
+    "time_specialist_ensemble": {
+      "maximum_share_cost": 0.85,
+      "minimum_confidence": 0.7,
+      "minimum_edge": 0.1
+    }
+  }
+}
