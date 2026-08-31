@@ -262,7 +262,11 @@ async fn enqueue(
           INSERT INTO financial_data.backfill_jobs
             (provider, dataset, series_id, range_start, range_end)
           VALUES ($1,$2,$3,$4,$5)
-          ON CONFLICT (provider,dataset,series_id,range_start,range_end) DO NOTHING
+          ON CONFLICT (provider,dataset,series_id,range_start,range_end) DO UPDATE SET
+            status='queued',attempt=0,next_attempt_at=now(),error_message=NULL,
+            completed_at=NULL,updated_at=now()
+          WHERE financial_data.backfill_jobs.status='failed'
+            AND financial_data.backfill_jobs.error_message LIKE 'FRED_API_KEY%'
           RETURNING TRUE
         ) SELECT COALESCE(bool_or(TRUE), FALSE) FROM inserted"#,
     )
@@ -377,7 +381,21 @@ async fn execute_job(
 }
 
 async fn fail_or_retry(pool: &PgPool, job: &Job, message: &str) -> Result<()> {
-    let terminal = job.attempt >= job.max_attempts || message.contains("FRED_API_KEY");
+    if message.contains("FRED_API_KEY") {
+        sqlx::query(
+            r#"UPDATE financial_data.backfill_jobs SET status='queued',attempt=GREATEST(0,attempt-1),
+               error_message=$3,next_attempt_at=now()+INTERVAL '1 hour',lease_token=NULL,
+               lease_expires_at=NULL,updated_at=now()
+               WHERE job_id=$1 AND lease_token=$2"#,
+        )
+        .bind(job.job_id)
+        .bind(job.lease_token)
+        .bind(message)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+    let terminal = job.attempt >= job.max_attempts;
     let status = if terminal { "failed" } else { "queued" };
     sqlx::query(
         r#"UPDATE financial_data.backfill_jobs SET status=$3,error_message=$4,
