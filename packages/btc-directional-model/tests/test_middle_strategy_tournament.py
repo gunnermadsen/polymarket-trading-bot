@@ -6,11 +6,15 @@ from pathlib import Path
 
 import polars as pl
 
-from btc_directional_model.middle_strategy_data import build_middle_panel
+from btc_directional_model.middle_strategy_data import (
+    build_middle_panel,
+    build_source_preserving_bridge_panel,
+)
 from btc_directional_model.middle_strategy_tournament import (
     ALL_NAMES,
     _agreement_predictions,
     _candidate_contract,
+    _counterfactual_economics,
     _fit_candidate_tree,
     _opportunities,
     _qualification_status,
@@ -25,6 +29,10 @@ CONFIG = PACKAGE_ROOT / "configs/btc-5m-middle-strategy-tournament-20260321-2026
 NORMALIZED_CONFIG = (
     PACKAGE_ROOT
     / "configs/btc-5m-twap-normalized-middle-strategy-tournament-20260321-20260828.toml"
+)
+BRIDGE_CONFIG = (
+    PACKAGE_ROOT
+    / "configs/btc-5m-source-preserving-settlement-bridge-middle-strategy-tournament-20260321-20260828.toml"
 )
 
 
@@ -146,7 +154,7 @@ def test_normalized_weights_are_nonzero_and_applied_to_both_model_layers() -> No
         normalization["fallback_weight"],
     ) > 0
     source = inspect.getsource(_fit_candidate_tree)
-    assert source.count("sample_weight=") == 2
+    assert source.count("sample_weight=") >= 2
 
 
 def test_exact_label_query_uses_existing_archive_and_live_sources() -> None:
@@ -160,3 +168,47 @@ def test_normalized_policy_freezes_before_sealed_test_is_opened() -> None:
     source = inspect.getsource(train_tournament)
     assert source.index("development = panel.filter") < source.index("selection_frozen_at =")
     assert source.index("selection_frozen_at =") < source.index("sealed = panel.filter")
+
+
+def test_bridge_contract_preserves_full_range_and_pristine_splits() -> None:
+    config = load_data_config(BRIDGE_CONFIG)
+    assert config.source_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert config.fit_end == datetime(2026, 8, 14, tzinfo=UTC)
+    assert config.sealed_start == datetime(2026, 8, 21, tzinfo=UTC)
+    assert config.sealed_end == datetime(2026, 8, 29, tzinfo=UTC)
+    assert config.raw["settlement_bridge"]["calibration_end"] == "2026-08-08T00:00:00Z"
+    assert config.raw["settlement_bridge"]["validation_end"] == config.raw["windows"][
+        "fit_end"
+    ]
+    assert config.raw["folds"][-1]["test_start"] == config.raw["settlement_bridge"][
+        "calibration_end"
+    ]
+    assert tuple(row["name"] for row in config.raw["candidates"]) == ALL_NAMES
+
+
+def test_bridge_builder_preserves_sources_and_never_uses_sealed_calibration() -> None:
+    source = inspect.getsource(build_source_preserving_bridge_panel)
+    assert '"official_label_up"' in source
+    assert '"authentic_margin_bps"' in source
+    assert '"proxy_margin_bps"' in source
+    assert '"binance_raw_margin_bps"' in source
+    assert 'calibration_end = datetime.fromisoformat(bridge["calibration_end"])' in source
+    assert 'closed="left"' in source
+    assert '"source_values_remain_distinct": True' in source
+
+
+def test_bridge_model_uses_probabilistic_target_without_doubling_rows() -> None:
+    source = inspect.getsource(_fit_candidate_tree)
+    assert "HistGradientBoostingRegressor" in source
+    assert 'fit["bridge_probability_target"]' in source
+    assert "np.vstack" not in source
+
+
+def test_prescribed_counterfactuals_are_reporting_only() -> None:
+    source = inspect.getsource(_counterfactual_economics)
+    assert 'is_between(150, 180' in source
+    assert 'pl.col("selected_probability") >= 0.80' in source
+    training = inspect.getsource(train_tournament)
+    assert training.index("selection_frozen_at =") < training.index(
+        "counterfactual_economic[name]"
+    )
