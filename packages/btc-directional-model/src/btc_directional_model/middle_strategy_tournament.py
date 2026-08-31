@@ -440,7 +440,9 @@ def _reference_manifests(config: Any) -> dict[str, Any]:
         output[name] = {
             "manifest_path": str(path.relative_to(config.package_root)),
             "manifest_sha256": file_sha256(path),
-            "model_artifact_sha256": payload.get("model_artifact", {}).get("sha256") or payload.get("artifact_sha256"),
+            "model_artifact_sha256": payload.get("model_artifact", {}).get("sha256")
+            or payload.get("artifact_sha256")
+            or payload.get("model_sha256"),
             "scored_without_alteration": False,
             "reason": "Immutable runtime comparator retained for provenance; its input and entry-policy contract is not identical to the 60-240 tournament panel.",
         }
