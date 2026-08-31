@@ -2435,7 +2435,9 @@ impl BtcRepository {
             FROM polymarket.orderbook_checkpoints
             WHERE token_id = $1
               AND source_timestamp >= $3 - INTERVAL '1 hour'
+              AND source_timestamp >= $2
               AND source_timestamp <= $3
+              AND received_at >= $2
               AND received_at <= $3
               AND persisted_at >= $2
               AND persisted_at <= $3

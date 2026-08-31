@@ -4676,10 +4676,14 @@ fn clob_epoch_readiness_diagnostic(
             Some("missing_source_timestamp")
         } else if source_age_milliseconds.is_some_and(|age| age < -max_age.num_milliseconds()) {
             Some("future_source_timestamp")
+        } else if source_age_milliseconds.is_some_and(|age| age > max_age.num_milliseconds()) {
+            Some("stale_source_timestamp")
         } else if book.received_at.is_none() {
             Some("missing_received_at")
         } else if receipt_age_milliseconds.is_some_and(|age| age < 0) {
             Some("future_received_at")
+        } else if receipt_age_milliseconds.is_some_and(|age| age > max_age.num_milliseconds()) {
+            Some("stale_received_at")
         } else if source_to_receive_lag_milliseconds
             .is_some_and(|lag| lag > max_age.num_milliseconds())
         {
@@ -9895,7 +9899,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_book_remains_ready_on_structural_connection() {
+    fn unchanged_book_expires_on_structural_connection() {
         let current = market();
         let ready_at = current.window_start + Duration::minutes(1);
         let max_book_age = Duration::seconds(2);
@@ -9907,9 +9911,9 @@ mod tests {
         );
 
         let stale_at = ready_at + max_book_age + Duration::milliseconds(1);
-        assert!(
-            clob_epoch_readiness_diagnostic(&registry, markets, stale_at, max_book_age).is_none()
-        );
+        let stale = clob_epoch_readiness_diagnostic(&registry, markets, stale_at, max_book_age)
+            .expect("stale books must make the epoch unavailable");
+        assert_eq!(stale.reason, "stale_source_timestamp");
     }
 
     #[test]
@@ -10033,7 +10037,7 @@ mod tests {
             Duration::seconds(2),
         )
         .expect("delayed books must remain unavailable");
-        assert_eq!(delayed.reason, "source_to_receive_lag");
+        assert_eq!(delayed.reason, "stale_source_timestamp");
         assert!(!epoch.books_usable);
         assert!(epoch.registry.market_books_bootstrapped(&current));
         assert_eq!(epoch.subscription_stats.updates, 0);
@@ -10604,7 +10608,7 @@ mod tests {
         );
         assert_eq!(watchdog.bootstrap_deadline, None);
         assert!(registry.market_books_structurally_ready(&active_markets[1]));
-        assert!(clob_epoch_ready(
+        assert!(!clob_epoch_ready(
             &registry,
             &active_markets,
             checked_at,
@@ -11999,7 +12003,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clock_aging_preserves_active_clob_usability_without_new_frames() {
+    async fn clock_aging_expires_active_clob_usability_without_new_frames() {
         let market = market();
         let ready_at = market.window_start + Duration::minutes(2);
         let mut registry = ready_book_registry(&market, ready_at - Duration::milliseconds(10));
@@ -12046,11 +12050,11 @@ mod tests {
         )
         .await;
 
-        assert!(books_usable);
+        assert!(!books_usable);
         assert!(registry.market_books_structurally_ready(&market));
         let status = metrics.read().await;
-        assert_eq!(status.clob_active_connection_epoch, Some(8));
-        assert!(status.clob_recovery_unavailable_since.is_none());
+        assert_eq!(status.clob_active_connection_epoch, None);
+        assert!(status.clob_recovery_unavailable_since.is_some());
         drop(status);
 
         let refreshed_at = stale_at + Duration::milliseconds(1);
