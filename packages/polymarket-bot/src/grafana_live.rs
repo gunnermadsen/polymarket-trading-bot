@@ -461,6 +461,7 @@ impl MarketPathSnapshot {
         if self.points.is_empty() {
             return None;
         }
+        let price_to_beat = self.price_to_beat?;
 
         let mut body = String::with_capacity(self.points.len().saturating_mul(128));
         for point in &self.points {
@@ -468,18 +469,11 @@ impl MarketPathSnapshot {
                 .observed_at
                 .timestamp_nanos_opt()
                 .expect("a current UTC timestamp is representable in nanoseconds");
-            match self.price_to_beat {
-                Some(price_to_beat) => writeln!(
-                    body,
-                    "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat} {point_epoch_nanos}",
-                    point.price,
-                ),
-                None => writeln!(
-                    body,
-                    "{MARKET_PATH_MEASUREMENT} twap_price={} {point_epoch_nanos}",
-                    point.price,
-                ),
-            }
+            writeln!(
+                body,
+                "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat} {point_epoch_nanos}",
+                point.price,
+            )
             .expect("writing an Influx line into a String cannot fail");
         }
         body.pop();
@@ -799,6 +793,23 @@ mod tests {
         let market = market("one", now);
         let snapshot = MarketPathSnapshot::resolve(now, &market, []);
 
+        assert_eq!(snapshot.influx_body(), None);
+    }
+
+    #[test]
+    fn market_path_without_opening_target_does_not_publish_a_partial_schema() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let market = market("one", now);
+        let snapshot = MarketPathSnapshot::resolve(
+            now,
+            &market,
+            [twap_point(
+                market.window_start + ChronoDuration::seconds(10),
+                dec!(100),
+            )],
+        );
+
+        assert_eq!(snapshot.price_to_beat, None);
         assert_eq!(snapshot.influx_body(), None);
     }
 
