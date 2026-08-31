@@ -507,7 +507,7 @@ def _report(metrics: dict[str, Any]) -> str:
         return "—" if value is None else f"{value:.{digits}f}"
 
     lines = [
-        "# Middle-Strategy Tournament", "", f"Run: `{metrics['run_id']}`  ",
+        "# Middle-Strategy Tournament", "", f"Run: `{metrics['run_id']}`",
         f"Qualification: **{metrics['qualification_status']}**", "", "## Sealed high-level results", "",
         "| Candidate | PnL | Stress PnL | Coverage | Wins | Losses | W/L | Recovery wins/loss | Brier | PF | Avg cost | Avg entry |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
