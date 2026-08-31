@@ -33,6 +33,7 @@ pub const END_EXCLUSIVE: &str = "2026-08-31";
 pub const START_TIERS: [&str; 3] = ["2026-04-01", "2026-05-01", "2026-06-01"];
 pub const REQUEST_INTERVAL: Duration = Duration::from_millis(1_100);
 pub const DOWNLOAD_CONCURRENCY: usize = 4;
+const MAXIMUM_NOT_FOUND_ATTEMPTS: u32 = 3;
 const MAXIMUM_COMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAXIMUM_DECODED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const REQUIRED_COLUMNS: [&str; 13] = [
@@ -64,6 +65,19 @@ pub struct ArchiveManifest {
     pub decoded_bytes: u64,
     pub parquet_rows: u64,
     pub archived_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceUnavailableManifest {
+    pub provider: String,
+    pub exchange: String,
+    pub symbol: String,
+    pub source_uri: String,
+    pub source_date: NaiveDate,
+    pub source_hour: u8,
+    pub http_status: u16,
+    pub attempts: u32,
+    pub confirmed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +214,11 @@ impl KrakenSpotL2ArchiveWorker {
                 }
                 Err(error) => {
                     attempt = attempt.saturating_add(1);
+                    if is_unavailable(&error) && attempt >= MAXIMUM_NOT_FOUND_ATTEMPTS {
+                        persist_source_unavailable(&spec, attempt).await?;
+                        warn!(date = %spec.date, hour = spec.hour, attempt, "Kraken Spot L2 source hour unavailable; continuing backfill");
+                        return Ok(true);
+                    }
                     let delay = Duration::from_secs(5 * u64::from(attempt.min(12)));
                     warn!(date = %spec.date, hour = spec.hour, attempt, error = %error, retry_seconds = delay.as_secs(), "Kraken Spot L2 hour failed; retrying");
                     tokio::select! {
@@ -320,6 +339,10 @@ impl KrakenSpotL2ArchiveWorker {
             archived_at: Utc::now(),
         };
         persist_manifest(&spec.manifest_path, &manifest).await?;
+        let unavailable_path = source_unavailable_path(spec)?;
+        if fs::try_exists(&unavailable_path).await? {
+            fs::remove_file(unavailable_path).await?;
+        }
         fs::remove_file(compressed_path).await?;
         Ok(())
     }
@@ -430,6 +453,43 @@ async fn persist_manifest(path: &Path, manifest: &ArchiveManifest) -> Result<()>
     Ok(())
 }
 
+async fn persist_source_unavailable(spec: &HourSpec, attempts: u32) -> Result<()> {
+    let path = source_unavailable_path(spec)?;
+    let parent = path.parent().context("unavailable marker had no parent")?;
+    fs::create_dir_all(parent).await?;
+    let temporary = parent.join(format!(".{}.unavailable.part", Uuid::new_v4()));
+    let marker = SourceUnavailableManifest {
+        provider: "cryptohftdata".to_string(),
+        exchange: EXCHANGE.to_string(),
+        symbol: SYMBOL.to_string(),
+        source_uri: spec.source_uri.clone(),
+        source_date: spec.date,
+        source_hour: spec.hour,
+        http_status: 404,
+        attempts,
+        confirmed_at: Utc::now(),
+    };
+    let bytes = serde_json::to_vec_pretty(&marker)?;
+    let mut file = fs::File::create(&temporary).await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
+    file.sync_all().await?;
+    drop(file);
+    fs::rename(temporary, path).await?;
+    Ok(())
+}
+
+fn source_unavailable_path(spec: &HourSpec) -> Result<PathBuf> {
+    let file_name = spec
+        .final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("Kraken Spot L2 filename was not UTF-8")?;
+    Ok(spec
+        .final_path
+        .with_file_name(format!("{file_name}.unavailable.json")))
+}
+
 fn parse_date(raw: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(raw, "%Y-%m-%d").with_context(|| format!("invalid date {raw}"))
 }
@@ -534,5 +594,18 @@ mod tests {
         assert_eq!(cleanup_partial_files(directory.path()).unwrap(), 1);
         assert!(!partial.exists());
         assert!(parquet.exists());
+    }
+
+    #[test]
+    fn unavailable_marker_path_is_hour_specific() {
+        let date = NaiveDate::from_ymd_opt(2026, 7, 9).unwrap();
+        let spec = HourSpec::new(Path::new("/archive"), date, 21).unwrap();
+        assert_eq!(
+            source_unavailable_path(&spec).unwrap(),
+            PathBuf::from(
+                "/archive/kraken_spot/2026-07-09/21/BTC_USD_orderbook.parquet.unavailable.json"
+            )
+        );
+        assert_eq!(MAXIMUM_NOT_FOUND_ATTEMPTS, 3);
     }
 }
