@@ -7,7 +7,7 @@ groups:
     interval: 20s
     rules:
       - uid: clob_remote_close_1013
-        title: CLOB remote close 1013 observed
+        title: Trading hot-path CLOB remote close 1013 observed
         condition: C
         data:
           - refId: A
@@ -99,8 +99,8 @@ groups:
         execErrState: Error
         for: 0s
         annotations:
-          description: The shared Polymarket CLOB WebSocket received close code 1013 within the last five minutes.
-          summary: CLOB market-data transport was asked to try again later
+          description: The polymarket-bot shared trading hot-path CLOB WebSocket received close code 1013 within the last five minutes. This alert does not observe the independent market-data-ingester connection.
+          summary: Trading hot-path CLOB transport was asked to try again later
         labels:
           condition: remote_close_1013
           environment: $GRAFANA_ALERT_ENVIRONMENT

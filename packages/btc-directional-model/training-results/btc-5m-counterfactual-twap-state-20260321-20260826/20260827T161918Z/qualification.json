@@ -1,0 +1,120 @@
+{
+  "prospective": {
+    "days": 1,
+    "economics": {
+      "accuracy": 1.0,
+      "bootstrap_lower": 1.1297665977112674,
+      "capacity_curve": {
+        "10": {
+          "expectancy": 2.4899313732394366,
+          "pnl": 353.570255
+        },
+        "100": {
+          "expectancy": 24.737186772617253,
+          "pnl": 3512.68052171165
+        },
+        "125": {
+          "expectancy": 30.871495589858032,
+          "pnl": 4383.75237375984
+        },
+        "15": {
+          "expectancy": 3.7334545715362424,
+          "pnl": 530.1505491581464
+        },
+        "150": {
+          "expectancy": 36.98492062455961,
+          "pnl": 5251.8587286874645
+        },
+        "175": {
+          "expectancy": 43.079659029650706,
+          "pnl": 6117.3115822104
+        },
+        "20": {
+          "expectancy": 4.975877471557604,
+          "pnl": 706.5746009611798
+        },
+        "200": {
+          "expectancy": 49.14777838559586,
+          "pnl": 6978.984530754613
+        },
+        "25": {
+          "expectancy": 6.21660276318093,
+          "pnl": 882.757592371692
+        },
+        "30": {
+          "expectancy": 7.456029352100495,
+          "pnl": 1058.7561679982703
+        },
+        "40": {
+          "expectancy": 9.93041764146926,
+          "pnl": 1410.119305088635
+        },
+        "5": {
+          "expectancy": 1.2453068309859157,
+          "pnl": 176.83357
+        },
+        "50": {
+          "expectancy": 12.404377175422491,
+          "pnl": 1761.4215589099938
+        },
+        "75": {
+          "expectancy": 18.579240139125286,
+          "pnl": 2638.2520997557904
+        }
+      },
+      "coverage": 0.4930555555555556,
+      "down_trades": 73,
+      "maximum_day_profit_share": 1.0,
+      "profit_factor": Infinity,
+      "stressed_expectancy_per_trade": 1.2453068309859157,
+      "stressed_pnl": 176.83357,
+      "trades": 142,
+      "up_trades": 69
+    },
+    "end": "2026-08-26T00:00:00+00:00",
+    "folds": 1,
+    "policy": {
+      "minimum_margin_bound_bps": 0.0,
+      "minimum_probability_edge": 0.05,
+      "minimum_stressed_edge": 0.03
+    },
+    "post_freeze_tuning": false,
+    "probability": {
+      "brier": 0.022241832819923667,
+      "expected_calibration_error": 0.029717665308720144,
+      "log_loss": 0.11238735858285419,
+      "markets": 288
+    },
+    "start": "2026-08-25T00:00:00+00:00"
+  },
+  "qualification": {
+    "checks": {
+      "both_directions": true,
+      "chainlink_fidelity": true,
+      "ece": true,
+      "market_coverage": true,
+      "no_single_day_majority": false,
+      "paired_predictive_improvement": true,
+      "positive_bootstrap_lower": true,
+      "positive_stressed_expectancy": true,
+      "positive_stressed_pnl": true,
+      "profit_factor": true,
+      "profitable_temporal_folds": true,
+      "prospective_days": false,
+      "prospective_folds": false,
+      "prospective_markets": false
+    },
+    "deployment_status": "not_deployed_training_only",
+    "passed": false,
+    "reasons": [
+      "no_single_day_majority",
+      "prospective_markets",
+      "prospective_days",
+      "prospective_folds"
+    ]
+  },
+  "selection": {
+    "provisional_candidate": "refprice_dual_twap_uncertainty_guard",
+    "status": "no_deployable_challenger_qualified"
+  }
+}

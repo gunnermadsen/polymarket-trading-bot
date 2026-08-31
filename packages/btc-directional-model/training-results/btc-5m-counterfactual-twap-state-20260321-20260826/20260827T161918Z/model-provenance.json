@@ -1,0 +1,14 @@
+{
+  "artifact_path": "tournament.joblib",
+  "candidate_freeze": "2026-08-25T00:00:00+00:00",
+  "data_watermark": "2026-08-26T00:00:00+00:00",
+  "deployment_status": "not_deployed_training_only",
+  "input_manifest_sha256": "50124e92a6f40c7b9e020f828efea1b8cda7cb13b70d3ae612578adaceaabc67",
+  "model_artifact_sha256": "0001ca5360566e83c1186f2229b504181355e5d418f7deb5326684d5612ef22d",
+  "model_family": "btc-5m-counterfactual-twap-state",
+  "producing_source_commit": "17bb5214c404fb676efcc9e2beceb8ff5c4a9a64",
+  "qualification_status": "no_deployable_challenger_qualified",
+  "schema_version": "btc-model-provenance-v1",
+  "source_identity": "016c68314aa70199dcfea746e44e48a4833791a5e5cf644f57e3b0d0dd687e6d",
+  "training_run_id": "20260827T161918Z"
+}

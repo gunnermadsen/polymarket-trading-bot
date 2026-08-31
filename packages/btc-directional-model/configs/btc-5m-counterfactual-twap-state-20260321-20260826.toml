@@ -1,0 +1,160 @@
+[training]
+profile = "btc_5m_counterfactual_twap_state"
+model_family = "btc-5m-counterfactual-twap-state"
+paper_only = true
+training_only = true
+live_capital_allowed = false
+random_seed = 20260826
+data_watermark = "2026-08-26T00:00:00Z"
+candidate_freeze = "2026-08-25T00:00:00Z"
+
+[regimes]
+binance_start = "2026-03-21T00:00:00Z"
+chainlink_start = "2026-06-07T00:00:00Z"
+authentic_counterfactual_start = "2026-08-01T00:00:00Z"
+official_twap60_start = "2026-08-14T00:00:00Z"
+end = "2026-08-26T00:00:00Z"
+
+[correction]
+fit_end = "2026-07-16T00:00:00Z"
+validation_end = "2026-08-01T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_exclusive = 180
+cadence_seconds = 5
+cells = [[60, 90], [90, 120], [120, 150], [150, 180]]
+
+[execution]
+quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200]
+freshness_seconds = 10
+maximum_depth_participation = 0.25
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+
+[model]
+hyperparameter_combinations = 36
+calibration_cs = [0.10, 0.25, 0.50, 1.00]
+historical_weights = [0.25, 0.50, 0.75]
+quantiles = [0.05, 0.50, 0.95]
+
+[policy]
+minimum_probability_edges = [0.01, 0.02, 0.03, 0.05]
+minimum_stressed_edges = [0.00, 0.005, 0.01, 0.02, 0.03]
+minimum_margin_bounds_bps = [0.0, 0.25, 0.50, 1.0]
+price_bucket_edges = [0.00, 0.65, 0.75, 0.85, 1.01]
+
+[gates]
+chainlink_minimum_agreement = 0.99
+chainlink_outside_band_minimum_agreement = 0.995
+binance_minimum_agreement = 0.99
+maximum_ece = 0.03
+minimum_profit_factor = 1.25
+minimum_market_coverage = 0.10
+minimum_profitable_fold_ratio = 0.70
+minimum_prospective_markets = 2500
+minimum_prospective_days = 10
+minimum_prospective_folds = 5
+bootstrap_resamples = 2000
+bootstrap_confidence = 0.95
+
+[[historical_folds]]
+name = "march_april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[historical_folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[historical_folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[historical_folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[historical_folds]]
+name = "august_1_6"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-07T00:00:00Z"
+
+[[historical_folds]]
+name = "august_7_13"
+test_start = "2026-08-07T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260814_15"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-16T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260816_17"
+test_start = "2026-08-16T00:00:00Z"
+test_end = "2026-08-18T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260818_19"
+test_start = "2026-08-18T00:00:00Z"
+test_end = "2026-08-20T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260820_21"
+test_start = "2026-08-20T00:00:00Z"
+test_end = "2026-08-22T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260822_23"
+test_start = "2026-08-22T00:00:00Z"
+test_end = "2026-08-24T00:00:00Z"
+
+[[development_folds]]
+name = "official_20260824"
+test_start = "2026-08-24T00:00:00Z"
+test_end = "2026-08-25T00:00:00Z"
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+binance_source_sql = "sql/btc-counterfactual-twap-binance-source.sql"
+cache = "data/btc-counterfactual-twap-state-20260321-20260826"
+runs = "runs/btc-counterfactual-twap-state-20260321-20260826"
+committed_results = "training-results/btc-5m-counterfactual-twap-state-20260321-20260826"
+middle_comparator_artifact = "training-results/btc-5m-middle-market-ablation-tournament-20260525/20260820T191331Z/tournament.joblib"
+q5_comparator_metrics = "training-results/btc-5m-q5-optimal-stopping-tournament-20260525-20260802/20260822T041758Z/metrics.json"
+fair_value_comparator_metrics = "training-results/btc-5m-fair-value-challenger-tournament-20260525-20260802/20260822T152633Z/metrics.json"
+previous_twap_metrics = "training-results/btc-5m-twap60-challenger-tournament-20260607-20260825/20260826T021146Z/metrics.json"
+
+[[comparators]]
+candidate = "chainlink_full_combined"
+model_key = "btc-5m-chainlink-full-combined-paper-20260820"
+artifact_sha256 = "cd178add748c7ebd18cbce638747fb33b73b84a98c95172b9f1454ae5be4a9df"
+
+[[comparators]]
+candidate = "chainlink_regime_calibrated"
+model_key = "btc-5m-chainlink-regime-calibrated-paper-20260820"
+artifact_sha256 = "7473fc33a9bd1438e432462ce9d06a4cfb4cd5a73ea5e4c3aec0024c9ead2369"
+
+[[comparators]]
+candidate = "chainlink_stratified_payoff"
+model_key = "btc-5m-chainlink-stratified-payoff-paper-20260820"
+artifact_sha256 = "4379f5e1279a4d77afccf9dc510c1061e551aa6686f5945dea53f830df0f12ac"
+
+[[comparators]]
+candidate = "payoff_aware_q5"
+model_key = "btc-5m-payoff-aware-q5-paper-20260820"
+artifact_sha256 = "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e"
+
+[[comparators]]
+candidate = "specialist_distilled_fair_value"
+model_key = "btc-5m-specialist-distilled-fair-value-paper-20260823-v1"
+artifact_sha256 = "9ec96d8aaedd7ab656230fa12012122ea934f7a350995ada4d0bc2802464f799"

@@ -1,0 +1,34 @@
+{
+  "artifact_identity": {
+    "path": "tournament.joblib",
+    "sha256": "6f7936a7bc830321fa5cf0740bb9ccd101002c33e54752d4648ac993a7dca027"
+  },
+  "deployment_status": "not_deployed",
+  "executed_run_id": "20260828T171209Z",
+  "model_family": "btc-5m-settlement-bridge-residual",
+  "producing_commit": "deec9d5cb315d61b08b72437d228f4352510eaf2",
+  "qualification_status": "non_deployable",
+  "runtime": {
+    "dependencies": {
+      "numpy": "2.5.1",
+      "plotly": "6.9.0",
+      "polars": "1.43.0",
+      "psycopg": "3.3.4",
+      "pyarrow": "21.0.0",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.18.0"
+    },
+    "git": {
+      "branch": "feature/btc-settlement-bridge-residual-tournament",
+      "commit": "deec9d5cb315d61b08b72437d228f4352510eaf2",
+      "dirty": false
+    },
+    "logical_cpu_count": 12,
+    "machine": "arm64",
+    "platform": "macOS-14.8.7-arm64-arm-64bit-Mach-O",
+    "python": "3.13.7",
+    "python_implementation": "CPython",
+    "source_tree_sha256": "071696188f8cfaf2f65af960f17912dabe3cf1a797c26e7321411534923014da"
+  },
+  "source_manifest_sha256": "d7b0a09e0c31bed21d6972b693481124dac3899cdcea0600ef82cba74df5e805"
+}

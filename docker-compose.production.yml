@@ -314,6 +314,34 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+  alloy:
+    image: grafana/alloy:v1.18.0@sha256:491b0578c04983fd54fe99b587b6fab4404dc46d0dc16677bd6b00cc1140b308
+    container_name: alloy
+    hostname: alloy
+    init: true
+    mem_limit: 128m
+    cpus: "0.10"
+    pids_limit: 128
+    labels: *watchtower-labels
+    logging: *default-logging
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./common/configs/alloy/market-data-ingester.alloy:/etc/alloy/config.alloy:ro
+    depends_on:
+      loki:
+        condition: service_started
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -335,6 +363,7 @@ services:
       GRAFANA_POSTGRES_PORT: "6432"
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
+      GRAFANA_ALERT_ENVIRONMENT: "production"
       GRAFANA_PROMETHEUS_URL: "http://prometheus:9090"
       GRAFANA_LOKI_URL: "http://loki:3100"
       PROMETHEUS_ENVIRONMENT: "production"
@@ -384,4 +413,5 @@ volumes:
   grafana-data:
   prometheus-data:
   loki-data:
+  alloy-data:
   polymarket-backfill-cache:

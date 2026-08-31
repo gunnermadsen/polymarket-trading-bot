@@ -1,0 +1,240 @@
+{
+  "causal_availability": {
+    "columns": {
+      "binance_twap_max_available_at": {
+        "passed": true,
+        "violations": 0
+      },
+      "chainlink_twap_max_available_at": {
+        "passed": true,
+        "violations": 0
+      },
+      "core_source_max_available_at": {
+        "passed": true,
+        "violations": 0
+      },
+      "disagreement_feature_max_available_at": {
+        "passed": true,
+        "violations": 0
+      },
+      "disagreement_opening_feature_max_available_at": {
+        "passed": true,
+        "violations": 0
+      },
+      "execution_provider_receipts": {
+        "passed": true,
+        "violations": 0
+      },
+      "twap_feature_max_available_at": {
+        "passed": true,
+        "violations": 0
+      }
+    },
+    "passed": true
+  },
+  "database_mutations": false,
+  "exact_market_schedule": {
+    "invalid_markets": 0,
+    "markets": 41814,
+    "observation_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180
+    ],
+    "passed": true,
+    "rows": 1045350
+  },
+  "failed_checks": [],
+  "inference_feature_registry": {
+    "features": [
+      "btc_boundary_cross_count",
+      "btc_boundary_distance_velocity_5s_bps",
+      "btc_cross_venue_boundary_gap_bps",
+      "btc_momentum_acceleration_5_vs_30",
+      "btc_momentum_multihorizon_score",
+      "btc_path_cross_count",
+      "btc_path_efficiency_30s",
+      "btc_path_efficiency_60s",
+      "btc_path_from_window_open_bps",
+      "btc_range_30s_bps",
+      "btc_range_60s_bps",
+      "btc_range_position_60s",
+      "btc_realized_volatility_15s_bps",
+      "btc_realized_volatility_30s_bps",
+      "btc_realized_volatility_5s_bps",
+      "btc_realized_volatility_60s_bps",
+      "btc_return_15s_bps",
+      "btc_return_1s_bps",
+      "btc_return_30s_bps",
+      "btc_return_5s_bps",
+      "btc_return_60s_bps",
+      "btc_reversal_5_vs_30",
+      "btc_seconds_since_boundary_cross",
+      "btc_signed_flow_30s",
+      "btc_signed_flow_5s",
+      "btc_signed_flow_60s",
+      "btc_window_open_cross_venue_basis_bps",
+      "chainlink_ref_age_seconds",
+      "chainlink_ref_boundary_cross_count_60s",
+      "chainlink_ref_boundary_gap_bps",
+      "chainlink_ref_max_gap_60s",
+      "chainlink_ref_path_efficiency_60s",
+      "chainlink_ref_realized_volatility_30s_bps",
+      "chainlink_ref_realized_volatility_60s_bps",
+      "chainlink_ref_return_15s_bps",
+      "chainlink_ref_return_1s_bps",
+      "chainlink_ref_return_30s_bps",
+      "chainlink_ref_return_5s_bps",
+      "chainlink_ref_return_60s_bps",
+      "refprice_margin_bps",
+      "seconds_elapsed_scaled",
+      "seconds_remaining_scaled",
+      "twap30_margin_bps",
+      "twap60_margin_bps"
+    ],
+    "forbidden_features": [],
+    "passed": true,
+    "supervision_only": [
+      "label_up",
+      "target_margin_bps",
+      "base_label_weight",
+      "label_source",
+      "authentic_label_up",
+      "authentic_margin_bps",
+      "proxy_label_up",
+      "proxy_margin_bps",
+      "binance_raw_margin_bps",
+      "binance_corrected_margin_bps",
+      "binance_margin_correction_bps",
+      "estimated_synthetic_label_error",
+      "raw_corrected_synthetic_margin_disagreement_bps",
+      "official_outcome"
+    ]
+  },
+  "market_disjoint_chronological_folds": {
+    "folds": [
+      {
+        "fold": "counterfactual_20260801_06",
+        "official": false,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-07T00:00:00+00:00",
+        "test_markets": 1720,
+        "test_start": "2026-08-01T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-01T00:00:00+00:00",
+        "train_markets": 34488,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "transition_20260807_13",
+        "official": false,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-14T00:00:00+00:00",
+        "test_markets": 1917,
+        "test_start": "2026-08-07T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-07T00:00:00+00:00",
+        "train_markets": 36208,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260814_15",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-16T00:00:00+00:00",
+        "test_markets": 576,
+        "test_start": "2026-08-14T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-14T00:00:00+00:00",
+        "train_markets": 38125,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260816_17",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-18T00:00:00+00:00",
+        "test_markets": 573,
+        "test_start": "2026-08-16T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-16T00:00:00+00:00",
+        "train_markets": 38701,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260818_19",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-20T00:00:00+00:00",
+        "test_markets": 575,
+        "test_start": "2026-08-18T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-18T00:00:00+00:00",
+        "train_markets": 39274,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260820_21",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-22T00:00:00+00:00",
+        "test_markets": 574,
+        "test_start": "2026-08-20T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-20T00:00:00+00:00",
+        "train_markets": 39849,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260822_23",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-24T00:00:00+00:00",
+        "test_markets": 576,
+        "test_start": "2026-08-22T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-22T00:00:00+00:00",
+        "train_markets": 40423,
+        "train_test_overlap": 0
+      },
+      {
+        "fold": "official_20260824_26",
+        "official": true,
+        "prior_test_overlap": 0,
+        "test_end": "2026-08-27T00:00:00+00:00",
+        "test_markets": 815,
+        "test_start": "2026-08-24T00:00:00+00:00",
+        "train_end_exclusive": "2026-08-24T00:00:00+00:00",
+        "train_markets": 40999,
+        "train_test_overlap": 0
+      }
+    ],
+    "passed": true
+  },
+  "new_data_sources": false,
+  "new_ingesters": false,
+  "new_tables": false,
+  "official_label_agreement": {
+    "disagreements": 0,
+    "markets": 3668,
+    "passed": true
+  },
+  "passed": true,
+  "runtime_exported": false,
+  "trading_processes_changed": false
+}

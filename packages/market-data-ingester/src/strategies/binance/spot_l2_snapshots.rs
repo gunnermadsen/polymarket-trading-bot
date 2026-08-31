@@ -1379,6 +1379,9 @@ impl CaptureWriter {
                 format!("failed to commit Binance L2 data gap: {error}"),
             )
         })?;
+        if detected.inserted {
+            warn!(strategy = %STRATEGY_KEY, error_code = gap.code, gap_id = %detected.gap.gap_id, gap_kind = gap.kind, "new unrecoverable Binance L2 continuity gap detected");
+        }
         Ok(())
     }
 
@@ -1593,6 +1596,7 @@ impl IngesterStrategy for BinanceSpotL2SnapshotStrategy {
                         }
                     }
                     warn!(
+                        strategy = %STRATEGY_KEY,
                         connection_epoch = %connection_epoch,
                         error_code = error.code,
                         error = %error,
