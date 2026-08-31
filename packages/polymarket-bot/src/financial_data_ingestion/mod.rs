@@ -265,8 +265,9 @@ async fn enqueue(
           ON CONFLICT (provider,dataset,series_id,range_start,range_end) DO UPDATE SET
             status='queued',attempt=0,next_attempt_at=now(),error_message=NULL,
             completed_at=NULL,updated_at=now()
-          WHERE financial_data.backfill_jobs.status='failed'
+          WHERE financial_data.backfill_jobs.provider='fred'
             AND financial_data.backfill_jobs.error_message LIKE 'FRED_API_KEY%'
+            AND financial_data.backfill_jobs.status IN ('queued','failed')
           RETURNING TRUE
         ) SELECT COALESCE(bool_or(TRUE), FALSE) FROM inserted"#,
     )
