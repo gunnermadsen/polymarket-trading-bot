@@ -216,6 +216,28 @@ services:
       WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache/environment-worker-2"
 
+  temperature-environment-worker-3:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 4g
+    cpus: "2.0"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-environment-worker-3"
+      WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/environment-worker-3"
+
+  temperature-environment-worker-4:
+    <<: *weather-worker
+    command: ["worker"]
+    mem_limit: 4g
+    cpus: "2.0"
+    environment:
+      <<: *weather-environment
+      WEATHER_WORKER_ID: "temperature-environment-worker-4"
+      WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache/environment-worker-4"
+
   temperature-model:
     <<: *weather-worker
     profiles: ["tools"]
