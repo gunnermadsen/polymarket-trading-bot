@@ -396,6 +396,26 @@ async fn fail_or_retry(pool: &PgPool, job: &Job, message: &str) -> Result<()> {
         .await?;
         return Ok(());
     }
+    let transient = message.contains("transport failure")
+        || message.contains("error sending request")
+        || message.contains("HTTP 400")
+        || message.contains("HTTP 403")
+        || message.contains("HTTP 429")
+        || message.contains("HTTP 5");
+    if transient {
+        sqlx::query(
+            r#"UPDATE financial_data.backfill_jobs SET status='queued',attempt=GREATEST(0,attempt-1),
+               error_message=$3,next_attempt_at=now()+INTERVAL '5 minutes',lease_token=NULL,
+               lease_expires_at=NULL,updated_at=now(),completed_at=NULL
+               WHERE job_id=$1 AND lease_token=$2"#,
+        )
+        .bind(job.job_id)
+        .bind(job.lease_token)
+        .bind(message)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
     let terminal = job.attempt >= job.max_attempts;
     let status = if terminal { "failed" } else { "queued" };
     sqlx::query(
@@ -435,19 +455,29 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
             "observation_end",
             &job.range_end.format("%Y-%m-%d").to_string(),
         );
-    let response = client
-        .get(url.as_str())
-        .send()
-        .await
-        .context("FRED request transport failure")?;
-    if !response.status().is_success() {
-        bail!("FRED API returned HTTP {}", response.status());
+    sleep(Duration::from_millis(750)).await;
+    let mut bytes = None;
+    let mut last_error = String::new();
+    for retry in 0_u32..5 {
+        match client.get(url.as_str()).send().await {
+            Ok(response) if response.status().is_success() => {
+                bytes = Some(
+                    response
+                        .bytes()
+                        .await
+                        .context("FRED response body failure")?
+                        .to_vec(),
+                );
+                break;
+            }
+            Ok(response) => {
+                last_error = format!("FRED API returned HTTP {}", response.status());
+            }
+            Err(_) => last_error = "FRED request transport failure".to_string(),
+        }
+        sleep(Duration::from_secs(2_u64.pow(retry).min(30))).await;
     }
-    let bytes = response
-        .bytes()
-        .await
-        .context("FRED response body failure")?
-        .to_vec();
+    let bytes = bytes.with_context(|| last_error)?;
     let root: Value = serde_json::from_slice(&bytes)?;
     let observations = root
         .get("observations")
@@ -525,24 +555,38 @@ async fn fetch_treasury(client: &Client, job: &Job) -> Result<FetchResult> {
         .find(|(name, _)| *name == job.dataset)
         .map(|(_, path)| *path)
         .with_context(|| format!("unsupported Treasury dataset {}", job.dataset))?;
-    let mut url = Url::parse(&format!("{TREASURY_BASE_URL}/{endpoint}"))?;
-    url.query_pairs_mut()
-        .append_pair(
-            "filter",
-            &format!(
-                "record_date:gte:{},record_date:lt:{}",
-                job.range_start.format("%Y-%m-%d"),
-                job.range_end.format("%Y-%m-%d")
-            ),
-        )
-        .append_pair("page[size]", "10000")
-        .append_pair("sort", "record_date");
-    let bytes = fetch_bytes(client, url.as_str()).await?;
-    let root: Value = serde_json::from_slice(&bytes)?;
-    let values = root
-        .get("data")
-        .and_then(Value::as_array)
-        .context("Treasury response omitted data")?;
+    let base_url = Url::parse(&format!("{TREASURY_BASE_URL}/{endpoint}"))?;
+    let filter = format!(
+        "record_date:gte:{},record_date:lt:{}",
+        job.range_start.format("%Y-%m-%d"),
+        job.range_end.format("%Y-%m-%d")
+    );
+    let mut page = 1_u32;
+    let mut pages = Vec::new();
+    let mut values = Vec::new();
+    loop {
+        let mut url = base_url.clone();
+        url.query_pairs_mut()
+            .append_pair("filter", &filter)
+            .append_pair("page[size]", "1000")
+            .append_pair("page[number]", &page.to_string())
+            .append_pair("sort", "record_date");
+        sleep(Duration::from_millis(500)).await;
+        let page_bytes = fetch_bytes(client, url.as_str()).await?;
+        let root: Value = serde_json::from_slice(&page_bytes)?;
+        let page_values = root
+            .get("data")
+            .and_then(Value::as_array)
+            .context("Treasury response omitted data")?;
+        let page_len = page_values.len();
+        values.extend(page_values.iter().cloned());
+        pages.push(root);
+        if page_len < 1000 {
+            break;
+        }
+        page += 1;
+    }
+    let bytes = serde_json::to_vec(&serde_json::json!({"pages": pages}))?;
     let rows = values
         .iter()
         .filter_map(|value| {
@@ -558,7 +602,7 @@ async fn fetch_treasury(client: &Client, job: &Job) -> Result<FetchResult> {
         })
         .collect();
     Ok(FetchResult {
-        url: url.to_string(),
+        url: base_url.to_string(),
         bytes,
         rows,
     })
@@ -600,6 +644,7 @@ async fn fetch_cftc(client: &Client, job: &Job) -> Result<FetchResult> {
             &[
                 "Report_Date_as_YYYY-MM-DD",
                 "As_of_Date_In_Form_YYMMDD",
+                "As_of_Date_In_Form_YYYY-MM-DD",
                 "As_of_Date_Form_YYYY-MM-DD",
             ],
         ) {
@@ -622,8 +667,18 @@ async fn fetch_cftc(client: &Client, job: &Job) -> Result<FetchResult> {
 }
 
 async fn fetch_bytes(client: &Client, url: &str) -> Result<Vec<u8>> {
-    let response = client.get(url).send().await?.error_for_status()?;
-    Ok(response.bytes().await?.to_vec())
+    let mut last_error = String::new();
+    for retry in 0_u32..4 {
+        match client.get(url).send().await {
+            Ok(response) if response.status().is_success() => {
+                return Ok(response.bytes().await?.to_vec());
+            }
+            Ok(response) => last_error = format!("source returned HTTP {}", response.status()),
+            Err(_) => last_error = "source request transport failure".to_string(),
+        }
+        sleep(Duration::from_secs(2_u64.pow(retry).min(15))).await;
+    }
+    bail!("{last_error}")
 }
 
 fn publish_raw(root: &Path, job: &Job, fetched: &FetchResult) -> Result<(String, String, i64)> {
@@ -793,15 +848,24 @@ fn string_field(value: &Value, names: &[&str]) -> Option<String> {
         if let Some(value) = object.get(*name).and_then(Value::as_str) {
             return Some(value.to_string());
         }
+        let normalized_name = normalized_field_name(name);
         if let Some(value) = object
             .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .find(|(key, _)| normalized_field_name(key) == normalized_name)
             .and_then(|(_, value)| value.as_str())
         {
             return Some(value.to_string());
         }
     }
     None
+}
+
+fn normalized_field_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn parse_date(value: &str) -> Result<DateTime<Utc>> {
@@ -879,5 +943,20 @@ mod tests {
             serde_json::json!({"Market_and_Exchange_Names":"CORN - CHICAGO BOARD OF TRADE"});
         assert!(cftc_selected_contract(&selected));
         assert!(!cftc_selected_contract(&excluded));
+    }
+
+    #[test]
+    fn reads_legacy_cftc_space_separated_headers() {
+        let record = serde_json::json!({
+            "Market and Exchange Names":"BITCOIN - CHICAGO MERCANTILE EXCHANGE",
+            "As of Date in Form YYYY-MM-DD":"2024-12-31"
+        });
+        assert!(cftc_selected_contract(&record));
+        assert_eq!(
+            parse_date_field(&record, &["As_of_Date_In_Form_YYYY-MM-DD"])
+                .unwrap()
+                .date_naive(),
+            NaiveDate::from_ymd_opt(2024, 12, 31).unwrap()
+        );
     }
 }
