@@ -33,7 +33,7 @@ pub const END_EXCLUSIVE: &str = "2026-08-31";
 pub const START_TIERS: [&str; 3] = ["2026-04-01", "2026-05-01", "2026-06-01"];
 pub const REQUEST_INTERVAL: Duration = Duration::from_millis(1_100);
 pub const DOWNLOAD_CONCURRENCY: usize = 4;
-const MAXIMUM_NOT_FOUND_ATTEMPTS: u32 = 3;
+const MAXIMUM_HOUR_ATTEMPTS: u32 = 3;
 const MAXIMUM_COMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAXIMUM_DECODED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const REQUIRED_COLUMNS: [&str; 13] = [
@@ -68,15 +68,16 @@ pub struct ArchiveManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SourceUnavailableManifest {
+pub struct SkippedHourManifest {
     pub provider: String,
     pub exchange: String,
     pub symbol: String,
     pub source_uri: String,
     pub source_date: NaiveDate,
     pub source_hour: u8,
-    pub http_status: u16,
+    pub http_status: Option<u16>,
     pub attempts: u32,
+    pub error: String,
     pub confirmed_at: DateTime<Utc>,
 }
 
@@ -214,9 +215,9 @@ impl KrakenSpotL2ArchiveWorker {
                 }
                 Err(error) => {
                     attempt = attempt.saturating_add(1);
-                    if is_unavailable(&error) && attempt >= MAXIMUM_NOT_FOUND_ATTEMPTS {
-                        persist_source_unavailable(&spec, attempt).await?;
-                        warn!(date = %spec.date, hour = spec.hour, attempt, "Kraken Spot L2 source hour unavailable; continuing backfill");
+                    if attempt >= MAXIMUM_HOUR_ATTEMPTS {
+                        persist_skipped_hour(&spec, attempt, &error).await?;
+                        warn!(date = %spec.date, hour = spec.hour, attempt, error = %error, "Kraken Spot L2 hour skipped after bounded retries; continuing backfill");
                         return Ok(true);
                     }
                     let delay = Duration::from_secs(5 * u64::from(attempt.min(12)));
@@ -453,20 +454,21 @@ async fn persist_manifest(path: &Path, manifest: &ArchiveManifest) -> Result<()>
     Ok(())
 }
 
-async fn persist_source_unavailable(spec: &HourSpec, attempts: u32) -> Result<()> {
+async fn persist_skipped_hour(spec: &HourSpec, attempts: u32, error: &anyhow::Error) -> Result<()> {
     let path = source_unavailable_path(spec)?;
     let parent = path.parent().context("unavailable marker had no parent")?;
     fs::create_dir_all(parent).await?;
     let temporary = parent.join(format!(".{}.unavailable.part", Uuid::new_v4()));
-    let marker = SourceUnavailableManifest {
+    let marker = SkippedHourManifest {
         provider: "cryptohftdata".to_string(),
         exchange: EXCHANGE.to_string(),
         symbol: SYMBOL.to_string(),
         source_uri: spec.source_uri.clone(),
         source_date: spec.date,
         source_hour: spec.hour,
-        http_status: 404,
+        http_status: is_unavailable(error).then_some(404),
         attempts,
+        error: error.to_string(),
         confirmed_at: Utc::now(),
     };
     let bytes = serde_json::to_vec_pretty(&marker)?;
@@ -606,6 +608,6 @@ mod tests {
                 "/archive/kraken_spot/2026-07-09/21/BTC_USD_orderbook.parquet.unavailable.json"
             )
         );
-        assert_eq!(MAXIMUM_NOT_FOUND_ATTEMPTS, 3);
+        assert_eq!(MAXIMUM_HOUR_ATTEMPTS, 3);
     }
 }
