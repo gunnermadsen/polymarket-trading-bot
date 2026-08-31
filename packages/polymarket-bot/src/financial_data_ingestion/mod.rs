@@ -460,29 +460,41 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
             &job.range_end.format("%Y-%m-%d").to_string(),
         );
     sleep(Duration::from_millis(750)).await;
-    let mut bytes = None;
-    let mut last_error = String::new();
-    for retry in 0_u32..5 {
-        match client.get(url.as_str()).send().await {
-            Ok(response) if response.status().is_success() => {
-                bytes = Some(
-                    response
-                        .bytes()
-                        .await
-                        .context("FRED response body failure")?
-                        .to_vec(),
-                );
-                break;
-            }
-            Ok(response) => {
-                last_error = format!("FRED API returned HTTP {}", response.status());
-            }
-            Err(_) => last_error = "FRED request transport failure".to_string(),
-        }
-        sleep(Duration::from_secs(2_u64.pow(retry).min(30))).await;
+    let mut bytes = fetch_fred_bytes(client, &url).await?;
+    let mut root: Value = serde_json::from_slice(&bytes)?;
+    let empty = root
+        .get("observations")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty);
+    if empty && matches!(job.series_id.as_str(), "BAMLH0A0HYM2" | "BAMLC0A0CM") {
+        let snapshot_date = (job.range_end - ChronoDuration::days(1)).min(Utc::now());
+        let mut snapshot_url = Url::parse(FRED_BASE_URL)?;
+        snapshot_url
+            .query_pairs_mut()
+            .append_pair("series_id", &job.series_id)
+            .append_pair("api_key", key)
+            .append_pair("file_type", "json")
+            .append_pair("output_type", "1")
+            .append_pair(
+                "realtime_start",
+                &snapshot_date.format("%Y-%m-%d").to_string(),
+            )
+            .append_pair(
+                "realtime_end",
+                &snapshot_date.format("%Y-%m-%d").to_string(),
+            )
+            .append_pair(
+                "observation_start",
+                &job.range_start.format("%Y-%m-%d").to_string(),
+            )
+            .append_pair(
+                "observation_end",
+                &job.range_end.format("%Y-%m-%d").to_string(),
+            );
+        bytes = fetch_fred_bytes(client, &snapshot_url).await?;
+        root = serde_json::from_slice(&bytes)?;
+        url = snapshot_url;
     }
-    let bytes = bytes.with_context(|| last_error)?;
-    let root: Value = serde_json::from_slice(&bytes)?;
     let observations = root
         .get("observations")
         .and_then(Value::as_array)
@@ -506,6 +518,31 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
         bytes,
         rows,
     })
+}
+
+async fn fetch_fred_bytes(client: &Client, url: &Url) -> Result<Vec<u8>> {
+    let mut bytes = None;
+    let mut last_error = String::new();
+    for retry in 0_u32..5 {
+        match client.get(url.as_str()).send().await {
+            Ok(response) if response.status().is_success() => {
+                bytes = Some(
+                    response
+                        .bytes()
+                        .await
+                        .context("FRED response body failure")?
+                        .to_vec(),
+                );
+                break;
+            }
+            Ok(response) => {
+                last_error = format!("FRED API returned HTTP {}", response.status());
+            }
+            Err(_) => last_error = "FRED request transport failure".to_string(),
+        }
+        sleep(Duration::from_secs(2_u64.pow(retry).min(30))).await;
+    }
+    bytes.with_context(|| last_error)
 }
 
 async fn fetch_new_york_fed(client: &Client, job: &Job) -> Result<FetchResult> {
