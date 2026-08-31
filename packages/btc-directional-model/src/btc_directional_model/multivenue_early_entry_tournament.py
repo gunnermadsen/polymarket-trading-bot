@@ -124,6 +124,17 @@ def _matrix(
     return matrix
 
 
+def _neutralized_feature_indices(matrix: np.ndarray) -> tuple[int, ...]:
+    """Return columns that cannot be binned because they are missing or constant."""
+
+    neutralized = []
+    for index in range(matrix.shape[1]):
+        finite = matrix[np.isfinite(matrix[:, index]), index]
+        if not len(finite) or float(finite.min()) == float(finite.max()):
+            neutralized.append(index)
+    return tuple(neutralized)
+
+
 def _fit_tree(
     frame: pl.DataFrame, features: tuple[str, ...], config: TournamentDataConfig, seed: int
 ) -> TreeModel:
@@ -135,7 +146,7 @@ def _fit_tree(
     fit = frame.filter(pl.col("window_start") < boundary)
     calibration = frame.filter(pl.col("window_start") >= boundary)
     matrix = _matrix(fit, features)
-    neutralized = tuple(int(index) for index in np.flatnonzero(np.isnan(matrix).all(axis=0)))
+    neutralized = _neutralized_feature_indices(matrix)
     if neutralized:
         matrix[:, neutralized] = 0.0
     spec = config.raw["model"]

@@ -4,6 +4,7 @@ import inspect
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 
 from btc_directional_model.multivenue_early_entry_data import (
@@ -17,6 +18,7 @@ from btc_directional_model.multivenue_early_entry_data import (
 from btc_directional_model.multivenue_early_entry_tournament import (
     FORBIDDEN_INFERENCE_TOKENS,
     _candidate_contract,
+    _neutralized_feature_indices,
     train_tournament,
 )
 
@@ -47,6 +49,17 @@ def test_frozen_range_and_candidate_roster() -> None:
 def test_sealed_frame_is_opened_only_after_selection_freeze() -> None:
     source = inspect.getsource(train_tournament)
     assert source.index("selection_frozen_at =") < source.index("sealed = panel.filter")
+
+
+def test_missing_and_constant_columns_are_neutralized_for_stable_fitting() -> None:
+    matrix = np.array(
+        [
+            [np.nan, 1.0, 1.0],
+            [np.nan, 1.0, 2.0],
+            [np.nan, np.nan, 3.0],
+        ]
+    )
+    assert _neutralized_feature_indices(matrix) == (0, 1)
 
 
 def test_candidate_contract_rejects_target_or_rolling_average_inputs() -> None:
