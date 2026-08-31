@@ -458,11 +458,6 @@ impl MarketPathSnapshot {
     }
 
     pub fn influx_body(&self) -> Option<String> {
-        let snapshot_epoch_nanos = self
-            .observed_at
-            .timestamp_nanos_opt()
-            .expect("a current UTC timestamp is representable in nanoseconds");
-        let snapshot_field = format!("snapshot_{snapshot_epoch_nanos}");
         if self.points.is_empty() {
             return None;
         }
@@ -476,13 +471,13 @@ impl MarketPathSnapshot {
             match self.price_to_beat {
                 Some(price_to_beat) => writeln!(
                     body,
-                    "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat},{snapshot_field}=1i {point_epoch_nanos}",
+                    "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat} {point_epoch_nanos}",
                     point.price,
                 ),
                 None => writeln!(
                     body,
-                    "{MARKET_PATH_MEASUREMENT} twap_price={},{}=1i {point_epoch_nanos}",
-                    point.price, snapshot_field,
+                    "{MARKET_PATH_MEASUREMENT} twap_price={} {point_epoch_nanos}",
+                    point.price,
                 ),
             }
             .expect("writing an Influx line into a String cannot fail");
@@ -768,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn market_path_renders_price_target_and_snapshot_replacement_marker() {
+    fn market_path_renders_a_stable_measurement_schema() {
         let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
         let market = market("one", now);
         let snapshot = MarketPathSnapshot::resolve(
@@ -782,7 +777,20 @@ mod tests {
         let body = snapshot.influx_body().expect("market path has points");
 
         assert!(body.starts_with("btc_market_path twap_price=100.5,price_to_beat=100.5"));
-        assert!(body.contains("snapshot_1800000100000000000=1i"));
+        assert!(!body.contains("snapshot_"));
+        assert!(body.lines().all(|line| {
+            line.split_once(' ')
+                .is_some_and(|(_, fields_and_timestamp)| {
+                    fields_and_timestamp
+                        .split_once(' ')
+                        .is_some_and(|(fields, _)| {
+                            fields.split(',').all(|field| {
+                                field.starts_with("twap_price=")
+                                    || field.starts_with("price_to_beat=")
+                            })
+                        })
+                })
+        }));
     }
 
     #[test]
