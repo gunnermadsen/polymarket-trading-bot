@@ -18,6 +18,7 @@ from btc_directional_model.multivenue_early_entry_data import (
 from btc_directional_model.multivenue_early_entry_tournament import (
     FORBIDDEN_INFERENCE_TOKENS,
     _candidate_contract,
+    _matrix,
     _neutralized_feature_indices,
     train_tournament,
 )
@@ -60,6 +61,13 @@ def test_missing_and_constant_columns_are_neutralized_for_stable_fitting() -> No
         ]
     )
     assert _neutralized_feature_indices(matrix) == (0, 1)
+    frame = pl.DataFrame({"missing": [None, None], "constant": [1.0, 1.0], "signal": [1.0, 2.0]})
+    assert _matrix(frame, ("missing", "constant", "signal"), (0, 1)).shape == (2, 1)
+
+
+def test_float64_variation_that_collapses_in_float32_is_excluded() -> None:
+    matrix = np.array([[-1.0], [-0.9999999999]])
+    assert _neutralized_feature_indices(matrix) == (0,)
 
 
 def test_candidate_contract_rejects_target_or_rolling_average_inputs() -> None:

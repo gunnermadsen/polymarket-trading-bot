@@ -116,12 +116,10 @@ def _candidate_contract(
 
 
 def _matrix(
-    frame: pl.DataFrame, features: tuple[str, ...], neutralized: tuple[int, ...] = ()
+    frame: pl.DataFrame, features: tuple[str, ...], excluded: tuple[int, ...] = ()
 ) -> np.ndarray:
     matrix = frame.select(pl.col(name).cast(pl.Float64) for name in features).to_numpy()
-    if neutralized:
-        matrix[:, neutralized] = 0.0
-    return matrix
+    return np.delete(matrix, excluded, axis=1) if excluded else matrix
 
 
 def _neutralized_feature_indices(matrix: np.ndarray) -> tuple[int, ...]:
@@ -129,7 +127,7 @@ def _neutralized_feature_indices(matrix: np.ndarray) -> tuple[int, ...]:
 
     neutralized = []
     for index in range(matrix.shape[1]):
-        finite = matrix[np.isfinite(matrix[:, index]), index]
+        finite = matrix[np.isfinite(matrix[:, index]), index].astype(np.float32)
         if not len(finite) or float(finite.min()) == float(finite.max()):
             neutralized.append(index)
     return tuple(neutralized)
@@ -148,7 +146,9 @@ def _fit_tree(
     matrix = _matrix(fit, features)
     neutralized = _neutralized_feature_indices(matrix)
     if neutralized:
-        matrix[:, neutralized] = 0.0
+        matrix = np.delete(matrix, neutralized, axis=1)
+    if not matrix.shape[1]:
+        raise RuntimeError("all candidate features are constant or missing")
     spec = config.raw["model"]
     estimator = HistGradientBoostingClassifier(
         loss="log_loss",
