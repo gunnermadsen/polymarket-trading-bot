@@ -1,0 +1,131 @@
+[training]
+profile = "btc_5m_multivenue_early_entry"
+model_family = "btc-5m-multivenue-early-entry"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260830
+data_watermark = "2026-08-29T00:00:00Z"
+candidate_freeze = "2026-08-14T00:00:00Z"
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+kraken_start = "2026-04-01T00:00:00Z"
+refprice_start = "2026-06-07T00:00:00Z"
+open_interest_start = "2026-07-03T00:00:00Z"
+binance_print_start = "2026-07-22T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+sealed_start = "2026-08-14T00:00:00Z"
+sealed_end = "2026-08-29T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_inclusive = 240
+cadence_seconds = 5
+timing_bands = [[60, 120], [125, 180], [185, 240]]
+
+[model]
+learning_rate = 0.06
+max_iter = 180
+max_leaf_nodes = 31
+min_samples_leaf = 80
+l2_regularization = 1.0
+max_bins = 127
+calibration_fraction = 0.20
+
+[execution]
+quantity = 5
+freshness_seconds = 10
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.01, 0.02, 0.03, 0.05, 0.075, 0.10]
+minimum_confidences = [0.55, 0.58, 0.60, 0.62, 0.65, 0.68, 0.70]
+maximum_share_costs = [0.75, 0.80, 0.85, 0.90, 0.95]
+
+[sources]
+kraken_spot_root = "/Volumes/docker-data/kraken-spot-data"
+kraken_symbol = "BTCUSD"
+kraken_candle_dataset = "ohlcv_1s"
+kraken_print_dataset = "trade_prints"
+kraken_l2_included = false
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+binance_print_source_sql = "sql/btc-binance-trade-print-source.sql"
+cache = "data/btc-multivenue-early-entry-20260321-20260828"
+runs = "runs/btc-multivenue-early-entry-20260321-20260828"
+committed_results = "training-results/btc-5m-multivenue-early-entry-20260321-20260828"
+prior_champion_metrics = "training-results/btc-5m-early-entry-settlement-consensus-20260321-20260827/20260829T144048Z/metrics.json"
+prior_champion_artifact = "training-results/btc-5m-early-entry-settlement-consensus-20260321-20260827/20260829T144048Z/tournament.joblib"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_preseal"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[candidates]]
+name = "full_history_price_control"
+feature_groups = ["core", "candles"]
+description = "Long-history Binance path, kline flow, volatility, and completed Chainlink candle control."
+
+[[candidates]]
+name = "full_history_refprice_residual"
+feature_groups = ["core", "candles", "refprice"]
+description = "Adds causal RefPrice residual, momentum, spread, and Binance basis features when available."
+
+[[candidates]]
+name = "binance_flow"
+feature_groups = ["core", "candles", "binance_prints", "open_interest"]
+description = "Combines Binance spot path and prints with futures positioning changes."
+
+[[candidates]]
+name = "kraken_crossvenue"
+feature_groups = ["core", "candles", "kraken"]
+description = "Adds Kraken spot price, candle volume, prints, signed flow, and cross-venue basis."
+
+[[candidates]]
+name = "settlement_aligned_oracle"
+feature_groups = ["core", "candles", "oracle", "refprice"]
+description = "Emphasizes causal settlement-source state while retaining the full-history price path."
+
+[[candidates]]
+name = "dual_venue_flow_agreement"
+feature_groups = ["core", "candles", "binance_prints", "kraken"]
+description = "Tests whether agreeing or diverging Binance and Kraken price/flow adds edge."
+
+[[candidates]]
+name = "multivenue_consensus"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken"]
+description = "Uses every available causal feature without requiring common-source completeness."
+
+[[candidates]]
+name = "time_specialist_ensemble"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken"]
+time_specialist = true
+description = "Fits separate early, middle, and late decision-band specialists using all causal dimensions."
