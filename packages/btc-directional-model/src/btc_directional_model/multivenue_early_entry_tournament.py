@@ -561,12 +561,6 @@ def train_tournament(config: TournamentDataConfig, *, force: bool = False) -> Pa
     _write_json(run_dir / "split-manifest.json", split_manifest)
 
     preseal = panel.filter(pl.col("window_start") < config.fit_end)
-    sealed = panel.filter(
-        (pl.col("window_start") >= config.sealed_start)
-        & (pl.col("window_start") < config.sealed_end)
-    )
-    if set(preseal["market_id"].unique().to_list()) & set(sealed["market_id"].unique().to_list()):
-        raise RuntimeError("sealed markets entered pre-seal training")
     checkpoint = config.cache / "oof-predictions.parquet"
     oof = _oof_predictions(preseal, candidates, config, checkpoint)
     oof.write_parquet(
@@ -591,6 +585,26 @@ def train_tournament(config: TournamentDataConfig, *, force: bool = False) -> Pa
         ),
     )
     nominated = ranking[0]
+    selection_frozen_at = datetime.now(UTC).isoformat()
+    _write_json(
+        run_dir / "selection-freeze.json",
+        {
+            "frozen_at": selection_frozen_at,
+            "predictive_ranking": ranking,
+            "nominated_predictive_model": nominated,
+            "selected_policies": {
+                name: asdict(policy) for name, policy in selected_policies.items()
+            },
+            "sealed_metrics_accessed": False,
+        },
+    )
+
+    sealed = panel.filter(
+        (pl.col("window_start") >= config.sealed_start)
+        & (pl.col("window_start") < config.sealed_end)
+    )
+    if set(preseal["market_id"].unique().to_list()) & set(sealed["market_id"].unique().to_list()):
+        raise RuntimeError("sealed markets entered pre-seal training")
 
     final_models = {}
     sealed_predictions = []
@@ -661,6 +675,7 @@ def train_tournament(config: TournamentDataConfig, *, force: bool = False) -> Pa
         "prior_champion_reference": _prior_reference(config),
         "nominated_predictive_model": nominated,
         "predictive_ranking_preseal": ranking,
+        "selection_frozen_at": selection_frozen_at,
         "oof_predictive": oof_metrics,
         "selected_policies": {name: asdict(policy) for name, policy in selected_policies.items()},
         "policy_selection_evidence": policy_evidence,
