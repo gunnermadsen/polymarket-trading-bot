@@ -65,6 +65,48 @@ x-kraken-worker: &kraken-worker
   stop_grace_period: 60s
   restart: unless-stopped
 
+x-financial-data-env: &financial-data-env
+  RUST_LOG: "info,sqlx=error"
+  POSTGRES_HOST: "kraken-timescaledb"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "kraken_archive"
+  POSTGRES_SSL_MODE: "disable"
+  POSTGRES_SSL_CA_FILE: ""
+  FINANCIAL_DATA_LAKE_ROOT: "/var/lib/global-financial-data"
+  FINANCIAL_DATA_POLL_INTERVAL_MS: "1000"
+  FINANCIAL_DATA_LEASE_DURATION_SECS: "300"
+
+x-financial-data-worker: &financial-data-worker
+  build:
+    context: .
+    dockerfile: packages/polymarket-bot/Dockerfile
+    args:
+      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+  image: polymarket/financial-data-ingestion:latest
+  entrypoint:
+    - /usr/local/bin/financial-data-backfill-worker
+  init: true
+  mem_limit: 512m
+  cpus: "0.35"
+  pids_limit: 128
+  logging: *default-logging
+  env_file:
+    - *app-env-file
+    - *postgres-env-file
+  volumes:
+    - /Volumes/docker-data/global-financial-data:/var/lib/global-financial-data
+  depends_on:
+    kraken-db-migrate:
+      condition: service_completed_successfully
+    kraken-timescaledb:
+      condition: service_healthy
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  stop_grace_period: 60s
+  restart: unless-stopped
+
 x-pmdata-worker-env: &pmdata-worker-env
   RUST_LOG: "info,sqlx=error"
   POSTGRES_HOST: "pgbouncer"
@@ -928,6 +970,55 @@ services:
     environment:
       <<: *kraken-worker-env
       KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-6"
+
+  financial-data-backfill-plan:
+    build:
+      context: .
+      dockerfile: packages/polymarket-bot/Dockerfile
+      args:
+        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
+    image: polymarket/financial-data-ingestion:latest
+    entrypoint:
+      - /usr/local/bin/financial-data-backfill-plan
+    profiles:
+      - financial-data-plan
+    mem_limit: 256m
+    cpus: "0.25"
+    logging: *default-logging
+    env_file:
+      - *app-env-file
+      - *postgres-env-file
+    environment:
+      <<: *financial-data-env
+      FINANCIAL_DATA_BACKFILL_START: "2022-01-01T00:00:00Z"
+      FINANCIAL_DATA_BACKFILL_END: "2026-07-28T03:00:00Z"
+    depends_on:
+      kraken-db-migrate:
+        condition: service_completed_successfully
+      kraken-timescaledb:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: "no"
+
+  financial-data-backfill-worker-1:
+    <<: *financial-data-worker
+    container_name: financial-data-backfill-worker-1
+    hostname: financial-data-backfill-worker-1
+    environment:
+      <<: *financial-data-env
+      FRED_API_KEY: "${FRED_API_KEY:-}"
+      FINANCIAL_DATA_WORKER_ID: "financial-data-backfill-worker-1"
+
+  financial-data-backfill-worker-2:
+    <<: *financial-data-worker
+    container_name: financial-data-backfill-worker-2
+    hostname: financial-data-backfill-worker-2
+    environment:
+      <<: *financial-data-env
+      FRED_API_KEY: "${FRED_API_KEY:-}"
+      FINANCIAL_DATA_WORKER_ID: "financial-data-backfill-worker-2"
 
   prometheus:
     image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
