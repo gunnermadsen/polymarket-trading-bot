@@ -12,6 +12,7 @@ from btc_directional_model.middle_strategy_tournament import (
     _agreement_predictions,
     _candidate_contract,
     _opportunities,
+    _qualification_status,
     _select_trades,
     _validate_artifact,
     train_tournament,
@@ -104,6 +105,11 @@ def test_sealed_replay_is_opened_only_after_selection_freeze() -> None:
 def test_round_trip_validation_uses_absolute_package_source_path() -> None:
     source = inspect.getsource(_validate_artifact)
     assert 'str(config.package_root / "src")' in source
+
+
+def test_negative_expectancy_is_not_promoted() -> None:
+    row = {"net_pnl": -1.0, "stress_net_pnl": -2.0, "profit_factor": 0.9}
+    assert _qualification_status({"candidate": row}).endswith("negative_expectancy")
 
 
 def test_optional_l2_builder_contract_preserves_base_panel() -> None:

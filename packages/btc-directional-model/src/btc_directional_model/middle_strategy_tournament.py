@@ -457,6 +457,51 @@ def _reference_manifests(config: Any) -> dict[str, Any]:
     return output
 
 
+def _observed_ranges(config: Any) -> dict[str, Any]:
+    panel = pl.scan_parquet(middle_cache(config) / "middle-panel.parquet")
+    observed = panel.select(
+        pl.col("window_start").min().alias("first_market"),
+        pl.col("window_start").max().alias("last_market"),
+        pl.col("market_id").n_unique().alias("markets"),
+        pl.len().alias("rows"),
+    ).collect().row(0, named=True)
+    sealed = panel.filter(
+        pl.col("window_start").is_between(
+            config.sealed_start, config.sealed_end, closed="left"
+        )
+    ).select(
+        pl.col("window_start").min().alias("first_market"),
+        pl.col("window_start").max().alias("last_market"),
+        pl.col("market_id").n_unique().alias("markets"),
+    ).collect().row(0, named=True)
+    return {
+        "configured_start": config.source_start.isoformat(),
+        "configured_end_exclusive": config.sealed_end.isoformat(),
+        "first_observed_market": observed["first_market"].isoformat(),
+        "last_observed_market": observed["last_market"].isoformat(),
+        "rows": observed["rows"],
+        "markets": observed["markets"],
+        "sealed_first_observed_market": sealed["first_market"].isoformat(),
+        "sealed_last_observed_market": sealed["last_market"].isoformat(),
+        "sealed_markets": sealed["markets"],
+    }
+
+
+def _qualification_status(economic: dict[str, dict[str, Any]]) -> str:
+    qualified = any(
+        row["net_pnl"] > 0
+        and row["stress_net_pnl"] > 0
+        and row["profit_factor"] is not None
+        and row["profit_factor"] > 1
+        for row in economic.values()
+    )
+    return (
+        "trained_evaluated_not_deployed"
+        if qualified
+        else "trained_evaluated_not_promoted_negative_expectancy"
+    )
+
+
 def _report(metrics: dict[str, Any]) -> str:
     def fmt(value: Any, digits: int = 3) -> str:
         return "—" if value is None else f"{value:.{digits}f}"
@@ -474,7 +519,8 @@ def _report(metrics: dict[str, Any]) -> str:
         )
     lines.extend((
         "", "## Integrity", "",
-        "- Full retained source range: March 21 through August 28; optional-source gaps never remove a core market.",
+        f"- Configured source interval: {metrics['data_observed']['configured_start']} through {metrics['data_observed']['configured_end_exclusive']} exclusive.",
+        f"- Actual retained markets: {metrics['data_observed']['first_observed_market']} through {metrics['data_observed']['last_observed_market']}; optional-source gaps removed no core markets.",
         "- Training is chronological and market-disjoint. The August 14–28 replay is opened only after models and policies are frozen.",
         "- The replay dates were observed in earlier research, so they are computationally sealed here but are not claimed as epistemically untouched.",
         "- Official settlement outcomes are labels. TWAP and `authentic_only` are absent from inference and selection.",
@@ -560,7 +606,8 @@ def finalize_run(config: Any, run_dir: Path) -> Path:
         "source_panel": panel_manifest,
         "split_manifest": split,
         "artifact_sha256": artifact_sha,
-        "qualification_status": "trained_evaluated_not_deployed",
+        "qualification_status": _qualification_status(sealed_economic),
+        "data_observed": _observed_ranges(config),
         "integrity": {
             "passed": True,
             "market_disjoint": True,
@@ -702,7 +749,8 @@ def train_tournament(config: Any, *, force: bool = False) -> Path:
         "sealed_predictive": sealed_predictive, "sealed_economic": sealed_economic,
         "frozen_comparator_references": _reference_manifests(config), "source_panel": panel_manifest,
         "split_manifest": split, "artifact_sha256": artifact_sha,
-        "qualification_status": "trained_evaluated_not_deployed",
+        "qualification_status": _qualification_status(sealed_economic),
+        "data_observed": _observed_ranges(config),
         "integrity": {
             "passed": True, "market_disjoint": True, "sealed_opened_after_selection": True,
             "artifact_round_trip_load": True, "full_history_retained": True,
