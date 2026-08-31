@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,9 +13,15 @@ import polars as pl
 from .core_extract import file_sha256
 from .multivenue_early_entry_data import KEY_COLUMNS, TournamentDataConfig, build_panel
 from .spot_l2_chainlink_features import L2_FEATURES, join_qualified_l2
-from .twap60_training_data import _isolated_query_frame
+from .twap60_training_data import (
+    _isolated_query_frame,
+    authentic_labels,
+    construct_proxy_labels,
+    load_source_group,
+)
 
 SCHEMA_VERSION = "btc-middle-strategy-data-v1"
+NORMALIZED_SCHEMA_VERSION = "btc-twap-normalized-middle-strategy-data-v1"
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -26,6 +33,331 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def middle_cache(config: TournamentDataConfig) -> Path:
     return config.package_root / config.raw["paths"]["middle_cache"]
+
+
+def normalized_cache(config: TournamentDataConfig) -> Path:
+    path = config.raw["paths"].get("normalized_cache")
+    return config.package_root / path if path else middle_cache(config)
+
+
+def _normalized_seed(config: TournamentDataConfig, *, force: bool) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Snapshot the existing compact Binance/RefPrice reconstruction audit."""
+
+    cache = normalized_cache(config)
+    cache.mkdir(parents=True, exist_ok=True)
+    source_root = Path(config.raw["sources"]["binance_twap_seed_cache"])
+    source = source_root / "label-audit.parquet"
+    source_manifest = source_root / "source-manifest.json"
+    if not source.is_file() or not source_manifest.is_file():
+        raise RuntimeError("existing normalized-label seed artifacts are unavailable")
+    destination = cache / "normalization-seed-label-audit.parquet"
+    manifest_path = cache / "normalization-seed-manifest.json"
+    contract = {
+        "schema_version": NORMALIZED_SCHEMA_VERSION,
+        "source_path": str(source),
+        "source_sha256": file_sha256(source),
+        "source_manifest_path": str(source_manifest),
+        "source_manifest_sha256": file_sha256(source_manifest),
+        "columns_used": [
+            "market_id", "window_start", "window_end", "official_outcome",
+            "proxy_label_up", "proxy_margin_bps", "binance_raw_label_up",
+            "binance_raw_margin_bps", "binance_label_complete",
+        ],
+        "corrected_binance_columns_used": False,
+        "read_only": True,
+        "database_mutations": False,
+    }
+    if force or not destination.is_file():
+        temporary = destination.with_suffix(".parquet.tmp")
+        shutil.copy2(source, temporary)
+        temporary.replace(destination)
+    if file_sha256(destination) != contract["source_sha256"]:
+        raise RuntimeError("normalized-label seed changed while being snapshotted")
+    payload = {
+        "contract": contract,
+        "local_path": str(destination.relative_to(cache)),
+        "rows": pl.scan_parquet(destination).select(pl.len()).collect().item(),
+        "sha256": file_sha256(destination),
+    }
+    if manifest_path.is_file() and not force:
+        existing = json.loads(manifest_path.read_text())
+        if existing != payload:
+            raise RuntimeError("existing normalized-label seed contract changed")
+    else:
+        _write_json(manifest_path, payload)
+    return pl.read_parquet(destination), payload
+
+
+def extract_normalized_twap_labels(
+    config: TournamentDataConfig, *, force: bool = False
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Extract exact TWAP60 labels from existing archive and live relations."""
+
+    cache = normalized_cache(config)
+    directory = cache / "exact-twap60-labels"
+    directory.mkdir(parents=True, exist_ok=True)
+    query_path = config.package_root / config.raw["paths"]["normalized_label_source_sql"]
+    exact_start = datetime.fromisoformat(config.raw["windows"]["exact_twap_start"])
+    range_start = exact_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    contract = {
+        "schema_version": NORMALIZED_SCHEMA_VERSION,
+        "range_start": range_start.isoformat(),
+        "required_exact_start": exact_start.isoformat(),
+        "range_end": config.sealed_end.isoformat(),
+        "query_sha256": file_sha256(query_path),
+        "source_relations": [
+            "market_data.pmdata_chainlink_btcusd_twap",
+            "market_data.polymarket_chainlink_btcusd_twap",
+        ],
+        "archive_precedes_live_on_overlap": True,
+        "read_only": True,
+        "database_mutations": False,
+        "new_sources": False,
+    }
+    final = cache / "exact-twap60-label-manifest.json"
+    partial = cache / "exact-twap60-label-manifest.partial.json"
+    if final.is_file() and not force and not partial.exists():
+        payload = json.loads(final.read_text())
+        if payload["contract"] != contract:
+            raise RuntimeError("exact TWAP60 label extraction contract changed")
+        for row in payload["partitions"]:
+            path = cache / row["path"]
+            if not path.is_file() or file_sha256(path) != row["sha256"]:
+                raise RuntimeError(f"exact TWAP60 label checkpoint changed: {path}")
+        frames = [pl.read_parquet(cache / row["path"]) for row in payload["partitions"]]
+        return pl.concat(frames, how="diagonal_relaxed", rechunk=True), payload
+
+    if force:
+        partial.unlink(missing_ok=True)
+    records: list[dict[str, Any]] = []
+    if partial.is_file():
+        payload = json.loads(partial.read_text())
+        if payload["contract"] != contract:
+            raise RuntimeError("partial exact TWAP60 label extraction contract changed")
+        records = payload["partitions"]
+    completed = {Path(row["path"]).stem for row in records}
+    cursor = range_start
+    query = query_path.read_text()
+    while cursor < config.sealed_end:
+        end = min(cursor + timedelta(days=1), config.sealed_end)
+        if cursor.date().isoformat() not in completed:
+            frame = _isolated_query_frame(
+                query,
+                {"batch_start": cursor, "batch_end": end},
+                cursor_name=f"normalized_twap60_labels_{cursor:%Y%m%d}",
+            )
+            destination = directory / f"{cursor.date().isoformat()}.parquet"
+            frame.write_parquet(destination, compression="zstd", statistics=True)
+            records.append({
+                "path": str(destination.relative_to(cache)),
+                "rows": frame.height,
+                "sha256": file_sha256(destination),
+            })
+            _write_json(partial, {"contract": contract, "partitions": records})
+            print(f"middle normalization: exact TWAP60 {cursor.date()} {frame.height:,} rows", flush=True)
+        cursor = end
+    payload = {"contract": contract, "partitions": records}
+    _write_json(final, payload)
+    partial.unlink(missing_ok=True)
+    frames = [pl.read_parquet(cache / row["path"]) for row in records]
+    return pl.concat(frames, how="diagonal_relaxed", rechunk=True), payload
+
+
+def build_normalized_middle_panel(
+    config: TournamentDataConfig, *, force: bool = False
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Replace settlement supervision without changing the established features."""
+
+    cache = normalized_cache(config)
+    cache.mkdir(parents=True, exist_ok=True)
+    destination = cache / "middle-panel.parquet"
+    manifest_path = cache / "panel-manifest.json"
+    if destination.is_file() and manifest_path.is_file() and not force:
+        manifest = json.loads(manifest_path.read_text())
+        if manifest["sha256"] != file_sha256(destination):
+            raise RuntimeError("normalized middle panel changed after checkpoint")
+        return pl.read_parquet(destination), manifest
+
+    base, base_manifest = build_middle_panel(config, force=False)
+    seed, seed_manifest = _normalized_seed(config, force=force)
+    exact_raw, exact_manifest = extract_normalized_twap_labels(config, force=force)
+    exact = authentic_labels(exact_raw).select(
+        "market_id",
+        pl.col("authentic_label_up").alias("exact_label_up"),
+        pl.col("authentic_margin_bps").alias("exact_margin_bps"),
+        "twap_open_source_family",
+        "twap_close_source_family",
+    )
+    source_labels = load_source_group(config.standard, "labels")
+    refprice = load_source_group(config.standard, "refprice")
+    proxy = construct_proxy_labels(
+        source_labels, refprice, time_column="source_timestamp"
+    ).select("market_id", "proxy_label_up", "proxy_margin_bps")
+    markets = base.select("market_id", "window_start", "label_up").unique("market_id")
+    labels = (
+        markets.rename({"label_up": "official_label_up"})
+        .join(proxy, on="market_id", how="left", validate="1:1")
+        .join(
+            seed.select(
+                "market_id", "binance_raw_label_up", "binance_raw_margin_bps",
+                "binance_label_complete",
+                pl.col("proxy_label_up").alias("seed_proxy_label_up"),
+                pl.col("proxy_margin_bps").alias("seed_proxy_margin_bps"),
+            ),
+            on="market_id", how="left", validate="1:1",
+        )
+        .join(exact, on="market_id", how="left", validate="1:1")
+        .with_columns(
+            pl.when(pl.col("proxy_margin_bps").is_finite())
+            .then(pl.col("proxy_label_up"))
+            .otherwise(pl.col("seed_proxy_label_up"))
+            .alias("proxy_label_up"),
+            pl.when(pl.col("proxy_margin_bps").is_finite())
+            .then(pl.col("proxy_margin_bps"))
+            .otherwise(pl.col("seed_proxy_margin_bps"))
+            .alias("proxy_margin_bps"),
+        )
+    )
+
+    windows = config.raw["windows"]
+    normalization = config.raw["normalization"]
+    refprice_start = datetime.fromisoformat(windows["refprice_start"])
+    exact_start = datetime.fromisoformat(windows["exact_twap_start"])
+    ref_floor = float(normalization["refprice_minimum_weight"])
+    ref_band = float(normalization["refprice_error_band_bps"])
+    binance_floor = float(normalization["binance_minimum_weight"])
+    binance_ceiling = float(normalization["binance_maximum_weight"])
+    binance_band = float(normalization["binance_full_weight_margin_bps"])
+    fallback_weight = float(normalization["fallback_weight"])
+    exact_period = pl.col("window_start") >= exact_start
+    official_period = pl.col("window_start") >= config.fit_end
+    refprice_period = pl.col("window_start") >= refprice_start
+    complete_binance = pl.col("binance_label_complete").fill_null(False)
+    has_exact = pl.col("exact_label_up").is_not_null()
+    valid_proxy = pl.col("proxy_margin_bps").is_finite() & pl.col("proxy_label_up").is_not_null()
+    labels = labels.with_columns(
+        pl.when(official_period).then(pl.col("official_label_up"))
+        .when(exact_period & has_exact).then(pl.col("exact_label_up"))
+        .when(refprice_period & valid_proxy).then(pl.col("proxy_label_up"))
+        .when(complete_binance).then(pl.col("binance_raw_label_up"))
+        .otherwise(pl.col("proxy_label_up"))
+        .cast(pl.Int8).alias("normalized_label_up"),
+        pl.when(exact_period & has_exact).then(pl.col("exact_margin_bps"))
+        .when(refprice_period & valid_proxy).then(pl.col("proxy_margin_bps"))
+        .when(complete_binance).then(pl.col("binance_raw_margin_bps"))
+        .otherwise(pl.col("proxy_margin_bps"))
+        .alias("target_margin_bps"),
+        pl.when(official_period).then(1.0)
+        .when(exact_period & has_exact).then(1.0)
+        .when(refprice_period & valid_proxy).then(
+            ref_floor
+            + (1.0 - ref_floor)
+            * (pl.col("proxy_margin_bps").abs() / ref_band).clip(0.0, 1.0)
+        )
+        .when(complete_binance).then(
+            binance_floor
+            + (binance_ceiling - binance_floor)
+            * (pl.col("binance_raw_margin_bps").abs() / binance_band).clip(0.0, 1.0)
+        )
+        .otherwise(fallback_weight).alias("label_weight"),
+        pl.when(official_period & has_exact).then(pl.lit("exact_chainlink_twap60"))
+        .when(official_period).then(pl.lit("official_twap60_capture_gap"))
+        .when(exact_period & has_exact).then(pl.lit("exact_chainlink_twap60"))
+        .when(refprice_period & valid_proxy).then(pl.lit("refprice_reconstructed_twap60"))
+        .when(complete_binance).then(pl.lit("binance_reconstructed_twap60"))
+        .otherwise(pl.lit("refprice_low_weight_fallback"))
+        .alias("label_source"),
+    )
+    missing_exact = labels.filter(exact_period & pl.col("exact_label_up").is_null())
+    invalid = labels.filter(
+        pl.col("normalized_label_up").is_null()
+        | (
+            ~official_period
+            & (pl.col("target_margin_bps").is_null() | ~pl.col("target_margin_bps").is_finite())
+        )
+        | (pl.col("label_weight") <= 0)
+    )
+    if invalid.height:
+        summary = invalid.group_by("label_source").agg(
+            pl.len().alias("markets"),
+            pl.col("normalized_label_up").is_null().sum().alias("missing_labels"),
+            pl.col("target_margin_bps").is_null().sum().alias("missing_margins"),
+            pl.col("label_weight").is_null().sum().alias("missing_weights"),
+        ).to_dicts()
+        raise RuntimeError(
+            f"{invalid.height} markets lack nonzero normalized supervision: {summary}"
+        )
+    observed_exact = labels.filter(official_period & has_exact)
+    disagreements = observed_exact.filter(
+        pl.col("exact_label_up").cast(pl.Int8) != pl.col("official_label_up")
+    )
+    if disagreements.height:
+        raise RuntimeError(
+            f"{disagreements.height} captured TWAP60 labels disagree with official outcomes"
+        )
+
+    entry = config.raw["entry"]
+    panel = (
+        base.filter(
+            pl.col("seconds_elapsed").is_between(
+                int(entry["start_second"]), int(entry["end_second_inclusive"]), closed="both"
+            )
+            & ((pl.col("seconds_elapsed") - int(entry["start_second"]))
+               % int(entry["cadence_seconds"]) == 0)
+        )
+        .drop("label_up")
+        .join(
+            labels.select(
+                "market_id", pl.col("normalized_label_up").alias("label_up"),
+                "label_weight", "label_source", "target_margin_bps",
+            ),
+            on="market_id", how="inner", validate="m:1",
+        )
+    )
+    if panel["market_id"].n_unique() != base["market_id"].n_unique():
+        raise RuntimeError("normalization changed market coverage")
+    panel.write_parquet(destination, compression="zstd", statistics=True)
+    label_coverage = (
+        labels.group_by("label_source")
+        .agg(
+            pl.len().alias("markets"),
+            pl.col("window_start").min().alias("first_market"),
+            pl.col("window_start").max().alias("last_market"),
+            pl.col("label_weight").mean().alias("mean_weight"),
+            pl.col("label_weight").min().alias("minimum_weight"),
+        )
+        .sort("first_market")
+        .to_dicts()
+    )
+    manifest = {
+        "schema_version": NORMALIZED_SCHEMA_VERSION,
+        "rows": panel.height,
+        "markets": panel["market_id"].n_unique(),
+        "range_start": config.source_start.isoformat(),
+        "range_end": config.sealed_end.isoformat(),
+        "entry_seconds": [int(entry["start_second"]), int(entry["end_second_inclusive"])],
+        "feature_groups": base_manifest["feature_groups"],
+        "coverage": base_manifest["coverage"],
+        "base_panel": base_manifest,
+        "normalization_seed": seed_manifest,
+        "exact_twap_source": exact_manifest,
+        "label_coverage": label_coverage,
+        "all_markets_retained": True,
+        "all_label_weights_nonzero": True,
+        "post_cutover_canonical_outcomes": True,
+        "captured_exact_gap_markets": missing_exact.height,
+        "captured_exact_gaps_use_refprice_before_policy_development": True,
+        "captured_exact_gaps_use_official_outcomes_in_development_and_test": True,
+        "twap_inference_feature": False,
+        "authentic_only_filter": False,
+        "database_mutations": False,
+        "new_tables": False,
+        "new_ingesters": False,
+        "new_sources": False,
+        "sha256": file_sha256(destination),
+    }
+    _write_json(manifest_path, manifest)
+    return panel, manifest
 
 
 def extract_spot_l2(config: TournamentDataConfig, *, force: bool = False) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from btc_directional_model.middle_strategy_tournament import (
     ALL_NAMES,
     _agreement_predictions,
     _candidate_contract,
+    _fit_candidate_tree,
     _opportunities,
     _qualification_status,
     _select_trades,
@@ -21,6 +22,10 @@ from btc_directional_model.multivenue_early_entry_data import load_data_config
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / "configs/btc-5m-middle-strategy-tournament-20260321-20260828.toml"
+NORMALIZED_CONFIG = (
+    PACKAGE_ROOT
+    / "configs/btc-5m-twap-normalized-middle-strategy-tournament-20260321-20260828.toml"
+)
 
 
 def test_frozen_contract_uses_full_range_and_five_challengers() -> None:
@@ -116,3 +121,42 @@ def test_optional_l2_builder_contract_preserves_base_panel() -> None:
     source = inspect.getsource(build_middle_panel)
     assert 'how="left"' in source
     assert "changed base market coverage" in source
+
+
+def test_normalized_contract_has_three_pristine_chronological_blocks() -> None:
+    config = load_data_config(NORMALIZED_CONFIG)
+    assert config.source_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert config.fit_end == datetime(2026, 8, 14, tzinfo=UTC)
+    assert config.raw["windows"]["development_start"] == "2026-08-14T00:00:00Z"
+    assert config.raw["windows"]["development_end"] == "2026-08-21T00:00:00Z"
+    assert config.sealed_start == datetime(2026, 8, 21, tzinfo=UTC)
+    assert config.sealed_end == datetime(2026, 8, 29, tzinfo=UTC)
+    assert config.raw["entry"]["start_second"] == 60
+    assert config.raw["entry"]["end_second_inclusive"] == 180
+    assert tuple(row["name"] for row in config.raw["candidates"]) == ALL_NAMES
+    assert "authentic_only" not in NORMALIZED_CONFIG.read_text().lower()
+
+
+def test_normalized_weights_are_nonzero_and_applied_to_both_model_layers() -> None:
+    config = load_data_config(NORMALIZED_CONFIG)
+    normalization = config.raw["normalization"]
+    assert min(
+        normalization["refprice_minimum_weight"],
+        normalization["binance_minimum_weight"],
+        normalization["fallback_weight"],
+    ) > 0
+    source = inspect.getsource(_fit_candidate_tree)
+    assert source.count("sample_weight=") == 2
+
+
+def test_exact_label_query_uses_existing_archive_and_live_sources() -> None:
+    query = (PACKAGE_ROOT / "sql/btc-normalized-twap60-label-source.sql").read_text()
+    assert "market_data.pmdata_chainlink_btcusd_twap" in query
+    assert "market_data.polymarket_chainlink_btcusd_twap" in query
+    assert "archive_precedes_live" not in query
+
+
+def test_normalized_policy_freezes_before_sealed_test_is_opened() -> None:
+    source = inspect.getsource(train_tournament)
+    assert source.index("development = panel.filter") < source.index("selection_frozen_at =")
+    assert source.index("selection_frozen_at =") < source.index("sealed = panel.filter")
