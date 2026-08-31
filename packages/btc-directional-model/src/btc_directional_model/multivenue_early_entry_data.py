@@ -437,6 +437,24 @@ def _preserving_feature_join(
     return output
 
 
+def _mask_optional_features(
+    frame: pl.DataFrame,
+    feature_names: tuple[str, ...],
+    eligibility_column: str,
+) -> pl.DataFrame:
+    """Preserve rows while removing values whose causal eligibility failed."""
+
+    available = tuple(name for name in feature_names if name in frame.columns)
+    if eligibility_column not in frame.columns:
+        raise RuntimeError(f"missing optional-source eligibility column: {eligibility_column}")
+    return frame.with_columns(
+        *(
+            pl.when(pl.col(eligibility_column)).then(pl.col(name)).otherwise(None).alias(name)
+            for name in available
+        )
+    )
+
+
 def _attach_execution_60_240(
     frame: pl.DataFrame, execution: pl.DataFrame, freshness: int
 ) -> pl.DataFrame:
@@ -579,6 +597,11 @@ def build_panel(
         core = derive_oracle_point_in_time_features(
             derive_core_point_in_time_features(attach_causal_oracle_rounds(core, rounds))
         )
+        core = _mask_optional_features(
+            core,
+            tuple(name for name in ORACLE_FEATURES if name != "early_oracle_eligible"),
+            "oracle_model_eligible",
+        )
     panel = core.filter(pl.col("seconds_elapsed").is_in(ENTRY_SECONDS)).sort(list(KEY_COLUMNS))
     panel = panel.with_columns(
         (pl.col("seconds_elapsed") / 300.0).alias("seconds_elapsed_scaled"),
@@ -588,6 +611,11 @@ def build_panel(
     refprice = load_source_group(config.standard, "refprice")
     if not refprice.is_empty():
         panel = attach_causal_refprice_features(panel, refprice)
+        panel = _mask_optional_features(
+            panel,
+            tuple(name for name in panel.columns if name.startswith("chainlink_ref_")),
+            "refprice_causal_eligible",
+        )
     candles = load_source_group(config.standard, "candles")
     if not candles.is_empty():
         candle_subset = attach_candle_context(
@@ -620,13 +648,17 @@ def build_panel(
         "kraken": tuple(name for name in KRAKEN_FEATURES if name in panel.columns),
     }
     for group, features in groups.items():
-        panel = panel.with_columns(
-            pl.any_horizontal(
+        if group == "refprice":
+            availability = pl.col("refprice_causal_eligible")
+        elif group == "oracle":
+            availability = pl.col("oracle_model_eligible")
+        elif features:
+            availability = pl.any_horizontal(
                 pl.col(name).is_not_null() & pl.col(name).is_finite() for name in features
-            ).alias(f"has_{group}")
-            if features
-            else pl.lit(False).alias(f"has_{group}")
-        )
+            )
+        else:
+            availability = pl.lit(False)
+        panel = panel.with_columns(availability.fill_null(False).alias(f"has_{group}"))
     market_schedule = panel.group_by("market_id").agg(
         pl.col("seconds_elapsed").sort().alias("schedule"),
         pl.len().alias("rows"),

@@ -9,6 +9,7 @@ from btc_directional_model.multivenue_early_entry_data import (
     ENTRY_SECONDS,
     KRAKEN_FEATURES,
     _attach_kraken,
+    _mask_optional_features,
     _preserving_feature_join,
     load_data_config,
 )
@@ -78,6 +79,19 @@ def test_optional_feature_join_preserves_every_base_row() -> None:
     assert joined.height == base.height
     assert joined["market_id"].to_list() == ["a", "b"]
     assert joined["optional_signal"].to_list() == [2.0, None]
+
+
+def test_ineligible_optional_values_are_masked_without_dropping_rows() -> None:
+    frame = pl.DataFrame(
+        {
+            "market_id": ["before", "after"],
+            "causal_eligible": [False, True],
+            "external_signal": [99.0, 2.0],
+        }
+    )
+    masked = _mask_optional_features(frame, ("external_signal",), "causal_eligible")
+    assert masked.height == frame.height
+    assert masked["external_signal"].to_list() == [None, 2.0]
 
 
 def test_kraken_join_is_backward_asof_and_requires_bucket_close() -> None:
