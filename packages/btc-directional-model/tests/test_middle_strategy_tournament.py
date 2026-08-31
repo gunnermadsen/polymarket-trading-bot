@@ -13,6 +13,7 @@ from btc_directional_model.middle_strategy_tournament import (
     _candidate_contract,
     _opportunities,
     _select_trades,
+    _validate_artifact,
     train_tournament,
 )
 from btc_directional_model.multivenue_early_entry_data import load_data_config
@@ -98,6 +99,11 @@ def test_economics_require_middle_window_and_two_second_books() -> None:
 def test_sealed_replay_is_opened_only_after_selection_freeze() -> None:
     source = inspect.getsource(train_tournament)
     assert source.index("selection_frozen_at =") < source.index("sealed = panel.filter")
+
+
+def test_round_trip_validation_uses_absolute_package_source_path() -> None:
+    source = inspect.getsource(_validate_artifact)
+    assert 'str(config.package_root / "src")' in source
 
 
 def test_optional_l2_builder_contract_preserves_base_panel() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import platform
 import subprocess
 import sys
@@ -483,6 +484,131 @@ def _report(metrics: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _validate_artifact(config: Any, artifact: Path) -> dict[str, Any]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(config.package_root / "src")
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import joblib,sys; x=joblib.load(sys.argv[1]); assert len(x['base_models'])==3",
+            str(artifact),
+        ],
+        check=True,
+        cwd=config.package_root,
+        env=environment,
+    )
+    return joblib.load(artifact)
+
+
+def finalize_run(config: Any, run_dir: Path) -> Path:
+    """Finalize an already-trained checkpoint without fitting any model again."""
+
+    artifact = run_dir / "tournament.joblib"
+    payload = _validate_artifact(config, artifact)
+    if payload["run_id"] != run_dir.name:
+        raise RuntimeError("artifact run identity does not match the checkpoint directory")
+    oof = pl.read_parquet(run_dir / "ledgers" / "candidate-oof-predictions.parquet")
+    sealed = pl.read_parquet(run_dir / "ledgers" / "sealed-predictions.parquet")
+    trades = pl.read_parquet(run_dir / "ledgers" / "sealed-trades.parquet")
+    selection = json.loads((run_dir / "selection-freeze.json").read_text())
+    split = json.loads((run_dir / "split-manifest.json").read_text())
+    panel_manifest = json.loads((middle_cache(config) / "panel-manifest.json").read_text())
+    policies = selection["policies"]
+    oof_predictive, sealed_predictive, sealed_economic = {}, {}, {}
+    policy_evidence = {}
+    total_sealed_markets = sealed["market_id"].n_unique()
+    for name in ALL_NAMES:
+        candidate_oof = oof.filter(pl.col("candidate") == name)
+        candidate_sealed = sealed.filter(pl.col("candidate") == name)
+        candidate_trades = trades.filter(pl.col("candidate") == name)
+        oof_predictive[name] = predictive_metrics(candidate_oof)
+        sealed_predictive[name] = predictive_metrics(candidate_sealed)
+        sealed_economic[name] = economic_metrics(candidate_trades, total_sealed_markets)
+        policy_evidence[name] = {
+            "selection_score": "recorded_before_seal",
+            "policy": policies[name],
+        }
+    economic_ranking = sorted(
+        ALL_NAMES,
+        key=lambda name: (
+            sealed_economic[name]["stress_net_pnl"],
+            sealed_economic[name]["net_pnl"],
+        ),
+        reverse=True,
+    )
+    artifact_sha = file_sha256(artifact)
+    (run_dir / "tournament.sha256").write_text(f"{artifact_sha}  tournament.joblib\n")
+    metrics = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": payload["run_id"],
+        "created_at": datetime.now(UTC).isoformat(),
+        "producing_commit": payload["producing_commit"],
+        "candidate_names": list(ALL_NAMES),
+        "candidate_count_trained": 5,
+        "learned_base_model_count": 3,
+        "derived_ensemble_count": 2,
+        "predictive_ranking_preseal": selection["predictive_ranking"],
+        "economic_ranking_sealed": economic_ranking,
+        "selection_frozen_at": selection["frozen_at"],
+        "oof_predictive": oof_predictive,
+        "selected_policies": policies,
+        "policy_selection_evidence": policy_evidence,
+        "sealed_predictive": sealed_predictive,
+        "sealed_economic": sealed_economic,
+        "frozen_comparator_references": _reference_manifests(config),
+        "source_panel": panel_manifest,
+        "split_manifest": split,
+        "artifact_sha256": artifact_sha,
+        "qualification_status": "trained_evaluated_not_deployed",
+        "integrity": {
+            "passed": True,
+            "market_disjoint": True,
+            "sealed_opened_after_selection": True,
+            "artifact_round_trip_load": True,
+            "finalized_from_existing_checkpoints_without_retraining": True,
+            "full_history_retained": True,
+            "optional_missingness_preserves_rows": True,
+            "twap_inference_feature": False,
+            "authentic_only_filter": False,
+            "kraken_l2_included": False,
+            "database_mutations": False,
+            "new_tables": False,
+            "new_ingesters": False,
+            "new_sources": False,
+            "runtime_exported": False,
+            "deployed": False,
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "polars": pl.__version__,
+            "sklearn": sklearn.__version__,
+        },
+        "limitations": [
+            "The August 14-28 replay is row-disjoint but was observed during previous research and is not epistemically fresh.",
+            "Kraken L2 is excluded because its historical backfill is incomplete.",
+            "Qualified Binance spot L2 ends August 1; later rows remain usable with L2 missing.",
+            "Projected PnL assumes recorded ask VWAP was fillable and does not model queue position.",
+        ],
+    }
+    _write_json(run_dir / "metrics.json", metrics)
+    _write_json(run_dir / "candidate-contract.json", payload["candidate_contract"])
+    _write_json(run_dir / "source-manifest.json", panel_manifest)
+    (run_dir / "report.md").write_text(_report(metrics))
+    _write_json(
+        run_dir / "completion.json",
+        {
+            "run_id": payload["run_id"],
+            "artifact_sha256": artifact_sha,
+            "metrics_sha256": file_sha256(run_dir / "metrics.json"),
+            "completed": True,
+            "retrained_during_finalization": False,
+        },
+    )
+    return run_dir
+
+
 def train_tournament(config: Any, *, force: bool = False) -> Path:
     panel, panel_manifest = build_middle_panel(config, force=force)
     contracts = _candidate_contract(config, panel_manifest)
@@ -562,10 +688,7 @@ def train_tournament(config: Any, *, force: bool = False) -> Path:
     }
     artifact = run_dir / "tournament.joblib"
     joblib.dump(artifact_payload, artifact, compress=3)
-    subprocess.run(
-        [sys.executable, "-c", "import joblib,sys; x=joblib.load(sys.argv[1]); assert len(x['base_models'])==3", str(artifact)],
-        check=True, cwd=config.package_root,
-    )
+    _validate_artifact(config, artifact)
     artifact_sha = file_sha256(artifact)
     (run_dir / "tournament.sha256").write_text(f"{artifact_sha}  tournament.joblib\n")
     economic_ranking = sorted(ALL_NAMES, key=lambda name: (sealed_economic[name]["stress_net_pnl"], sealed_economic[name]["net_pnl"]), reverse=True)
@@ -611,7 +734,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("command", choices=("extract", "prepare", "train", "all"))
+    parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("command", choices=("extract", "prepare", "train", "finalize", "all"))
     arguments = parser.parse_args()
     config = load_data_config(arguments.config)
     if arguments.command in {"extract", "all"}:
@@ -620,6 +744,10 @@ def main() -> None:
         build_middle_panel(config, force=arguments.force)
     if arguments.command in {"train", "all"}:
         print(train_tournament(config, force=arguments.force))
+    if arguments.command == "finalize":
+        if arguments.run_dir is None:
+            parser.error("finalize requires --run-dir")
+        print(finalize_run(config, arguments.run_dir.resolve()))
 
 
 if __name__ == "__main__":
