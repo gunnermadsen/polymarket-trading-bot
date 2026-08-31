@@ -69,6 +69,7 @@ def test_agreement_ensemble_marks_disagreement_ineligible() -> None:
     )
     result = _agreement_predictions(wide)
     assert result["eligible_signal"].to_list() == [True, False]
+    assert result.columns[-3:] == ["candidate", "probability", "eligible_signal"]
 
 
 def test_economics_require_middle_window_and_two_second_books() -> None:

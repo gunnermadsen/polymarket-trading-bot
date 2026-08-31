@@ -165,6 +165,13 @@ def _agreement_predictions(wide: pl.DataFrame) -> pl.DataFrame:
     probability = ((pl.col(first) + pl.col(second)) / 2.0).alias("probability")
     return wide.select(*KEY_COLUMNS, "label_up", "fold", probability, agrees.alias("eligible_signal")).with_columns(
         pl.lit("middle_agreement_ensemble").alias("candidate")
+    ).select(
+        *KEY_COLUMNS,
+        "label_up",
+        "fold",
+        "candidate",
+        "probability",
+        "eligible_signal",
     )
 
 
