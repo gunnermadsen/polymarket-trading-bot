@@ -382,6 +382,19 @@ async fn execute_job(
 }
 
 async fn fail_or_retry(pool: &PgPool, job: &Job, message: &str) -> Result<()> {
+    if message.contains("no ALFRED vintages") {
+        sqlx::query(
+            r#"UPDATE financial_data.backfill_jobs SET status='failed',error_message=$3,
+               completed_at=now(),lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+               WHERE job_id=$1 AND lease_token=$2"#,
+        )
+        .bind(job.job_id)
+        .bind(job.lease_token)
+        .bind(message)
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
     if message.contains("FRED_API_KEY") {
         sqlx::query(
             r#"UPDATE financial_data.backfill_jobs SET status='queued',attempt=GREATEST(0,attempt-1),
@@ -439,6 +452,9 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
         .fred_api_key
         .as_deref()
         .context("FRED_API_KEY is required for FRED jobs")?;
+    if matches!(job.series_id.as_str(), "BAMLH0A0HYM2" | "BAMLC0A0CM") {
+        bail!("FRED series has no ALFRED vintages; excluded to avoid training lookahead");
+    }
     let mut url = Url::parse(FRED_BASE_URL)?;
     let realtime_end = (job.range_end + ChronoDuration::days(366)).min(Utc::now());
     url.query_pairs_mut()
@@ -460,41 +476,8 @@ async fn fetch_fred(client: &Client, config: &WorkerConfig, job: &Job) -> Result
             &job.range_end.format("%Y-%m-%d").to_string(),
         );
     sleep(Duration::from_millis(750)).await;
-    let mut bytes = fetch_fred_bytes(client, &url).await?;
-    let mut root: Value = serde_json::from_slice(&bytes)?;
-    let empty = root
-        .get("observations")
-        .and_then(Value::as_array)
-        .is_some_and(Vec::is_empty);
-    if empty && matches!(job.series_id.as_str(), "BAMLH0A0HYM2" | "BAMLC0A0CM") {
-        let snapshot_date = (job.range_end - ChronoDuration::days(1)).min(Utc::now());
-        let mut snapshot_url = Url::parse(FRED_BASE_URL)?;
-        snapshot_url
-            .query_pairs_mut()
-            .append_pair("series_id", &job.series_id)
-            .append_pair("api_key", key)
-            .append_pair("file_type", "json")
-            .append_pair("output_type", "1")
-            .append_pair(
-                "realtime_start",
-                &snapshot_date.format("%Y-%m-%d").to_string(),
-            )
-            .append_pair(
-                "realtime_end",
-                &snapshot_date.format("%Y-%m-%d").to_string(),
-            )
-            .append_pair(
-                "observation_start",
-                &job.range_start.format("%Y-%m-%d").to_string(),
-            )
-            .append_pair(
-                "observation_end",
-                &job.range_end.format("%Y-%m-%d").to_string(),
-            );
-        bytes = fetch_fred_bytes(client, &snapshot_url).await?;
-        root = serde_json::from_slice(&bytes)?;
-        url = snapshot_url;
-    }
+    let bytes = fetch_fred_bytes(client, &url).await?;
+    let root: Value = serde_json::from_slice(&bytes)?;
     let observations = root
         .get("observations")
         .and_then(Value::as_array)
