@@ -556,7 +556,8 @@ async fn fetch_cftc(client: &Client, job: &Job) -> Result<FetchResult> {
         .map(|(_, slug)| *slug)
         .with_context(|| format!("unsupported CFTC dataset {}", job.dataset))?;
     let year = job.range_start.year();
-    let url = format!("https://www.cftc.gov/files/dea/history/{slug}_{year}.zip");
+    let separator = if slug == "deacot" { "" } else { "_" };
+    let url = format!("https://www.cftc.gov/files/dea/history/{slug}{separator}{year}.zip");
     let bytes = fetch_bytes(client, &url).await?;
     let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice()))?;
     let mut csv_bytes = Vec::new();
