@@ -14,9 +14,10 @@ def connection(database_url: str, *, autocommit: bool = False) -> Iterator[Conne
         database_url,
         autocommit=autocommit,
         row_factory=dict_row,
-        options="-c statement_timeout=300000 -c lock_timeout=5000",
     )
     try:
+        conn.execute("SET statement_timeout = 300000")
+        conn.execute("SET lock_timeout = 5000")
         yield conn
     finally:
         conn.close()
