@@ -15,9 +15,9 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - When changing lifecycle or readiness code, verify restart recovery and confirm that configured live processes resume eligibility without bypassing the existing per-order capital, identity, accounting, and market-safety checks.
 
 ## Code
-- rebuild docker image after each code change, ensuring new rust change build as packages with the image.
+- Rebuild an image only when that component's code changes: Polymarket bot changes rebuild `polymarket-bot`, and ingester changes rebuild `ingester`.
 - build the polymarket bot with provenance env var: POLYMARKET_GIT_REVISION=<GIT_COMMIT_HASH> docker compose build polymarket-bot
-- do not rebuild polymarket-bot or rust-related packages on grafana dashboard changes or database configuration changes.
+- Do not rebuild an image when its component's code did not change.
 - put sensitive secrets in .env files
 - put non-sensitive runtime configuration in docker-compose files
 - .env example files are templates, do not put plaintext env vars in the example env files.
@@ -147,8 +147,19 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Refactoring should not render trading processes as no longer compatible. 
 - Refactoring a system, introducing a new system, or removing a system and causing a lack of compatibility is an anti pattern in the trading bot.
 
+## Backfills
+- Reuse the existing shared backfill infrastructure, standards, and contracts for every backfill domain; do not create domain-specific backfill workers or Docker Compose files.
+- Use the existing shared backfill job tables for every backfill domain; do not create domain-specific job tables or drift from the established contract.
+
+## Observability provisioning
+- Provision every Grafana, Prometheus, Loki, and Alloy deployment, including all environment configuration changes; do not make manual, unprovisioned changes.
+
+## Data artifacts
+- Store all backtesting and model-training data only in Parquet format, including weather-model predictions and Kraken futures test data.
+
 # Database and migrations
 - all non trading process database mutations or changes must be executed through database migrations.
+- Do not create or apply database migrations without explicit user permission; first provide a narrow, unambiguous summary of the proposed migration.
 - all diagnostic database queries to read the database must be optimized for performance to prevent database crashes.
 - do not scan large tables without considering performance ramifications.
 - use the db-migrate microservice job to apply migrations
