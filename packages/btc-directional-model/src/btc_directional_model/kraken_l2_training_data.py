@@ -169,7 +169,7 @@ def build_kraken_l2_features(
     for day, paths in source_by_day.items():
         destination = cache / "kraken-l2-daily" / f"{day}.parquet"
         source = _source_identity(paths)
-        source_key = [(row["sha256"], row["rows"], row["bytes"]) for row in source]
+        source_key = [[row["sha256"], row["rows"], row["bytes"]] for row in source]
         sidecar = destination.with_suffix(".json")
         valid = False
         if destination.is_file() and sidecar.is_file() and not force:
