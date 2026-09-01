@@ -200,6 +200,8 @@ fn book_timestamps_are_causal(
 ) -> bool {
     received_at <= checked_at
         && source_timestamp - checked_at <= max_book_age
+        && checked_at - source_timestamp <= max_book_age
+        && checked_at - received_at <= max_book_age
         && received_at - source_timestamp <= max_book_age
 }
 
@@ -959,7 +961,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_book_on_active_connection_is_delegated() {
+    async fn stale_book_on_active_connection_is_rejected_before_delegate_submission() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -981,8 +983,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(order.state, OrderState::Submitted);
-        assert_eq!(fake.submit_calls(), 1);
+        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
+        assert_eq!(fake.delegate_calls(), 0);
+        assert_eq!(fake.submit_calls(), 0);
     }
 
     #[tokio::test]
@@ -1063,7 +1066,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_opposite_book_receipt_remains_usable() {
+    async fn stale_opposite_book_receipt_is_rejected_before_delegate_submission() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
@@ -1101,8 +1104,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(order.state, OrderState::Submitted);
-        assert_eq!(fake.submit_calls(), 1);
+        assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
+        assert_eq!(fake.delegate_calls(), 0);
+        assert_eq!(fake.submit_calls(), 0);
     }
 
     #[tokio::test]
