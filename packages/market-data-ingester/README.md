@@ -82,12 +82,12 @@ Administrative routes require `Authorization: Bearer <token>`:
 - `POST /backfills/{job_id}/retry`
 - `GET /workers`
 
-- `GET /v1/ingesters`
-- `GET /v1/ingesters/{strategy_key}`
-- `GET|PUT /v1/ingesters/{strategy_key}/config`
-- `POST /v1/ingesters/{strategy_key}/start`
-- `POST /v1/ingesters/{strategy_key}/stop`
-- `POST /v1/ingesters/{strategy_key}/restart`
+- `GET /ingesters`
+- `GET /ingesters/{strategy_key}`
+- `GET|PUT /ingesters/{strategy_key}/config`
+- `POST /ingesters/{strategy_key}/start`
+- `POST /ingesters/{strategy_key}/stop`
+- `POST /ingesters/{strategy_key}/restart`
 
 Mutations require `If-Match` set to the row's current
 `desired_generation`. Configuration updates are validated against the owning

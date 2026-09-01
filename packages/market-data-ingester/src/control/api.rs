@@ -95,15 +95,15 @@ impl ControlApi {
                 "/internal/workers/:worker_id/jobs/:job_id/fail",
                 post(fail_job),
             )
-            .route("/v1/ingesters", get(list_profiles))
-            .route("/v1/ingesters/:strategy_key", get(get_profile))
+            .route("/ingesters", get(list_profiles))
+            .route("/ingesters/:strategy_key", get(get_profile))
             .route(
-                "/v1/ingesters/:strategy_key/config",
+                "/ingesters/:strategy_key/config",
                 get(get_profile_config).put(replace_profile_config),
             )
-            .route("/v1/ingesters/:strategy_key/start", post(start_profile))
-            .route("/v1/ingesters/:strategy_key/stop", post(stop_profile))
-            .route("/v1/ingesters/:strategy_key/restart", post(restart_profile))
+            .route("/ingesters/:strategy_key/start", post(start_profile))
+            .route("/ingesters/:strategy_key/stop", post(stop_profile))
+            .route("/ingesters/:strategy_key/restart", post(restart_profile))
             .route_layer(middleware::from_fn_with_state(
                 self.state.clone(),
                 require_admin,
@@ -842,7 +842,7 @@ mod tests {
             .router()
             .oneshot(
                 Request::builder()
-                    .uri("/v1/ingesters")
+                    .uri("/ingesters")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -917,7 +917,7 @@ mod tests {
                 Request::builder()
                     .method(Method::PUT)
                     .uri(format!(
-                        "/v1/ingesters/{KEY}/config",
+                        "/ingesters/{KEY}/config",
                         KEY = IngesterStrategyKey::BinanceSpotBtcusdtAggregateTrades
                     ))
                     .header(AUTHORIZATION, "Bearer 01234567890123456789012345678901")
