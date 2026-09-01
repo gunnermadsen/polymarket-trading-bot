@@ -360,22 +360,36 @@ async fn persist(
     })?;
     let capture_artifact_id: uuid::Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO ingester.capture_artifacts (
-          strategy_key,profile_generation,config_schema_version,config_sha256,
-          config_snapshot,capture_window_start,capture_window_end,
-          minimum_source_timestamp,maximum_source_timestamp,
-          minimum_received_at,maximum_received_at,record_count,content_sha256,
-          status,created_at,updated_at,completed_at
+        WITH existing AS (
+          SELECT artifact.artifact_id
+          FROM ingester.capture_artifacts artifact
+          JOIN ingester.backfill_jobs job ON job.job_id=$1
+          WHERE artifact.strategy_key=$7
+            AND artifact.capture_window_start=job.range_start
+            AND artifact.capture_window_end=job.range_end
+            AND artifact.status='completed'
+          ORDER BY artifact.created_at,artifact.artifact_id
+          LIMIT 1
+        ), inserted AS (
+          INSERT INTO ingester.capture_artifacts (
+            strategy_key,profile_generation,config_schema_version,config_sha256,
+            config_snapshot,capture_window_start,capture_window_end,
+            minimum_source_timestamp,maximum_source_timestamp,
+            minimum_received_at,maximum_received_at,record_count,content_sha256,
+            status,created_at,updated_at,completed_at
+          )
+          SELECT profile.strategy_key,profile.desired_generation,profile.config_schema_version,
+            encode(digest(profile.config::text,'sha256'),'hex'),profile.config,
+            job.range_start,job.range_end,$2,$3,$4,$4,$5,$6,'completed',now(),now(),now()
+          FROM ingester.profiles profile
+          JOIN ingester.backfill_jobs job ON job.job_id=$1
+          WHERE profile.strategy_key=$7 AND NOT EXISTS (SELECT 1 FROM existing)
+          RETURNING artifact_id
         )
-        SELECT profile.strategy_key,profile.desired_generation,profile.config_schema_version,
-          encode(digest(profile.config::text,'sha256'),'hex'),profile.config,
-          job.range_start,job.range_end,$2,$3,$4,$4,$5,$6,'completed',now(),now(),now()
-        FROM ingester.profiles profile
-        JOIN ingester.backfill_jobs job ON job.job_id=$1
-        WHERE profile.strategy_key=$7
-        ON CONFLICT (strategy_key,capture_window_start,capture_window_end,profile_generation)
-        DO UPDATE SET updated_at=ingester.capture_artifacts.updated_at
-        RETURNING artifact_id
+        SELECT artifact_id FROM inserted
+        UNION ALL
+        SELECT artifact_id FROM existing
+        LIMIT 1
         "#,
     )
     .bind(context.job_id)
