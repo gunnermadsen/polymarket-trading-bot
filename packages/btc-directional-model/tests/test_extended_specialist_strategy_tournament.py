@@ -8,6 +8,10 @@ import polars as pl
 
 from btc_directional_model.extended_specialist_strategy_tournament import (
     ALL_CANDIDATES,
+    CalibratedClassifier,
+    DistilledSpecialist,
+    DualHeadAdmission,
+    ResidualSpecialist,
     _bands,
     _candidate_contract,
     _load_config,
@@ -20,6 +24,16 @@ CONFIG = (
     PACKAGE_ROOT
     / "configs/btc-5m-extended-specialist-strategy-tournament-20260321-20260826.toml"
 )
+
+
+def test_serialized_model_classes_use_importable_module_identity() -> None:
+    expected = "btc_directional_model.extended_specialist_strategy_tournament"
+    assert {
+        CalibratedClassifier.__module__,
+        DistilledSpecialist.__module__,
+        ResidualSpecialist.__module__,
+        DualHeadAdmission.__module__,
+    } == {expected}
 
 
 def test_frozen_roster_and_chronological_split() -> None:

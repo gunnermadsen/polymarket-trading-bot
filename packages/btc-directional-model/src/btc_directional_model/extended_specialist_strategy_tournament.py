@@ -93,6 +93,16 @@ class DualHeadAdmission:
     stress_edge: HistGradientBoostingRegressor
 
 
+_MODEL_MODULE = "btc_directional_model.extended_specialist_strategy_tournament"
+for _model_class in (
+    CalibratedClassifier,
+    DistilledSpecialist,
+    ResidualSpecialist,
+    DualHeadAdmission,
+):
+    _model_class.__module__ = _MODEL_MODULE
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
