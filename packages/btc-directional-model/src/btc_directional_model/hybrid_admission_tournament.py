@@ -355,7 +355,21 @@ def fit_admission_oof(
     for index, fold in enumerate(fold_names[1:], start=1):
         fit = frame.filter(pl.col("fold").is_in(fold_names[:index]))
         validation = frame.filter(pl.col("fold") == fold)
-        if fit["market_id"].n_unique() < 250 or validation["market_id"].n_unique() < 40:
+        fit_executable_markets = fit.filter(pl.col("share_cost").is_not_null())[
+            "market_id"
+        ].n_unique()
+        validation_executable_markets = validation.filter(pl.col("share_cost").is_not_null())[
+            "market_id"
+        ].n_unique()
+        if fit_executable_markets < 250 or validation_executable_markets < 40:
+            diagnostics.append(
+                {
+                    "fold": fold,
+                    "skipped": True,
+                    "training_executable_markets": fit_executable_markets,
+                    "validation_executable_markets": validation_executable_markets,
+                }
+            )
             continue
         classifier, regressor = _fit_admission(fit, features, seed + 100 * index)
         temporary = HybridAdmissionModel(
@@ -623,14 +637,19 @@ def _report(metrics: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def train_tournament(config: Any, *, force_l2: bool = False) -> Path:
+def train_tournament(config: Any, *, force_l2: bool = False, resume_run: str | None = None) -> Path:
     mst._configure_roster(config)
     panel, panel_manifest = build_hybrid_panel(config, force_l2=force_l2)
     contracts = _candidate_contract(config, panel_manifest)
-    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_id = resume_run or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = config.results / run_id
     ledgers = run_dir / "ledgers"
-    ledgers.mkdir(parents=True, exist_ok=False)
+    if resume_run:
+        if not run_dir.is_dir() or (run_dir / "completion.json").exists():
+            raise RuntimeError("resume run must be an existing incomplete checkpoint")
+        ledgers.mkdir(parents=True, exist_ok=True)
+    else:
+        ledgers.mkdir(parents=True, exist_ok=False)
     fit = panel.filter(pl.col("window_start") < config.fit_end)
     heldout = panel.filter(
         pl.col("window_start").is_between(config.sealed_start, config.sealed_end, closed="left")
@@ -648,34 +667,48 @@ def train_tournament(config: Any, *, force_l2: bool = False) -> Path:
         "heldout_excluded_from_model_and_policy_selection": True,
         "market_disjoint": True,
     }
-    _write_json(run_dir / "split-manifest.json", split)
+    split_path = run_dir / "split-manifest.json"
+    if split_path.exists():
+        if json.loads(split_path.read_text()) != split:
+            raise RuntimeError("resume split differs from its frozen checkpoint")
+    else:
+        _write_json(split_path, split)
 
-    base_oof = mst._base_oof(fit, contracts, config)
-    oof, wide_oof = mst._all_oof(base_oof, config)
-    oof.write_parquet(
-        ledgers / "candidate-oof-predictions.parquet", compression="zstd", statistics=True
-    )
+    oof_path = ledgers / "candidate-oof-predictions.parquet"
+    if oof_path.exists():
+        oof = pl.read_parquet(oof_path)
+        wide_oof = mst._wide_base_predictions(oof.filter(pl.col("candidate").is_in(mst.BASE_NAMES)))
+    else:
+        base_oof = mst._base_oof(fit, contracts, config)
+        oof, wide_oof = mst._all_oof(base_oof, config)
+        oof.write_parquet(oof_path, compression="zstd", statistics=True)
     predictive = {
         name: mst.predictive_metrics(oof.filter(pl.col("candidate") == name))
         for name in mst.ALL_NAMES
     }
 
     seed = int(config.raw["training"]["random_seed"])
-    final_models = {}
-    for index, name in enumerate(mst.BASE_NAMES):
-        final_models[name] = mst._fit_candidate_tree(
-            fit,
-            tuple(contracts[name]["features"]),
-            config,
-            seed + 10_000 + index,
-            target_kind=contracts[name]["kind"],
+    predictive_checkpoint = run_dir / "predictive-model-checkpoint.joblib"
+    if predictive_checkpoint.exists():
+        predictive_payload = joblib.load(predictive_checkpoint)
+        final_models = predictive_payload["base_models"]
+        final_calibrator = predictive_payload["ensemble_calibrator"]
+    else:
+        final_models = {}
+        for index, name in enumerate(mst.BASE_NAMES):
+            final_models[name] = mst._fit_candidate_tree(
+                fit,
+                tuple(contracts[name]["features"]),
+                config,
+                seed + 10_000 + index,
+                target_kind=contracts[name]["kind"],
+            )
+        final_calibrator = mst._fit_ensemble_calibrator(wide_oof, seed + 20_000)
+        joblib.dump(
+            {"base_models": final_models, "ensemble_calibrator": final_calibrator},
+            predictive_checkpoint,
+            compress=3,
         )
-    final_calibrator = mst._fit_ensemble_calibrator(wide_oof, seed + 20_000)
-    joblib.dump(
-        {"base_models": final_models, "ensemble_calibrator": final_calibrator},
-        run_dir / "predictive-model-checkpoint.joblib",
-        compress=3,
-    )
 
     programmatic: dict[str, Any] = {}
     programmatic_evidence: dict[str, Any] = {}
@@ -845,8 +878,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--force-l2", action="store_true")
+    parser.add_argument("--resume-run")
     args = parser.parse_args()
-    result = train_tournament(load_data_config(args.config), force_l2=args.force_l2)
+    result = train_tournament(
+        load_data_config(args.config),
+        force_l2=args.force_l2,
+        resume_run=args.resume_run,
+    )
     print(result)
 
 

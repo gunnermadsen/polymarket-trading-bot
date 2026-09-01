@@ -11,6 +11,8 @@ from btc_directional_model.hybrid_admission_tournament import (
     _features,
     _hybrid_trades,
     build_hybrid_panel,
+    fit_admission_oof,
+    train_tournament,
 )
 from btc_directional_model.kraken_l2_training_data import (
     KRAKEN_L2_FEATURES,
@@ -103,3 +105,18 @@ def test_hybrid_veto_never_changes_predicted_side() -> None:
 
 def test_kraken_feature_contract_is_update_flow_not_full_depth() -> None:
     assert all("depth" not in name for name in KRAKEN_L2_FEATURES)
+
+
+def test_admission_fold_support_counts_only_executable_markets() -> None:
+    source = inspect.getsource(fit_admission_oof)
+    assert "fit_executable_markets" in source
+    assert 'pl.col("share_cost").is_not_null()' in source
+    assert '"skipped": True' in source
+
+
+def test_resume_reuses_predictive_checkpoints_without_refitting() -> None:
+    source = inspect.getsource(train_tournament)
+    load = source.index("joblib.load(predictive_checkpoint)")
+    fit = source.index("mst._fit_candidate_tree(")
+    assert load < fit
+    assert "resume split differs from its frozen checkpoint" in source
