@@ -7,6 +7,7 @@ pub mod data_api;
 pub mod events;
 pub mod execution;
 pub mod fees;
+pub mod financial_data_ingestion;
 pub mod grafana_live;
 pub mod http;
 pub mod idempotency;
