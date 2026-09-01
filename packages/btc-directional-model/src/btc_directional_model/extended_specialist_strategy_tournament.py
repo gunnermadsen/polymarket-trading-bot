@@ -321,7 +321,7 @@ def _fit_distilled(
     soft = target != "label_up"
     fit_target = fit[target].to_numpy().astype(float)
     fit_binary = fit_target >= 0.5
-    weights = _market_weights(fit)
+    weights = _market_weights(fit).copy()
     if weight_column and weight_column in fit.columns:
         weights *= fit[weight_column].fill_null(0.0).to_numpy()
     parameters = _estimator_parameters(raw)
