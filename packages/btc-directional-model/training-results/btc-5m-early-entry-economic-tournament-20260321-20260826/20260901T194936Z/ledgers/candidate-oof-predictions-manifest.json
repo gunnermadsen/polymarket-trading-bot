@@ -1,0 +1,56 @@
+{
+  "candidate_count": 7,
+  "partition_rows": 6803825,
+  "partitions": [
+    {
+      "candidate": "crossvenue_middle_specialist",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/crossvenue_middle_specialist.parquet",
+      "rows": 971975,
+      "sha256": "68696ac53eb7b5db4278d7d2753d7d33ff5dfb25d91e3730d91a146745f5cb78"
+    },
+    {
+      "candidate": "external_flow_only_control",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/external_flow_only_control.parquet",
+      "rows": 971975,
+      "sha256": "d97888a9c5d2a6a8283b5290cad538b6465bc2eb17e4e917e1bd64f8319d1d7f"
+    },
+    {
+      "candidate": "latent_boundary_margin_specialist",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/latent_boundary_margin_specialist.parquet",
+      "rows": 971975,
+      "sha256": "6823eccd22423e94e79e124e485e3234f2a44e43b263e27d527c58f57c15b0a0"
+    },
+    {
+      "candidate": "middle_agreement_ensemble",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/middle_agreement_ensemble.parquet",
+      "rows": 971975,
+      "sha256": "880154574e04f12f4301caf660488f1b40f5207b26f8b9845060e874647d1cbc"
+    },
+    {
+      "candidate": "middle_q5_admission",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/middle_q5_admission.parquet",
+      "rows": 971975,
+      "sha256": "eeac1451baa99613c39aa928ca28445b5b60207f3c78f4ac66656e7cc1ac2d33"
+    },
+    {
+      "candidate": "middle_specialist_refit",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/middle_specialist_refit.parquet",
+      "rows": 971975,
+      "sha256": "ea1da039341ce393058486d3e4ac6ed728c90331c0ddfb1c41547a149290c98a"
+    },
+    {
+      "candidate": "price_time_calibrated_middle_ensemble",
+      "markets": 38879,
+      "path": "ledgers/candidate-oof-predictions/price_time_calibrated_middle_ensemble.parquet",
+      "rows": 971975,
+      "sha256": "a2eea5942d01d9755b6015eaf947945ce042fda5cfac859672572e277b38113b"
+    }
+  ],
+  "source_rows": 6803825
+}
