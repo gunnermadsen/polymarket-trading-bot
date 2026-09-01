@@ -539,7 +539,7 @@ impl BackfillRepository {
               assigned_worker_image_digest=$6,assigned_worker_source_revision=$7,
               last_error_kind=NULL,last_error_code=NULL,last_error_message=NULL
             FROM candidate WHERE job.job_id=candidate.job_id
-            RETURNING {JOB_COLUMNS}
+            RETURNING job.*
             "#,
         );
         let job = sqlx::query_as::<_, BackfillJobRecord>(&query)
