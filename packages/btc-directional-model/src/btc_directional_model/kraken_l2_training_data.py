@@ -228,6 +228,7 @@ def attach_kraken_l2(panel: pl.DataFrame, manifest: dict[str, Any]) -> pl.DataFr
         source = pl.read_parquet(row["path"]).with_columns(
             pl.from_epoch("available_ns", time_unit="ns")
             .dt.replace_time_zone("UTC")
+            .cast(pl.Datetime("us", "UTC"))
             .alias("available_at")
         )
         joined = targets.sort("observed_at").join_asof(
