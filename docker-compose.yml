@@ -353,6 +353,10 @@ services:
       POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-1"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-1"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "kraken_spot_btcusd_trade_prints_one_second_ohlcv"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "1100"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -364,6 +368,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -420,6 +425,10 @@ services:
       POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-2"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-2"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -431,6 +440,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -487,6 +497,10 @@ services:
       POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-3"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-3"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -498,6 +512,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -550,6 +565,10 @@ services:
       POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-4"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -561,6 +580,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -613,6 +633,10 @@ services:
       POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-5"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -624,6 +648,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -676,6 +701,10 @@ services:
       POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
       POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
       POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
+      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
+      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
+      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
+      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
       POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
       POLYMARKET_BACKFILL_LEASE_SECS: "120"
       POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
@@ -687,6 +716,7 @@ services:
       POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
     volumes:
       - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
     depends_on:
       db-migrate:
         condition: service_completed_successfully

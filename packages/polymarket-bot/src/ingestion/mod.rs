@@ -8,6 +8,7 @@ pub mod executor;
 pub mod huggingface_binance_l2;
 pub mod job;
 pub mod kraken_spot_l2_archive;
+pub mod kraken_spot_trades;
 pub mod pmdata_twap;
 pub mod pmxt_archive;
 pub mod polygon_chainlink_oracle;

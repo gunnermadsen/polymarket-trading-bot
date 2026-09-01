@@ -881,6 +881,12 @@ async fn authenticated_admin_can_list_generic_ingesters() {
                     "accepts_new_requests": true
                 },
                 {
+                    "key": "kraken_spot_btcusd_trade_prints_one_second_ohlcv",
+                    "request_version": 1,
+                    "range_alignment_seconds": 1,
+                    "accepts_new_requests": true
+                },
+                {
                     "key": "polymarket_btc_five_minute_orderbooks",
                     "request_version": 1,
                     "range_alignment_seconds": 3600,

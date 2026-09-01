@@ -43,6 +43,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
       --bin pmdata-twap-backfill-plan \
       --bin pmdata-refprice-backfill-plan \
       --bin local-orderbook-vwap-backfill-plan \
+      --bin kraken-spot-trade-backfill-plan \
       --bin kraken-backfill-worker \
       --bin kraken-backfill-plan \
       --bin kraken-spot-l2-backfill-worker \
@@ -56,6 +57,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     && cp /app/target/release/pmdata-twap-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/pmdata-refprice-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/local-orderbook-vwap-backfill-plan /opt/polymarket-artifacts/ \
+    && cp /app/target/release/kraken-spot-trade-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-worker /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-spot-l2-backfill-worker /opt/polymarket-artifacts/ \
@@ -100,6 +102,7 @@ COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-huggingface-backfi
 COPY --from=builder /opt/polymarket-artifacts/pmdata-twap-backfill-plan /usr/local/bin/pmdata-twap-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/pmdata-refprice-backfill-plan /usr/local/bin/pmdata-refprice-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/local-orderbook-vwap-backfill-plan /usr/local/bin/local-orderbook-vwap-backfill-plan
+COPY --from=builder /opt/polymarket-artifacts/kraken-spot-trade-backfill-plan /usr/local/bin/kraken-spot-trade-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/kraken-spot-l2-backfill-worker /usr/local/bin/kraken-spot-l2-backfill-worker
