@@ -45,6 +45,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
       --bin local-orderbook-vwap-backfill-plan \
       --bin kraken-backfill-worker \
       --bin kraken-backfill-plan \
+      --bin kraken-spot-l2-backfill-worker \
       --bin derive-clob-creds \
     && mkdir -p /opt/polymarket-artifacts \
     && cp /app/target/release/polymarket-bot /opt/polymarket-artifacts/ \
@@ -57,6 +58,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     && cp /app/target/release/local-orderbook-vwap-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-worker /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-plan /opt/polymarket-artifacts/ \
+    && cp /app/target/release/kraken-spot-l2-backfill-worker /opt/polymarket-artifacts/ \
     && cp /app/target/release/derive-clob-creds /opt/polymarket-artifacts/
 
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
@@ -100,6 +102,7 @@ COPY --from=builder /opt/polymarket-artifacts/pmdata-refprice-backfill-plan /usr
 COPY --from=builder /opt/polymarket-artifacts/local-orderbook-vwap-backfill-plan /usr/local/bin/local-orderbook-vwap-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
+COPY --from=builder /opt/polymarket-artifacts/kraken-spot-l2-backfill-worker /usr/local/bin/kraken-spot-l2-backfill-worker
 COPY --from=builder /opt/polymarket-artifacts/derive-clob-creds /usr/local/bin/derive-clob-creds
 COPY --from=builder /opt/polymarket-models /usr/local/share/polymarket-bot/models
 
