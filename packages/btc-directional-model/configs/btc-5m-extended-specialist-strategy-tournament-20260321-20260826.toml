@@ -1,0 +1,129 @@
+[training]
+profile = "btc_5m_extended_specialist_strategy_tournament"
+model_family = "btc-5m-extended-specialist-strategy"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260901
+data_watermark = "2026-09-01T00:00:00Z"
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-20T00:00:00Z"
+sealed_start = "2026-08-20T00:00:00Z"
+sealed_end = "2026-08-26T00:00:00Z"
+cutover = "2026-08-14T00:00:00Z"
+
+[entry]
+prediction_start_second = 15
+prediction_end_second_inclusive = 240
+economic_start_second = 60
+economic_end_second_inclusive = 180
+competition_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+diagnostic_bands = [[15, 59], [181, 240]]
+
+[model]
+learning_rate = 0.06
+max_iter = 90
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 2.0
+max_bins = 127
+calibration_fraction = 0.20
+hard_negative_multiplier = 4.0
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.00, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.125]
+minimum_confidences = [0.50, 0.52, 0.55, 0.58, 0.60, 0.62, 0.65, 0.70, 0.75, 0.80, 0.85]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+recovery_soft_target = 2.5
+recovery_penalty = 0.01
+
+[dual_head]
+max_iter = 90
+minimum_profit_probabilities = [0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+minimum_expected_stress_edges = [-0.05, -0.02, 0.00, 0.02, 0.05]
+maximum_loss_probabilities = [0.30, 0.40, 0.50, 0.60]
+
+[paths]
+panel = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel.parquet"
+panel_manifest = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel-manifest.json"
+bridge_panel = "data/btc-hybrid-payoff-admission-20260321-20260827/middle-panel.parquet"
+bridge_manifest = "data/btc-hybrid-payoff-admission-20260321-20260827/panel-manifest.json"
+frozen_specialist = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/model.json"
+frozen_specialist_manifest = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json"
+runs = "runs/btc-extended-specialist-strategy-tournament-20260321-20260826"
+committed_results = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_pre_cutover"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[candidates]]
+name = "frozen_specialist_control"
+kind = "frozen_runtime"
+feature_groups = ["core", "candles", "oracle"]
+description = "Exact immutable fold-5 Specialist Distilled Fair Value runtime artifact."
+
+[[candidates]]
+name = "extended_specialist_official"
+kind = "distilled_official"
+feature_groups = ["core", "candles", "oracle"]
+description = "Original specialist distillation concept retrained over the complete pre-sealed history with official outcomes."
+
+[[candidates]]
+name = "bridge_aware_specialist"
+kind = "distilled_bridge"
+feature_groups = ["core", "candles", "oracle"]
+description = "Specialist distillation trained on the source-preserving probabilistic settlement bridge without TWAP inference features."
+
+[[candidates]]
+name = "settlement_agnostic_trajectory"
+kind = "classifier"
+feature_groups = ["core", "open_interest", "binance_prints", "kraken", "spot_l2", "kraken_l2"]
+description = "Trajectory, flow, volatility and L2 model with settlement-boundary and settlement-feed features removed."
+
+[[candidates]]
+name = "crossvenue_lead_lag"
+kind = "classifier"
+feature_groups = ["core", "binance_prints", "kraken", "spot_l2", "kraken_l2"]
+description = "Binance/Kraken disagreement, flow confirmation and L2 response-lag specialist."
+
+[[candidates]]
+name = "refprice_residual_specialist"
+kind = "residual"
+feature_groups = ["core", "candles", "oracle", "refprice", "binance_prints", "kraken"]
+description = "Terminal residual model centered on causal RefPrice boundary context and calibrated to official outcomes."
+
+[[candidates]]
+name = "specialist_dual_head_economics"
+kind = "dual_head"
+feature_groups = ["core", "candles", "oracle"]
+description = "Extended specialist probability with a separate OOF enter-now profitability and loss-risk admission head."
