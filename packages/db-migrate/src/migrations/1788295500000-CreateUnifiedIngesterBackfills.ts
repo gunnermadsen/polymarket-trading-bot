@@ -87,11 +87,14 @@ export class CreateUnifiedIngesterBackfills1788295500000
           ),
         CONSTRAINT chk_ingester_backfill_assignment
           CHECK (
-            (status IN ('running','cancel_requested')
+            (job_kind = 'shard'
+              AND status IN ('running','cancel_requested')
               AND assigned_worker_id IS NOT NULL
               AND lease_token IS NOT NULL
               AND lease_expires_at IS NOT NULL
               AND heartbeat_at IS NOT NULL)
+            OR
+            (job_kind = 'request')
             OR
             (status NOT IN ('running','cancel_requested'))
             OR
