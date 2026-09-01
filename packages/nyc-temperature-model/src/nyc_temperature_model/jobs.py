@@ -172,7 +172,9 @@ class Heartbeat:
 def update_progress(settings: Settings, job: Job, progress: dict[str, Any]) -> None:
     if job.unified:
         master_url = os.environ["INGESTER_MASTER_URL"].rstrip("/")
-        admin_token = os.environ["INGESTER_ADMIN_TOKEN"]
+        admin_token = os.environ.get("INGESTER_ADMIN_TOKEN") or os.environ[
+            "MARKET_DATA_INGESTER_ADMIN_TOKEN"
+        ]
         response = httpx.post(
             f"{master_url}/internal/workers/{job.worker_id}/jobs/{job.job_id}/heartbeat",
             headers={"Authorization": f"Bearer {admin_token}"},
