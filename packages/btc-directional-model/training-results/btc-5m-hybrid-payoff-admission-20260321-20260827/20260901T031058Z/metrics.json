@@ -1,0 +1,5451 @@
+{
+  "admission_model_count": 14,
+  "artifact_sha256": "c0b7a33159ef02dd35a47be1bbb7453b721ef458e060aea5094de883bcda7fa5",
+  "candidate_count_trained": 7,
+  "candidate_names": [
+    "external_flow_only_control",
+    "middle_specialist_refit",
+    "middle_q5_admission",
+    "crossvenue_middle_specialist",
+    "latent_boundary_margin_specialist",
+    "middle_agreement_ensemble",
+    "price_time_calibrated_middle_ensemble"
+  ],
+  "created_at": "2026-09-01T03:43:22.329254+00:00",
+  "derived_ensemble_count": 2,
+  "frozen_comparator_references": {
+    "frozen_middle_specialist": {
+      "manifest_path": "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json",
+      "manifest_sha256": "d77d80c17c488ed3134a7654c2d94b72c7fd694279214d226ea4d5348b6d972d",
+      "model_artifact_sha256": "9ec96d8aaedd7ab656230fa12012122ea934f7a350995ada4d0bc2802464f799",
+      "reason": "Immutable runtime comparator retained for provenance; its input, target, and entry-policy contract is not identical to this tournament panel.",
+      "scored_without_alteration": false
+    },
+    "frozen_q5": {
+      "manifest_path": "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json",
+      "manifest_sha256": "b5d5aed5ac889e5a42801948b2a6a1e88b1a65220ce703f880adf0cb1cbdbcf0",
+      "model_artifact_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e",
+      "reason": "Immutable runtime comparator retained for provenance; its input, target, and entry-policy contract is not identical to this tournament panel.",
+      "scored_without_alteration": false
+    }
+  },
+  "heldout_economic": {
+    "crossvenue_middle_specialist": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.82158398607484,
+        "average_share_cost": 0.7115134377719756,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 39,
+            "net_pnl": -33.494217600000006,
+            "trades": 124,
+            "wins": 85
+          },
+          "150_180": {
+            "losses": 18,
+            "net_pnl": 4.646336662639999,
+            "trades": 73,
+            "wins": 55
+          },
+          "60_89": {
+            "losses": 202,
+            "net_pnl": 18.332568921199986,
+            "trades": 762,
+            "wins": 560
+          },
+          "90_119": {
+            "losses": 60,
+            "net_pnl": -32.77781592198,
+            "trades": 190,
+            "wins": 130
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 125,
+            "net_pnl": 35.112730830839965,
+            "trades": 545,
+            "wins": 420
+          },
+          "0.80_0.95": {
+            "losses": 34,
+            "net_pnl": -15.543506120679986,
+            "trades": 245,
+            "wins": 211
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 160,
+            "net_pnl": -62.8623526483,
+            "trades": 359,
+            "wins": 199
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 166.16438356164383,
+          "average_share_cost": 0.7231161643835615,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 18,
+              "net_pnl": 4.646336662639999,
+              "trades": 73,
+              "wins": 55
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 7,
+              "net_pnl": -3.874310000000003,
+              "trades": 26,
+              "wins": 19
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": 2.6762500000000005,
+              "trades": 23,
+              "wins": 21
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 9,
+              "net_pnl": 5.8443966626399995,
+              "trades": 24,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": 0.06364844743342464,
+          "gross_loss": 61.04850000000001,
+          "gross_profit": 65.69483666264,
+          "losing_trades": 18,
+          "loss_recovery_wins": 2.8394481638069915,
+          "market_coverage": 0.043478260869565216,
+          "maximum_daily_pnl_concentration": 0.9599885959974694,
+          "maximum_drawdown": 16.855329999999995,
+          "net_pnl": 4.646336662639999,
+          "profit_factor": 1.0761089406396551,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": 0.9963366626399929,
+          "trades": 73,
+          "win_loss_ratio": 3.0555555555555554,
+          "win_rate": 0.7534246575342466,
+          "winning_trades": 55
+        },
+        "expectancy_per_trade": -0.0376789625223151,
+        "gross_loss": 1082.78173688694,
+        "gross_profit": 1039.4886089488,
+        "losing_trades": 319,
+        "loss_recovery_wins": 2.710245279959762,
+        "market_coverage": 0.6843359142346634,
+        "maximum_daily_pnl_concentration": 0.6362236214437135,
+        "maximum_drawdown": 95.79305245224018,
+        "net_pnl": -43.293127938140046,
+        "profit_factor": 0.9600167545653197,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -100.74312793814006,
+        "trades": 1149,
+        "win_loss_ratio": 2.6018808777429467,
+        "win_rate": 0.72236727589208,
+        "winning_trades": 830
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 82.6112510495382,
+        "average_share_cost": 0.690932644836272,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 30,
+            "net_pnl": -11.602262600000007,
+            "trades": 107,
+            "wins": 77
+          },
+          "150_180": {
+            "losses": 26,
+            "net_pnl": -11.413231920640003,
+            "trades": 76,
+            "wins": 50
+          },
+          "60_89": {
+            "losses": 253,
+            "net_pnl": -16.573698655760005,
+            "trades": 852,
+            "wins": 599
+          },
+          "90_119": {
+            "losses": 46,
+            "net_pnl": -6.3549420235400085,
+            "trades": 156,
+            "wins": 110
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 125,
+            "net_pnl": 33.42132554333996,
+            "trades": 530,
+            "wins": 405
+          },
+          "0.80_0.95": {
+            "losses": 31,
+            "net_pnl": -8.191011120679992,
+            "trades": 233,
+            "wins": 202
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 199,
+            "net_pnl": -71.1744496226,
+            "trades": 428,
+            "wins": 229
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 166.9078947368421,
+          "average_share_cost": 0.6696400000000001,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 26,
+              "net_pnl": -11.413231920640003,
+              "trades": 76,
+              "wins": 50
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 8,
+              "net_pnl": -7.230590000000002,
+              "trades": 26,
+              "wins": 18
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": 0.2361299999999992,
+              "trades": 19,
+              "wins": 17
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 16,
+              "net_pnl": -4.418771920640001,
+              "trades": 31,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": -0.15017410421894742,
+          "gross_loss": 79.82582000000001,
+          "gross_profit": 68.41258807936,
+          "losing_trades": 26,
+          "loss_recovery_wins": 2.243902717576131,
+          "market_coverage": 0.04526503871351995,
+          "maximum_daily_pnl_concentration": 0.8193214955738406,
+          "maximum_drawdown": 29.682186920640003,
+          "net_pnl": -11.413231920640003,
+          "profit_factor": 0.8570233049827738,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -15.213231920640002,
+          "trades": 76,
+          "win_loss_ratio": 1.9230769230769231,
+          "win_rate": 0.6578947368421053,
+          "winning_trades": 50
+        },
+        "expectancy_per_trade": -0.038576100083912684,
+        "gross_loss": 1153.33428770196,
+        "gross_profit": 1107.39015250202,
+        "losing_trades": 355,
+        "loss_recovery_wins": 2.4526324535910797,
+        "market_coverage": 0.7093508040500298,
+        "maximum_daily_pnl_concentration": 0.7231917144564052,
+        "maximum_drawdown": 98.77963095380017,
+        "net_pnl": -45.94413519994001,
+        "profit_factor": 0.9601640775880474,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -105.49413519994005,
+        "trades": 1191,
+        "win_loss_ratio": 2.3549295774647887,
+        "win_rate": 0.7019311502938707,
+        "winning_trades": 836
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 104.73240832507433,
+        "average_share_cost": 0.6487576015857285,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 123,
+            "net_pnl": -81.71990677490001,
+            "trades": 381,
+            "wins": 258
+          },
+          "150_180": {
+            "losses": 12,
+            "net_pnl": 7.748984547439998,
+            "trades": 76,
+            "wins": 64
+          },
+          "60_89": {
+            "losses": 116,
+            "net_pnl": -64.69783505666001,
+            "trades": 297,
+            "wins": 181
+          },
+          "90_119": {
+            "losses": 114,
+            "net_pnl": -12.419077747179998,
+            "trades": 255,
+            "wins": 141
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 92,
+            "net_pnl": -36.01478500042003,
+            "trades": 323,
+            "wins": 231
+          },
+          "0.80_0.95": {
+            "losses": 23,
+            "net_pnl": -14.377642177999997,
+            "trades": 168,
+            "wins": 145
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 250,
+            "net_pnl": -100.69540785288001,
+            "trades": 518,
+            "wins": 268
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 162.96052631578948,
+          "average_share_cost": 0.8071015789473683,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 12,
+              "net_pnl": 7.748984547439998,
+              "trades": 76,
+              "wins": 64
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 4,
+              "net_pnl": 2.087889999999999,
+              "trades": 19,
+              "wins": 15
+            },
+            "0.80_0.95": {
+              "losses": 4,
+              "net_pnl": -0.9341300000000008,
+              "trades": 44,
+              "wins": 40
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": 6.595224547439997,
+              "trades": 13,
+              "wins": 9
+            }
+          },
+          "expectancy_per_trade": 0.10196032299263155,
+          "gross_loss": 43.915065000000006,
+          "gross_profit": 51.664049547439994,
+          "losing_trades": 12,
+          "loss_recovery_wins": 4.53339763436344,
+          "market_coverage": 0.04526503871351995,
+          "maximum_daily_pnl_concentration": 0.45389848169844443,
+          "maximum_drawdown": 20.93744,
+          "net_pnl": 7.748984547439998,
+          "profit_factor": 1.1764539013534419,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 3.9489845474399896,
+          "trades": 76,
+          "win_loss_ratio": 5.333333333333333,
+          "win_rate": 0.8421052631578947,
+          "winning_trades": 64
+        },
+        "expectancy_per_trade": -0.1497401734700694,
+        "gross_loss": 1110.9591561378202,
+        "gross_profit": 959.87132110652,
+        "losing_trades": 365,
+        "loss_recovery_wins": 2.042105050589122,
+        "market_coverage": 0.6009529481834425,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 160.43104861265982,
+        "net_pnl": -151.08783503130002,
+        "profit_factor": 0.864002349504416,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -201.53783503130006,
+        "trades": 1009,
+        "win_loss_ratio": 1.7643835616438357,
+        "win_rate": 0.6382556987115956,
+        "winning_trades": 644
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 68.89020537124803,
+        "average_share_cost": 0.6458535229067931,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 13,
+            "net_pnl": -8.308905000000001,
+            "trades": 37,
+            "wins": 24
+          },
+          "150_180": {
+            "losses": 8,
+            "net_pnl": -12.274351920640004,
+            "trades": 18,
+            "wins": 10
+          },
+          "60_89": {
+            "losses": 381,
+            "net_pnl": 3.2744888485999795,
+            "trades": 1129,
+            "wins": 748
+          },
+          "90_119": {
+            "losses": 31,
+            "net_pnl": -30.097009934280003,
+            "trades": 82,
+            "wins": 51
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 100,
+            "net_pnl": 62.419510608239975,
+            "trades": 442,
+            "wins": 342
+          },
+          "0.80_0.95": {
+            "losses": 26,
+            "net_pnl": -16.823483520679993,
+            "trades": 180,
+            "wins": 154
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 307,
+            "net_pnl": -93.00180509388001,
+            "trades": 644,
+            "wins": 337
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.27777777777777,
+          "average_share_cost": 0.6751466666666668,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 8,
+              "net_pnl": -12.274351920640004,
+              "trades": 18,
+              "wins": 10
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 2,
+              "net_pnl": -3.95883,
+              "trades": 5,
+              "wins": 3
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": -1.3713649999999997,
+              "trades": 7,
+              "wins": 6
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 5,
+              "net_pnl": -6.944156920640001,
+              "trades": 6,
+              "wins": 1
+            }
+          },
+          "expectancy_per_trade": -0.6819084400355558,
+          "gross_loss": 21.5726,
+          "gross_profit": 9.298248079359999,
+          "losing_trades": 8,
+          "loss_recovery_wins": 2.9000893254136604,
+          "market_coverage": 0.01072066706372841,
+          "maximum_daily_pnl_concentration": 1.0,
+          "maximum_drawdown": 16.505915,
+          "net_pnl": -12.274351920640004,
+          "profit_factor": 0.4310212065008389,
+          "profitable_day_ratio": 0.2,
+          "stress_net_pnl": -13.174351920640001,
+          "trades": 18,
+          "win_loss_ratio": 1.25,
+          "win_rate": 0.5555555555555556,
+          "winning_trades": 10
+        },
+        "expectancy_per_trade": -0.03744532227987365,
+        "gross_loss": 1312.3366743524398,
+        "gross_profit": 1264.9308963461199,
+        "losing_trades": 433,
+        "loss_recovery_wins": 1.9958852575176458,
+        "market_coverage": 0.7540202501488982,
+        "maximum_daily_pnl_concentration": 0.7601925239455499,
+        "maximum_drawdown": 128.0423743497403,
+        "net_pnl": -47.40577800632004,
+        "profit_factor": 0.9638768168772607,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -110.70577800632006,
+        "trades": 1266,
+        "win_loss_ratio": 1.9237875288683604,
+        "win_rate": 0.6579778830963665,
+        "winning_trades": 833
+      }
+    },
+    "external_flow_only_control": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 89.34285714285714,
+        "average_share_cost": 0.702159180952381,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 54,
+            "net_pnl": -51.96771660000002,
+            "trades": 164,
+            "wins": 110
+          },
+          "150_180": {
+            "losses": 27,
+            "net_pnl": -16.183694999999997,
+            "trades": 71,
+            "wins": 44
+          },
+          "60_89": {
+            "losses": 157,
+            "net_pnl": 15.179843284179988,
+            "trades": 600,
+            "wins": 443
+          },
+          "90_119": {
+            "losses": 77,
+            "net_pnl": -56.22401127508,
+            "trades": 215,
+            "wins": 138
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 128,
+            "net_pnl": 11.292937706039979,
+            "trades": 527,
+            "wins": 399
+          },
+          "0.80_0.95": {
+            "losses": 26,
+            "net_pnl": -0.5454199999999894,
+            "trades": 199,
+            "wins": 173
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 161,
+            "net_pnl": -119.94309729694,
+            "trades": 324,
+            "wins": 163
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 164.29577464788733,
+          "average_share_cost": 0.6463380281690141,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 27,
+              "net_pnl": -16.183694999999997,
+              "trades": 71,
+              "wins": 44
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 7,
+              "net_pnl": -7.6934850000000035,
+              "trades": 22,
+              "wins": 15
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": -1.2086950000000014,
+              "trades": 15,
+              "wins": 13
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 18,
+              "net_pnl": -7.281514999999999,
+              "trades": 34,
+              "wins": 16
+            }
+          },
+          "expectancy_per_trade": -0.22793936619718305,
+          "gross_loss": 81.48676000000002,
+          "gross_profit": 65.30306499999999,
+          "losing_trades": 27,
+          "loss_recovery_wins": 2.0334916671754777,
+          "market_coverage": 0.04228707564026206,
+          "maximum_daily_pnl_concentration": 0.781351061176241,
+          "maximum_drawdown": 30.464959999999998,
+          "net_pnl": -16.183694999999997,
+          "profit_factor": 0.8013947910065387,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -19.733695000000004,
+          "trades": 71,
+          "win_loss_ratio": 1.6296296296296295,
+          "win_rate": 0.6197183098591549,
+          "winning_trades": 44
+        },
+        "expectancy_per_trade": -0.10399579008657142,
+        "gross_loss": 1050.79817420056,
+        "gross_profit": 941.60259460966,
+        "losing_trades": 315,
+        "loss_recovery_wins": 2.603924862255068,
+        "market_coverage": 0.6253722453841573,
+        "maximum_daily_pnl_concentration": 0.7115156370768413,
+        "maximum_drawdown": 139.99126724472026,
+        "net_pnl": -109.1955795909,
+        "profit_factor": 0.896083203918797,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -161.6955795909001,
+        "trades": 1050,
+        "win_loss_ratio": 2.3333333333333335,
+        "win_rate": 0.7,
+        "winning_trades": 735
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 86.99721964782206,
+        "average_share_cost": 0.6875974235403151,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 50,
+            "net_pnl": -41.98313767816,
+            "trades": 147,
+            "wins": 97
+          },
+          "150_180": {
+            "losses": 27,
+            "net_pnl": -21.095190000000006,
+            "trades": 74,
+            "wins": 47
+          },
+          "60_89": {
+            "losses": 207,
+            "net_pnl": -38.586053991800014,
+            "trades": 673,
+            "wins": 466
+          },
+          "90_119": {
+            "losses": 60,
+            "net_pnl": -34.15990451313999,
+            "trades": 185,
+            "wins": 125
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 111,
+            "net_pnl": 16.93588162787998,
+            "trades": 469,
+            "wins": 358
+          },
+          "0.80_0.95": {
+            "losses": 27,
+            "net_pnl": 4.4115950000000055,
+            "trades": 213,
+            "wins": 186
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 206,
+            "net_pnl": -157.17176281098,
+            "trades": 397,
+            "wins": 191
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 162.77027027027026,
+          "average_share_cost": 0.674054054054054,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 27,
+              "net_pnl": -21.095190000000006,
+              "trades": 74,
+              "wins": 47
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 7,
+              "net_pnl": -5.566010000000005,
+              "trades": 25,
+              "wins": 18
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": -3.2778400000000016,
+              "trades": 20,
+              "wins": 17
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 17,
+              "net_pnl": -12.251339999999997,
+              "trades": 29,
+              "wins": 12
+            }
+          },
+          "expectancy_per_trade": -0.28507013513513524,
+          "gross_loss": 81.883525,
+          "gross_profit": 60.788335,
+          "losing_trades": 27,
+          "loss_recovery_wins": 2.3448246766910623,
+          "market_coverage": 0.044073853484216795,
+          "maximum_daily_pnl_concentration": 0.7060057483357163,
+          "maximum_drawdown": 32.35804,
+          "net_pnl": -21.095190000000006,
+          "profit_factor": 0.7423756488255726,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -24.795190000000005,
+          "trades": 74,
+          "win_loss_ratio": 1.7407407407407407,
+          "win_rate": 0.6351351351351351,
+          "winning_trades": 47
+        },
+        "expectancy_per_trade": -0.1258797833022243,
+        "gross_loss": 1102.4521497146002,
+        "gross_profit": 966.6278635315,
+        "losing_trades": 344,
+        "loss_recovery_wins": 2.4368530207488246,
+        "market_coverage": 0.642644431209053,
+        "maximum_daily_pnl_concentration": 0.6715026852294613,
+        "maximum_drawdown": 161.75220775876022,
+        "net_pnl": -135.8242861831,
+        "profit_factor": 0.8767980213760189,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -189.77428618310006,
+        "trades": 1079,
+        "win_loss_ratio": 2.136627906976744,
+        "win_rate": 0.6811862835959221,
+        "winning_trades": 735
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 93.57142857142857,
+        "average_share_cost": 0.5602766889185581,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 24,
+            "net_pnl": -4.695934250000001,
+            "trades": 46,
+            "wins": 22
+          },
+          "150_180": {
+            "losses": 53,
+            "net_pnl": -40.44574385664,
+            "trades": 126,
+            "wins": 73
+          },
+          "60_89": {
+            "losses": 198,
+            "net_pnl": -100.2815651446,
+            "trades": 397,
+            "wins": 199
+          },
+          "90_119": {
+            "losses": 73,
+            "net_pnl": -26.748103392959997,
+            "trades": 180,
+            "wins": 107
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 56,
+            "net_pnl": -13.262038037120009,
+            "trades": 195,
+            "wins": 139
+          },
+          "0.80_0.95": {
+            "losses": 3,
+            "net_pnl": -5.771014999999999,
+            "trades": 13,
+            "wins": 10
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 289,
+            "net_pnl": -153.13829360708002,
+            "trades": 541,
+            "wins": 252
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 162.18253968253967,
+          "average_share_cost": 0.6237892063492064,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 53,
+              "net_pnl": -40.44574385664,
+              "trades": 126,
+              "wins": 73
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 15,
+              "net_pnl": -12.601545000000005,
+              "trades": 50,
+              "wins": 35
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": -5.771014999999999,
+              "trades": 13,
+              "wins": 10
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 35,
+              "net_pnl": -22.073183856640004,
+              "trades": 63,
+              "wins": 28
+            }
+          },
+          "expectancy_per_trade": -0.3209979671161905,
+          "gross_loss": 152.896771936,
+          "gross_profit": 112.45102807935999,
+          "losing_trades": 53,
+          "loss_recovery_wins": 1.8727589298478138,
+          "market_coverage": 0.07504466944609887,
+          "maximum_daily_pnl_concentration": null,
+          "maximum_drawdown": 41.750183856639985,
+          "net_pnl": -40.44574385664,
+          "profit_factor": 0.7354702565364172,
+          "profitable_day_ratio": 0.0,
+          "stress_net_pnl": -46.745743856640004,
+          "trades": 126,
+          "win_loss_ratio": 1.3773584905660377,
+          "win_rate": 0.5793650793650794,
+          "winning_trades": 73
+        },
+        "expectancy_per_trade": -0.22986828657436584,
+        "gross_loss": 942.4416277282,
+        "gross_profit": 770.270281084,
+        "losing_trades": 348,
+        "loss_recovery_wins": 1.409861487628312,
+        "market_coverage": 0.4460988683740322,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 189.14901972355983,
+        "net_pnl": -172.1713466442,
+        "profit_factor": 0.8173135167434962,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -209.62134664420003,
+        "trades": 749,
+        "win_loss_ratio": 1.1522988505747127,
+        "win_rate": 0.5353805073431241,
+        "winning_trades": 401
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 71.68029435813573,
+        "average_share_cost": 0.6150698119378577,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 22,
+            "net_pnl": -16.315033216740005,
+            "trades": 56,
+            "wins": 34
+          },
+          "150_180": {
+            "losses": 12,
+            "net_pnl": -14.696505000000002,
+            "trades": 24,
+            "wins": 12
+          },
+          "60_89": {
+            "losses": 396,
+            "net_pnl": -85.45723372978003,
+            "trades": 1029,
+            "wins": 633
+          },
+          "90_119": {
+            "losses": 47,
+            "net_pnl": -36.169524513140004,
+            "trades": 114,
+            "wins": 67
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 82,
+            "net_pnl": 57.149305842699974,
+            "trades": 371,
+            "wins": 289
+          },
+          "0.80_0.95": {
+            "losses": 23,
+            "net_pnl": -19.061664999999998,
+            "trades": 149,
+            "wins": 126
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 372,
+            "net_pnl": -190.72593730236,
+            "trades": 703,
+            "wins": 331
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 162.29166666666666,
+          "average_share_cost": 0.60375,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 12,
+              "net_pnl": -14.696505000000002,
+              "trades": 24,
+              "wins": 12
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 1,
+              "net_pnl": -1.5209650000000001,
+              "trades": 3,
+              "wins": 2
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": -0.8964250000000004,
+              "trades": 7,
+              "wins": 6
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 10,
+              "net_pnl": -12.279115000000003,
+              "trades": 14,
+              "wins": 4
+            }
+          },
+          "expectancy_per_trade": -0.6123543750000001,
+          "gross_loss": 30.407845,
+          "gross_profit": 15.71134,
+          "losing_trades": 12,
+          "loss_recovery_wins": 1.9354074827481298,
+          "market_coverage": 0.01429422275163788,
+          "maximum_daily_pnl_concentration": null,
+          "maximum_drawdown": 16.493950000000005,
+          "net_pnl": -14.696505000000002,
+          "profit_factor": 0.5166870588823378,
+          "profitable_day_ratio": 0.0,
+          "stress_net_pnl": -15.896505000000001,
+          "trades": 24,
+          "win_loss_ratio": 1.0,
+          "win_rate": 0.5,
+          "winning_trades": 12
+        },
+        "expectancy_per_trade": -0.12480645663095667,
+        "gross_loss": 1344.75423369066,
+        "gross_profit": 1192.1159372309999,
+        "losing_trades": 477,
+        "loss_recovery_wins": 1.7641880445133484,
+        "market_coverage": 0.7284097677188803,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 192.2246593342404,
+        "net_pnl": -152.63829645966,
+        "profit_factor": 0.8864935371567886,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -213.78829645966007,
+        "trades": 1223,
+        "win_loss_ratio": 1.5639412997903563,
+        "win_rate": 0.6099754701553557,
+        "winning_trades": 746
+      }
+    },
+    "latent_boundary_margin_specialist": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.80647709320695,
+        "average_share_cost": 0.7192201895734598,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 59,
+            "net_pnl": -44.49018899456,
+            "trades": 175,
+            "wins": 116
+          },
+          "150_180": {
+            "losses": 26,
+            "net_pnl": -13.052048519440003,
+            "trades": 86,
+            "wins": 60
+          },
+          "60_89": {
+            "losses": 233,
+            "net_pnl": -5.9107695103000175,
+            "trades": 873,
+            "wins": 640
+          },
+          "90_119": {
+            "losses": 31,
+            "net_pnl": -18.68680456626,
+            "trades": 132,
+            "wins": 101
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 146,
+            "net_pnl": -9.684962166920029,
+            "trades": 584,
+            "wins": 438
+          },
+          "0.80_0.95": {
+            "losses": 49,
+            "net_pnl": -24.971040016579988,
+            "trades": 341,
+            "wins": 292
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 154,
+            "net_pnl": -47.483809407060015,
+            "trades": 341,
+            "wins": 187
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.2325581395349,
+          "average_share_cost": 0.7102330232558139,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 26,
+              "net_pnl": -13.052048519440003,
+              "trades": 86,
+              "wins": 60
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 11,
+              "net_pnl": -13.193279999999998,
+              "trades": 33,
+              "wins": 22
+            },
+            "0.80_0.95": {
+              "losses": 4,
+              "net_pnl": -4.659613519439998,
+              "trades": 27,
+              "wins": 23
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 11,
+              "net_pnl": 4.800844999999995,
+              "trades": 26,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": -0.15176800604000004,
+          "gross_loss": 87.2288,
+          "gross_profit": 74.17675148055999,
+          "losing_trades": 26,
+          "loss_recovery_wins": 2.7137509630896433,
+          "market_coverage": 0.05122096486003574,
+          "maximum_daily_pnl_concentration": 0.8902624725185639,
+          "maximum_drawdown": 20.011589999999998,
+          "net_pnl": -13.052048519440003,
+          "profit_factor": 0.8503699635964267,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -17.352048519440004,
+          "trades": 86,
+          "win_loss_ratio": 2.3076923076923075,
+          "win_rate": 0.6976744186046512,
+          "winning_trades": 60
+        },
+        "expectancy_per_trade": -0.06488136776505532,
+        "gross_loss": 1191.43279997876,
+        "gross_profit": 1109.2929883882,
+        "losing_trades": 349,
+        "loss_recovery_wins": 2.8220661712751913,
+        "market_coverage": 0.7540202501488982,
+        "maximum_daily_pnl_concentration": 0.7888638072314915,
+        "maximum_drawdown": 117.83108218350044,
+        "net_pnl": -82.13981159056003,
+        "profit_factor": 0.9310579567794136,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -145.43981159056005,
+        "trades": 1266,
+        "win_loss_ratio": 2.627507163323782,
+        "win_rate": 0.7243285939968405,
+        "winning_trades": 917
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 82.27486296006265,
+        "average_share_cost": 0.7039262803445575,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 35,
+            "net_pnl": -10.751070000000006,
+            "trades": 120,
+            "wins": 85
+          },
+          "150_180": {
+            "losses": 18,
+            "net_pnl": -2.783724999999995,
+            "trades": 60,
+            "wins": 42
+          },
+          "60_89": {
+            "losses": 237,
+            "net_pnl": 12.59607416999999,
+            "trades": 882,
+            "wins": 645
+          },
+          "90_119": {
+            "losses": 74,
+            "net_pnl": -45.27077468474,
+            "trades": 215,
+            "wins": 141
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 127,
+            "net_pnl": 1.2337454385399829,
+            "trades": 519,
+            "wins": 392
+          },
+          "0.80_0.95": {
+            "losses": 45,
+            "net_pnl": 0.9962035028600376,
+            "trades": 346,
+            "wins": 301
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 192,
+            "net_pnl": -48.439444456140016,
+            "trades": 412,
+            "wins": 220
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.33333333333334,
+          "average_share_cost": 0.6915,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 18,
+              "net_pnl": -2.783724999999995,
+              "trades": 60,
+              "wins": 42
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 5,
+              "net_pnl": -1.3697450000000002,
+              "trades": 20,
+              "wins": 15
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": -4.83502,
+              "trades": 18,
+              "wins": 15
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 10,
+              "net_pnl": 3.4210400000000005,
+              "trades": 22,
+              "wins": 12
+            }
+          },
+          "expectancy_per_trade": -0.046395416666666585,
+          "gross_loss": 57.64759,
+          "gross_profit": 54.863865000000004,
+          "losing_trades": 18,
+          "loss_recovery_wins": 2.4517237954951465,
+          "market_coverage": 0.0357355568790947,
+          "maximum_daily_pnl_concentration": 0.5252488310120399,
+          "maximum_drawdown": 21.358995,
+          "net_pnl": -2.783724999999995,
+          "profit_factor": 0.9517113378026731,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": -5.783725000000003,
+          "trades": 60,
+          "win_loss_ratio": 2.3333333333333335,
+          "win_rate": 0.7,
+          "winning_trades": 42
+        },
+        "expectancy_per_trade": -0.03618597925978075,
+        "gross_loss": 1195.63427925496,
+        "gross_profit": 1149.42478374022,
+        "losing_trades": 364,
+        "loss_recovery_wins": 2.609078792484402,
+        "market_coverage": 0.7605717689100655,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 81.35169082603998,
+        "net_pnl": -46.20949551474002,
+        "profit_factor": 0.9613514798659548,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -110.05949551474004,
+        "trades": 1277,
+        "win_loss_ratio": 2.508241758241758,
+        "win_rate": 0.7149569303054033,
+        "winning_trades": 913
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 81.49528706083976,
+        "average_share_cost": 0.6379096143958868,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 18,
+            "net_pnl": 3.529259999999999,
+            "trades": 43,
+            "wins": 25
+          },
+          "150_180": {
+            "losses": 22,
+            "net_pnl": -1.847574999999999,
+            "trades": 73,
+            "wins": 51
+          },
+          "60_89": {
+            "losses": 292,
+            "net_pnl": -32.74633313810001,
+            "trades": 774,
+            "wins": 482
+          },
+          "90_119": {
+            "losses": 85,
+            "net_pnl": -56.57434738401999,
+            "trades": 277,
+            "wins": 192
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 89,
+            "net_pnl": 45.943135355839956,
+            "trades": 414,
+            "wins": 325
+          },
+          "0.80_0.95": {
+            "losses": 15,
+            "net_pnl": 10.941174240640017,
+            "trades": 120,
+            "wins": 105
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 313,
+            "net_pnl": -144.5233051186,
+            "trades": 633,
+            "wins": 320
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 158.97260273972603,
+          "average_share_cost": 0.6861643835616438,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 22,
+              "net_pnl": -1.847574999999999,
+              "trades": 73,
+              "wins": 51
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 2,
+              "net_pnl": 3.244654999999998,
+              "trades": 11,
+              "wins": 9
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": 4.244420000000004,
+              "trades": 31,
+              "wins": 28
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 17,
+              "net_pnl": -9.336649999999999,
+              "trades": 31,
+              "wins": 14
+            }
+          },
+          "expectancy_per_trade": -0.025309246575342455,
+          "gross_loss": 60.654135,
+          "gross_profit": 58.80655999999999,
+          "losing_trades": 22,
+          "loss_recovery_wins": 2.3910140799690622,
+          "market_coverage": 0.043478260869565216,
+          "maximum_daily_pnl_concentration": 0.983529880312036,
+          "maximum_drawdown": 25.11334,
+          "net_pnl": -1.847574999999999,
+          "profit_factor": 0.9695391748641703,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -5.497575000000006,
+          "trades": 73,
+          "win_loss_ratio": 2.3181818181818183,
+          "win_rate": 0.6986301369863014,
+          "winning_trades": 51
+        },
+        "expectancy_per_trade": -0.0750976825382348,
+        "gross_loss": 1242.3900598371602,
+        "gross_profit": 1154.75106431504,
+        "losing_trades": 417,
+        "loss_recovery_wins": 1.9350616467588537,
+        "market_coverage": 0.6950565812983919,
+        "maximum_daily_pnl_concentration": 0.5129613225896158,
+        "maximum_drawdown": 144.91967588908057,
+        "net_pnl": -87.63899552212001,
+        "profit_factor": 0.9294593555154433,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -145.98899552212006,
+        "trades": 1167,
+        "win_loss_ratio": 1.7985611510791366,
+        "win_rate": 0.6426735218508998,
+        "winning_trades": 750
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 66.7757712565839,
+        "average_share_cost": 0.6569288638073739,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 8,
+            "net_pnl": 3.026794999999998,
+            "trades": 30,
+            "wins": 22
+          },
+          "150_180": {
+            "losses": 5,
+            "net_pnl": -5.739129999999999,
+            "trades": 12,
+            "wins": 7
+          },
+          "60_89": {
+            "losses": 399,
+            "net_pnl": 9.22425295129996,
+            "trades": 1227,
+            "wins": 828
+          },
+          "90_119": {
+            "losses": 18,
+            "net_pnl": -5.529055000000001,
+            "trades": 60,
+            "wins": 42
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 100,
+            "net_pnl": 40.30195378239998,
+            "trades": 425,
+            "wins": 325
+          },
+          "0.80_0.95": {
+            "losses": 36,
+            "net_pnl": -20.140826497139976,
+            "trades": 245,
+            "wins": 209
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 294,
+            "net_pnl": -19.17826433396003,
+            "trades": 659,
+            "wins": 365
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 158.75,
+          "average_share_cost": 0.6616666666666667,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 5,
+              "net_pnl": -5.739129999999999,
+              "trades": 12,
+              "wins": 7
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 1.9339399999999998,
+              "trades": 2,
+              "wins": 2
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": -1.6436099999999993,
+              "trades": 5,
+              "wins": 4
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": -6.02946,
+              "trades": 5,
+              "wins": 1
+            }
+          },
+          "expectancy_per_trade": -0.4782608333333333,
+          "gross_loss": 12.19082,
+          "gross_profit": 6.45169,
+          "losing_trades": 5,
+          "loss_recovery_wins": 2.6453763277528832,
+          "market_coverage": 0.00714711137581894,
+          "maximum_daily_pnl_concentration": 0.5634845674806093,
+          "maximum_drawdown": 10.496345,
+          "net_pnl": -5.739129999999999,
+          "profit_factor": 0.529225269506071,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -6.339130000000001,
+          "trades": 12,
+          "win_loss_ratio": 1.4,
+          "win_rate": 0.5833333333333334,
+          "winning_trades": 7
+        },
+        "expectancy_per_trade": 0.0007395507534236211,
+        "gross_loss": 1326.5769602125001,
+        "gross_profit": 1327.5598231638,
+        "losing_trades": 430,
+        "loss_recovery_wins": 2.089149820038937,
+        "market_coverage": 0.7915425848719476,
+        "maximum_daily_pnl_concentration": 0.9315188187441336,
+        "maximum_drawdown": 102.72304336540012,
+        "net_pnl": 0.9828629512999925,
+        "profit_factor": 1.0007409015690598,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -65.46713704870007,
+        "trades": 1329,
+        "win_loss_ratio": 2.0906976744186045,
+        "win_rate": 0.6764484574868322,
+        "winning_trades": 899
+      }
+    },
+    "middle_agreement_ensemble": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 88.37765957446808,
+        "average_share_cost": 0.7197606560283688,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 36,
+            "net_pnl": 8.400869999999996,
+            "trades": 132,
+            "wins": 96
+          },
+          "150_180": {
+            "losses": 31,
+            "net_pnl": -23.68001711464001,
+            "trades": 98,
+            "wins": 67
+          },
+          "60_89": {
+            "losses": 158,
+            "net_pnl": 45.55930756865999,
+            "trades": 681,
+            "wins": 523
+          },
+          "90_119": {
+            "losses": 82,
+            "net_pnl": -87.98520889843999,
+            "trades": 217,
+            "wins": 135
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 161,
+            "net_pnl": -36.50648760066002,
+            "trades": 613,
+            "wins": 452
+          },
+          "0.80_0.95": {
+            "losses": 31,
+            "net_pnl": 14.18802350286002,
+            "trades": 251,
+            "wins": 220
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 115,
+            "net_pnl": -35.38658434662,
+            "trades": 264,
+            "wins": 149
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.30612244897958,
+          "average_share_cost": 0.7140118367346938,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 31,
+              "net_pnl": -23.68001711464001,
+              "trades": 98,
+              "wins": 67
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 14,
+              "net_pnl": -19.161315000000005,
+              "trades": 41,
+              "wins": 27
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": 1.1064149999999997,
+              "trades": 27,
+              "wins": 24
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 14,
+              "net_pnl": -5.625117114640004,
+              "trades": 30,
+              "wins": 16
+            }
+          },
+          "expectancy_per_trade": -0.24163282770040825,
+          "gross_loss": 103.43605711464001,
+          "gross_profit": 79.75603999999998,
+          "losing_trades": 31,
+          "loss_recovery_wins": 2.8029895823284403,
+          "market_coverage": 0.058368076235854674,
+          "maximum_daily_pnl_concentration": 0.640717174762688,
+          "maximum_drawdown": 24.74303211464,
+          "net_pnl": -23.68001711464001,
+          "profit_factor": 0.771066127468538,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -28.580017114640007,
+          "trades": 98,
+          "win_loss_ratio": 2.161290322580645,
+          "win_rate": 0.6836734693877551,
+          "winning_trades": 67
+        },
+        "expectancy_per_trade": -0.051156957840797906,
+        "gross_loss": 1060.82621928908,
+        "gross_profit": 1003.12117084466,
+        "losing_trades": 307,
+        "loss_recovery_wins": 2.828105657176014,
+        "market_coverage": 0.6718284693269804,
+        "maximum_daily_pnl_concentration": 0.9430627003189137,
+        "maximum_drawdown": 87.36614844442005,
+        "net_pnl": -57.705048444420036,
+        "profit_factor": 0.9456036743859033,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -114.10504844442008,
+        "trades": 1128,
+        "win_loss_ratio": 2.6742671009771986,
+        "win_rate": 0.7278368794326241,
+        "winning_trades": 821
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.47048611111111,
+        "average_share_cost": 0.6982474305555555,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 25,
+            "net_pnl": -17.718435000000003,
+            "trades": 94,
+            "wins": 69
+          },
+          "150_180": {
+            "losses": 36,
+            "net_pnl": -33.61413017864,
+            "trades": 97,
+            "wins": 61
+          },
+          "60_89": {
+            "losses": 218,
+            "net_pnl": 41.67683406825998,
+            "trades": 785,
+            "wins": 567
+          },
+          "90_119": {
+            "losses": 63,
+            "net_pnl": -69.12350676193998,
+            "trades": 176,
+            "wins": 113
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 125,
+            "net_pnl": 9.622380543339986,
+            "trades": 517,
+            "wins": 392
+          },
+          "0.80_0.95": {
+            "losses": 34,
+            "net_pnl": 3.55424350286002,
+            "trades": 257,
+            "wins": 223
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 183,
+            "net_pnl": -91.95586191852,
+            "trades": 378,
+            "wins": 195
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 163.4536082474227,
+          "average_share_cost": 0.6797769072164949,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 36,
+              "net_pnl": -33.61413017864,
+              "trades": 97,
+              "wins": 61
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 12,
+              "net_pnl": -14.668435000000006,
+              "trades": 37,
+              "wins": 25
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": -1.7117250000000004,
+              "trades": 23,
+              "wins": 20
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 21,
+              "net_pnl": -17.233970178640007,
+              "trades": 37,
+              "wins": 16
+            }
+          },
+          "expectancy_per_trade": -0.3465374245220619,
+          "gross_loss": 112.07421517864,
+          "gross_profit": 78.46008499999999,
+          "losing_trades": 36,
+          "loss_recovery_wins": 2.4203839605184956,
+          "market_coverage": 0.057772483621203095,
+          "maximum_daily_pnl_concentration": 1.0,
+          "maximum_drawdown": 38.15660017863999,
+          "net_pnl": -33.61413017864,
+          "profit_factor": 0.7000725802535314,
+          "profitable_day_ratio": 0.2,
+          "stress_net_pnl": -38.46413017864001,
+          "trades": 97,
+          "win_loss_ratio": 1.6944444444444444,
+          "win_rate": 0.6288659793814433,
+          "winning_trades": 61
+        },
+        "expectancy_per_trade": -0.06838475509750001,
+        "gross_loss": 1116.9522919185201,
+        "gross_profit": 1038.1730540462,
+        "losing_trades": 342,
+        "loss_recovery_wins": 2.5481429253577907,
+        "market_coverage": 0.6861226920786182,
+        "maximum_daily_pnl_concentration": 0.5587262373721943,
+        "maximum_drawdown": 118.6652928723202,
+        "net_pnl": -78.77923787232001,
+        "profit_factor": 0.9294694693387432,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -136.37923787232006,
+        "trades": 1152,
+        "win_loss_ratio": 2.3684210526315788,
+        "win_rate": 0.703125,
+        "winning_trades": 810
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 94.92647058823529,
+        "average_share_cost": 0.680129669117647,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 46,
+            "net_pnl": -29.932799999999993,
+            "trades": 142,
+            "wins": 96
+          },
+          "150_180": {
+            "losses": 15,
+            "net_pnl": -6.997340631200003,
+            "trades": 55,
+            "wins": 40
+          },
+          "60_89": {
+            "losses": 109,
+            "net_pnl": 0.5304699433399849,
+            "trades": 338,
+            "wins": 229
+          },
+          "90_119": {
+            "losses": 186,
+            "net_pnl": -107.78465787234,
+            "trades": 553,
+            "wins": 367
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 116,
+            "net_pnl": -10.609429995200037,
+            "trades": 435,
+            "wins": 319
+          },
+          "0.80_0.95": {
+            "losses": 25,
+            "net_pnl": 7.028029240640016,
+            "trades": 202,
+            "wins": 177
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 215,
+            "net_pnl": -140.60292780564,
+            "trades": 451,
+            "wins": 236
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 164.8181818181818,
+          "average_share_cost": 0.7357832727272727,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 15,
+              "net_pnl": -6.997340631200003,
+              "trades": 55,
+              "wins": 40
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 3,
+              "net_pnl": 3.7552749999999975,
+              "trades": 15,
+              "wins": 12
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": -2.7553749999999995,
+              "trades": 23,
+              "wins": 20
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 9,
+              "net_pnl": -7.997240631200001,
+              "trades": 17,
+              "wins": 8
+            }
+          },
+          "expectancy_per_trade": -0.12722437511272733,
+          "gross_loss": 49.49630517864001,
+          "gross_profit": 42.49896454744,
+          "losing_trades": 15,
+          "loss_recovery_wins": 3.1057261876510984,
+          "market_coverage": 0.03275759380583681,
+          "maximum_daily_pnl_concentration": 0.947282642168285,
+          "maximum_drawdown": 17.678545,
+          "net_pnl": -6.997340631200003,
+          "profit_factor": 0.858629030875224,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -9.747340631200004,
+          "trades": 55,
+          "win_loss_ratio": 2.6666666666666665,
+          "win_rate": 0.7272727272727273,
+          "winning_trades": 40
+        },
+        "expectancy_per_trade": -0.13252236080900737,
+        "gross_loss": 1153.72592735308,
+        "gross_profit": 1009.54159879288,
+        "losing_trades": 356,
+        "loss_recovery_wins": 2.3498466243264757,
+        "market_coverage": 0.6480047647409172,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 168.63911356020003,
+        "net_pnl": -144.18432856020002,
+        "profit_factor": 0.8750272268813506,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -198.58432856020005,
+        "trades": 1088,
+        "win_loss_ratio": 2.056179775280899,
+        "win_rate": 0.6727941176470589,
+        "winning_trades": 732
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 71.41935483870968,
+        "average_share_cost": 0.6518780322580645,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 15,
+            "net_pnl": 9.4372584,
+            "trades": 50,
+            "wins": 35
+          },
+          "150_180": {
+            "losses": 12,
+            "net_pnl": -26.160135000000004,
+            "trades": 22,
+            "wins": 10
+          },
+          "60_89": {
+            "losses": 355,
+            "net_pnl": -16.23634573470004,
+            "trades": 1067,
+            "wins": 712
+          },
+          "90_119": {
+            "losses": 37,
+            "net_pnl": -25.189503066259995,
+            "trades": 101,
+            "wins": 64
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 99,
+            "net_pnl": 40.87629156989997,
+            "trades": 420,
+            "wins": 321
+          },
+          "0.80_0.95": {
+            "losses": 27,
+            "net_pnl": -2.1629264971399866,
+            "trades": 196,
+            "wins": 169
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 293,
+            "net_pnl": -96.86209047372003,
+            "trades": 624,
+            "wins": 331
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 163.1818181818182,
+          "average_share_cost": 0.675,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 12,
+              "net_pnl": -26.160135000000004,
+              "trades": 22,
+              "wins": 10
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 2,
+              "net_pnl": -4.3435700000000015,
+              "trades": 5,
+              "wins": 3
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": -5.738645,
+              "trades": 8,
+              "wins": 6
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 8,
+              "net_pnl": -16.07792,
+              "trades": 9,
+              "wins": 1
+            }
+          },
+          "expectancy_per_trade": -1.1890970454545455,
+          "gross_loss": 36.07829,
+          "gross_profit": 9.918154999999999,
+          "losing_trades": 12,
+          "loss_recovery_wins": 3.0313341207781765,
+          "market_coverage": 0.013103037522334724,
+          "maximum_daily_pnl_concentration": null,
+          "maximum_drawdown": 27.477289999999996,
+          "net_pnl": -26.160135000000004,
+          "profit_factor": 0.2749064603671626,
+          "profitable_day_ratio": 0.0,
+          "stress_net_pnl": -27.260135000000005,
+          "trades": 22,
+          "win_loss_ratio": 0.8333333333333334,
+          "win_rate": 0.45454545454545453,
+          "winning_trades": 10
+        },
+        "expectancy_per_trade": -0.046894133387871,
+        "gross_loss": 1288.59034847876,
+        "gross_profit": 1230.4416230778002,
+        "losing_trades": 419,
+        "loss_recovery_wins": 2.0520266390146134,
+        "market_coverage": 0.7385348421679571,
+        "maximum_daily_pnl_concentration": 0.8083859455610122,
+        "maximum_drawdown": 118.53463416792022,
+        "net_pnl": -58.14872540096003,
+        "profit_factor": 0.9548741572761219,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -120.14872540096006,
+        "trades": 1240,
+        "win_loss_ratio": 1.9594272076372314,
+        "win_rate": 0.6620967741935484,
+        "winning_trades": 821
+      }
+    },
+    "middle_q5_admission": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 87.58547008547009,
+        "average_share_cost": 0.7201711965811967,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 50,
+            "net_pnl": -56.04254107816,
+            "trades": 148,
+            "wins": 98
+          },
+          "150_180": {
+            "losses": 25,
+            "net_pnl": -9.213238337359996,
+            "trades": 93,
+            "wins": 68
+          },
+          "60_89": {
+            "losses": 186,
+            "net_pnl": 31.14891833227998,
+            "trades": 742,
+            "wins": 556
+          },
+          "90_119": {
+            "losses": 58,
+            "net_pnl": -30.073911761940003,
+            "trades": 187,
+            "wins": 129
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 142,
+            "net_pnl": 11.954802084799978,
+            "trades": 592,
+            "wins": 450
+          },
+          "0.80_0.95": {
+            "losses": 32,
+            "net_pnl": 7.1490135028600195,
+            "trades": 269,
+            "wins": 237
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 145,
+            "net_pnl": -83.28458843284001,
+            "trades": 309,
+            "wins": 164
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 166.1290322580645,
+          "average_share_cost": 0.7339513978494624,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 25,
+              "net_pnl": -9.213238337359996,
+              "trades": 93,
+              "wins": 68
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 13,
+              "net_pnl": -22.327235000000005,
+              "trades": 36,
+              "wins": 23
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 10.282560000000004,
+              "trades": 31,
+              "wins": 30
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 11,
+              "net_pnl": 2.831436662639999,
+              "trades": 26,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": -0.09906707889634404,
+          "gross_loss": 83.889155,
+          "gross_profit": 74.67591666263999,
+          "losing_trades": 25,
+          "loss_recovery_wins": 3.0555835374720837,
+          "market_coverage": 0.05539011316259678,
+          "maximum_daily_pnl_concentration": 0.6153893838224616,
+          "maximum_drawdown": 24.88994333736,
+          "net_pnl": -9.213238337359996,
+          "profit_factor": 0.8901736662222904,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -13.863238337360006,
+          "trades": 93,
+          "win_loss_ratio": 2.72,
+          "win_rate": 0.7311827956989247,
+          "winning_trades": 68
+        },
+        "expectancy_per_trade": -0.054855361406136754,
+        "gross_loss": 1087.7653653111001,
+        "gross_profit": 1023.58459246592,
+        "losing_trades": 319,
+        "loss_recovery_wins": 2.8349823777279126,
+        "market_coverage": 0.6968433591423466,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 96.72984676702012,
+        "net_pnl": -64.18077284518,
+        "profit_factor": 0.9409975948013158,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -122.68077284518007,
+        "trades": 1170,
+        "win_loss_ratio": 2.6677115987460813,
+        "win_rate": 0.7273504273504273,
+        "winning_trades": 851
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.7016806722689,
+        "average_share_cost": 0.7063843529411764,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 38,
+            "net_pnl": -30.671259999999997,
+            "trades": 119,
+            "wins": 81
+          },
+          "150_180": {
+            "losses": 26,
+            "net_pnl": -21.077440000000003,
+            "trades": 83,
+            "wins": 57
+          },
+          "60_89": {
+            "losses": 216,
+            "net_pnl": 20.556589010919975,
+            "trades": 803,
+            "wins": 587
+          },
+          "90_119": {
+            "losses": 58,
+            "net_pnl": -21.28835176194,
+            "trades": 185,
+            "wins": 127
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 126,
+            "net_pnl": 30.726482775459967,
+            "trades": 541,
+            "wins": 415
+          },
+          "0.80_0.95": {
+            "losses": 34,
+            "net_pnl": -5.090231497139987,
+            "trades": 263,
+            "wins": 229
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 178,
+            "net_pnl": -78.11671402934,
+            "trades": 386,
+            "wins": 208
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.84337349397592,
+          "average_share_cost": 0.7202409638554216,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 26,
+              "net_pnl": -21.077440000000003,
+              "trades": 83,
+              "wins": 57
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 11,
+              "net_pnl": -17.495285000000006,
+              "trades": 31,
+              "wins": 20
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": 3.2965450000000014,
+              "trades": 26,
+              "wins": 24
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 13,
+              "net_pnl": -6.878699999999999,
+              "trades": 26,
+              "wins": 13
+            }
+          },
+          "expectancy_per_trade": -0.2539450602409639,
+          "gross_loss": 86.57414499999999,
+          "gross_profit": 65.49670499999999,
+          "losing_trades": 26,
+          "loss_recovery_wins": 2.8978124019897114,
+          "market_coverage": 0.049434187016081,
+          "maximum_daily_pnl_concentration": 0.9441569342565836,
+          "maximum_drawdown": 26.5261,
+          "net_pnl": -21.077440000000003,
+          "profit_factor": 0.756538860418431,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -25.22744000000001,
+          "trades": 83,
+          "win_loss_ratio": 2.1923076923076925,
+          "win_rate": 0.6867469879518072,
+          "winning_trades": 57
+        },
+        "expectancy_per_trade": -0.04410122920253781,
+        "gross_loss": 1122.954292166,
+        "gross_profit": 1070.4738294149802,
+        "losing_trades": 338,
+        "loss_recovery_wins": 2.6442890077936037,
+        "market_coverage": 0.7087552114353782,
+        "maximum_daily_pnl_concentration": 0.8885832386994152,
+        "maximum_drawdown": 89.90335290324009,
+        "net_pnl": -52.48046275102,
+        "profit_factor": 0.9532657178327416,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -111.98046275102006,
+        "trades": 1190,
+        "win_loss_ratio": 2.5207100591715976,
+        "win_rate": 0.7159663865546219,
+        "winning_trades": 852
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 82.58432539682539,
+        "average_share_cost": 0.6289204166666666,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 29,
+            "net_pnl": 18.868395,
+            "trades": 77,
+            "wins": 48
+          },
+          "150_180": {
+            "losses": 23,
+            "net_pnl": 3.7524149999999974,
+            "trades": 67,
+            "wins": 44
+          },
+          "60_89": {
+            "losses": 255,
+            "net_pnl": -39.335444221820026,
+            "trades": 707,
+            "wins": 452
+          },
+          "90_119": {
+            "losses": 52,
+            "net_pnl": -10.67374344904001,
+            "trades": 157,
+            "wins": 105
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 92,
+            "net_pnl": 54.136973143339965,
+            "trades": 401,
+            "wins": 309
+          },
+          "0.80_0.95": {
+            "losses": 3,
+            "net_pnl": 12.141301550960003,
+            "trades": 41,
+            "wins": 38
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 264,
+            "net_pnl": -93.66665236516,
+            "trades": 566,
+            "wins": 302
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 163.28358208955223,
+          "average_share_cost": 0.6264179104477612,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 23,
+              "net_pnl": 3.7524149999999974,
+              "trades": 67,
+              "wins": 44
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 5,
+              "net_pnl": -1.1233950000000021,
+              "trades": 19,
+              "wins": 14
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 6.74374,
+              "trades": 12,
+              "wins": 12
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 18,
+              "net_pnl": -1.8679299999999994,
+              "trades": 36,
+              "wins": 18
+            }
+          },
+          "expectancy_per_trade": 0.05600619402985071,
+          "gross_loss": 63.47456000000001,
+          "gross_profit": 67.226975,
+          "losing_trades": 23,
+          "loss_recovery_wins": 1.8062629330485016,
+          "market_coverage": 0.039904705181655745,
+          "maximum_daily_pnl_concentration": 0.5669067426019087,
+          "maximum_drawdown": 22.10114,
+          "net_pnl": 3.7524149999999974,
+          "profit_factor": 1.0591168335786807,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": 0.4024149999999924,
+          "trades": 67,
+          "win_loss_ratio": 1.9130434782608696,
+          "win_rate": 0.6567164179104478,
+          "winning_trades": 44
+        },
+        "expectancy_per_trade": -0.027171009594107162,
+        "gross_loss": 1092.07807610196,
+        "gross_profit": 1064.6896984311,
+        "losing_trades": 359,
+        "loss_recovery_wins": 1.8543037849302932,
+        "market_coverage": 0.600357355568791,
+        "maximum_daily_pnl_concentration": 0.5675669694196877,
+        "maximum_drawdown": 78.67221803782009,
+        "net_pnl": -27.38837767086002,
+        "profit_factor": 0.9749208611818125,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -77.78837767086006,
+        "trades": 1008,
+        "win_loss_ratio": 1.807799442896936,
+        "win_rate": 0.6438492063492064,
+        "winning_trades": 649
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 70.27950310559007,
+        "average_share_cost": 0.6508019099378881,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 12,
+            "net_pnl": -2.0489700000000006,
+            "trades": 38,
+            "wins": 26
+          },
+          "150_180": {
+            "losses": 6,
+            "net_pnl": -7.072780000000001,
+            "trades": 24,
+            "wins": 18
+          },
+          "60_89": {
+            "losses": 379,
+            "net_pnl": 5.375709552479968,
+            "trades": 1134,
+            "wins": 755
+          },
+          "90_119": {
+            "losses": 30,
+            "net_pnl": -7.724223066260003,
+            "trades": 92,
+            "wins": 62
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 96,
+            "net_pnl": 80.11438591211997,
+            "trades": 444,
+            "wins": 348
+          },
+          "0.80_0.95": {
+            "losses": 24,
+            "net_pnl": 6.383863502860017,
+            "trades": 203,
+            "wins": 179
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 307,
+            "net_pnl": -97.96851292876,
+            "trades": 641,
+            "wins": 334
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 166.04166666666666,
+          "average_share_cost": 0.7941666666666665,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 6,
+              "net_pnl": -7.072780000000001,
+              "trades": 24,
+              "wins": 18
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 3,
+              "net_pnl": -4.367025000000001,
+              "trades": 9,
+              "wins": 6
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 1.1054550000000007,
+              "trades": 13,
+              "wins": 12
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 2,
+              "net_pnl": -3.81121,
+              "trades": 2,
+              "wins": 0
+            }
+          },
+          "expectancy_per_trade": -0.2946991666666667,
+          "gross_loss": 19.938990000000004,
+          "gross_profit": 12.866209999999999,
+          "losing_trades": 6,
+          "loss_recovery_wins": 4.649152314473339,
+          "market_coverage": 0.01429422275163788,
+          "maximum_daily_pnl_concentration": 0.7490501399509361,
+          "maximum_drawdown": 11.143540000000002,
+          "net_pnl": -7.072780000000001,
+          "profit_factor": 0.6452789233556964,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -8.272780000000001,
+          "trades": 24,
+          "win_loss_ratio": 3.0,
+          "win_rate": 0.75,
+          "winning_trades": 18
+        },
+        "expectancy_per_trade": -0.008905484094549705,
+        "gross_loss": 1288.8152959338,
+        "gross_profit": 1277.3450324200198,
+        "losing_trades": 427,
+        "loss_recovery_wins": 2.0345001902497253,
+        "market_coverage": 0.7671232876712328,
+        "maximum_daily_pnl_concentration": 0.8080775342820867,
+        "maximum_drawdown": 89.98029228074,
+        "net_pnl": -11.47026351378002,
+        "profit_factor": 0.9911001494551092,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -75.87026351378005,
+        "trades": 1288,
+        "win_loss_ratio": 2.0163934426229506,
+        "win_rate": 0.6684782608695652,
+        "winning_trades": 861
+      }
+    },
+    "middle_specialist_refit": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.36215753424658,
+        "average_share_cost": 0.7150603938356164,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 31,
+            "net_pnl": -4.028510000000004,
+            "trades": 112,
+            "wins": 81
+          },
+          "150_180": {
+            "losses": 22,
+            "net_pnl": -16.93885833736,
+            "trades": 81,
+            "wins": 59
+          },
+          "60_89": {
+            "losses": 213,
+            "net_pnl": 8.47074101655997,
+            "trades": 795,
+            "wins": 582
+          },
+          "90_119": {
+            "losses": 50,
+            "net_pnl": -10.687734566260001,
+            "trades": 180,
+            "wins": 130
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 145,
+            "net_pnl": 25.86453559291997,
+            "trades": 600,
+            "wins": 455
+          },
+          "0.80_0.95": {
+            "losses": 30,
+            "net_pnl": 8.260170341500018,
+            "trades": 252,
+            "wins": 222
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 141,
+            "net_pnl": -57.309067821480006,
+            "trades": 316,
+            "wins": 175
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 164.69135802469137,
+          "average_share_cost": 0.7530553086419751,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 22,
+              "net_pnl": -16.93885833736,
+              "trades": 81,
+              "wins": 59
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 13,
+              "net_pnl": -19.138910000000003,
+              "trades": 37,
+              "wins": 24
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 8.681565000000003,
+              "trades": 26,
+              "wins": 25
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 8,
+              "net_pnl": -6.481513337360003,
+              "trades": 18,
+              "wins": 10
+            }
+          },
+          "expectancy_per_trade": -0.20912170786864195,
+          "gross_loss": 77.65307,
+          "gross_profit": 60.714211662640004,
+          "losing_trades": 22,
+          "loss_recovery_wins": 3.430027489398266,
+          "market_coverage": 0.048243001786777845,
+          "maximum_daily_pnl_concentration": 0.5170593975752619,
+          "maximum_drawdown": 24.73241333736,
+          "net_pnl": -16.93885833736,
+          "profit_factor": 0.7818649238547813,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -20.988858337360014,
+          "trades": 81,
+          "win_loss_ratio": 2.6818181818181817,
+          "win_rate": 0.7283950617283951,
+          "winning_trades": 59
+        },
+        "expectancy_per_trade": -0.019849624903304823,
+        "gross_loss": 1080.9467690503802,
+        "gross_profit": 1057.7624071633202,
+        "losing_trades": 316,
+        "loss_recovery_wins": 2.7552987282877965,
+        "market_coverage": 0.6956521739130435,
+        "maximum_daily_pnl_concentration": 0.5943589169602074,
+        "maximum_drawdown": 73.45259084774004,
+        "net_pnl": -23.184361887060035,
+        "profit_factor": 0.9785518005595893,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -81.58436188706006,
+        "trades": 1168,
+        "win_loss_ratio": 2.6962025316455698,
+        "win_rate": 0.7294520547945206,
+        "winning_trades": 852
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 84.19799498746868,
+        "average_share_cost": 0.7040701754385964,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 34,
+            "net_pnl": -5.101658994560011,
+            "trades": 114,
+            "wins": 80
+          },
+          "150_180": {
+            "losses": 24,
+            "net_pnl": -11.25422471266,
+            "trades": 81,
+            "wins": 57
+          },
+          "60_89": {
+            "losses": 216,
+            "net_pnl": 20.38599249661997,
+            "trades": 806,
+            "wins": 590
+          },
+          "90_119": {
+            "losses": 61,
+            "net_pnl": -18.524599999999992,
+            "trades": 196,
+            "wins": 135
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 131,
+            "net_pnl": 32.786999422519976,
+            "trades": 552,
+            "wins": 421
+          },
+          "0.80_0.95": {
+            "losses": 31,
+            "net_pnl": 10.018915628840027,
+            "trades": 261,
+            "wins": 230
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 173,
+            "net_pnl": -57.30040626196001,
+            "trades": 384,
+            "wins": 211
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 163.5185185185185,
+          "average_share_cost": 0.7142738271604938,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 24,
+              "net_pnl": -11.25422471266,
+              "trades": 81,
+              "wins": 57
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 8,
+              "net_pnl": -4.5745000000000005,
+              "trades": 29,
+              "wins": 21
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 9.234970287340001,
+              "trades": 27,
+              "wins": 26
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 15,
+              "net_pnl": -15.914694999999998,
+              "trades": 25,
+              "wins": 10
+            }
+          },
+          "expectancy_per_trade": -0.13894104583530864,
+          "gross_loss": 74.08186500000001,
+          "gross_profit": 62.82764028734001,
+          "losing_trades": 24,
+          "loss_recovery_wins": 2.800430329236055,
+          "market_coverage": 0.048243001786777845,
+          "maximum_daily_pnl_concentration": 0.7103191358847043,
+          "maximum_drawdown": 23.93171971266,
+          "net_pnl": -11.25422471266,
+          "profit_factor": 0.8480839445300142,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -15.30422471266001,
+          "trades": 81,
+          "win_loss_ratio": 2.375,
+          "win_rate": 0.7037037037037037,
+          "winning_trades": 57
+        },
+        "expectancy_per_trade": -0.012109015213533855,
+        "gross_loss": 1112.17343540406,
+        "gross_profit": 1097.6789441934602,
+        "losing_trades": 335,
+        "loss_recovery_wins": 2.607111725030862,
+        "market_coverage": 0.7129243597379392,
+        "maximum_daily_pnl_concentration": 0.6631617640850668,
+        "maximum_drawdown": 63.90204480141994,
+        "net_pnl": -14.494491210600025,
+        "profit_factor": 0.9869674182558282,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -74.34449121060004,
+        "trades": 1197,
+        "win_loss_ratio": 2.573134328358209,
+        "win_rate": 0.7201336675020885,
+        "winning_trades": 862
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 75.33389687235841,
+        "average_share_cost": 0.6628366694843617,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 23,
+            "net_pnl": 29.267309999999995,
+            "trades": 81,
+            "wins": 58
+          },
+          "150_180": {
+            "losses": 14,
+            "net_pnl": -11.193585000000004,
+            "trades": 23,
+            "wins": 9
+          },
+          "60_89": {
+            "losses": 292,
+            "net_pnl": -38.70366785963999,
+            "trades": 940,
+            "wins": 648
+          },
+          "90_119": {
+            "losses": 52,
+            "net_pnl": -5.534050210980002,
+            "trades": 139,
+            "wins": 87
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 111,
+            "net_pnl": 51.40957198501995,
+            "trades": 472,
+            "wins": 361
+          },
+          "0.80_0.95": {
+            "losses": 22,
+            "net_pnl": 5.193603389600009,
+            "trades": 168,
+            "wins": 146
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 248,
+            "net_pnl": -82.76716844524002,
+            "trades": 543,
+            "wins": 295
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.2173913043478,
+          "average_share_cost": 0.4682608695652173,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 14,
+              "net_pnl": -11.193585000000004,
+              "trades": 23,
+              "wins": 9
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 2,
+              "net_pnl": -6.37527,
+              "trades": 3,
+              "wins": 1
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 1.64675,
+              "trades": 2,
+              "wins": 2
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 12,
+              "net_pnl": -6.465065000000001,
+              "trades": 18,
+              "wins": 6
+            }
+          },
+          "expectancy_per_trade": -0.48667760869565235,
+          "gross_loss": 32.059079999999994,
+          "gross_profit": 20.865495,
+          "losing_trades": 14,
+          "loss_recovery_wins": 0.9877267983064179,
+          "market_coverage": 0.0136986301369863,
+          "maximum_daily_pnl_concentration": 0.8161773727500006,
+          "maximum_drawdown": 20.049890000000005,
+          "net_pnl": -11.193585000000004,
+          "profit_factor": 0.6508450959915257,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -12.343585000000004,
+          "trades": 23,
+          "win_loss_ratio": 0.6428571428571429,
+          "win_rate": 0.391304347826087,
+          "winning_trades": 9
+        },
+        "expectancy_per_trade": -0.02211664672072701,
+        "gross_loss": 1201.9111487486,
+        "gross_profit": 1175.7471556779801,
+        "losing_trades": 381,
+        "loss_recovery_wins": 2.151829313628845,
+        "market_coverage": 0.7045860631328171,
+        "maximum_daily_pnl_concentration": 0.5173798614538839,
+        "maximum_drawdown": 81.07276843757991,
+        "net_pnl": -26.16399307062005,
+        "profit_factor": 0.9782313417278298,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -85.31399307062006,
+        "trades": 1183,
+        "win_loss_ratio": 2.10498687664042,
+        "win_rate": 0.6779374471682164,
+        "winning_trades": 802
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 69.73889321901792,
+        "average_share_cost": 0.647347264224474,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 11,
+            "net_pnl": 6.143729999999999,
+            "trades": 41,
+            "wins": 30
+          },
+          "150_180": {
+            "losses": 7,
+            "net_pnl": -10.930565000000001,
+            "trades": 21,
+            "wins": 14
+          },
+          "60_89": {
+            "losses": 391,
+            "net_pnl": -31.93408036182003,
+            "trades": 1140,
+            "wins": 749
+          },
+          "90_119": {
+            "losses": 27,
+            "net_pnl": -5.961815,
+            "trades": 81,
+            "wins": 54
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 104,
+            "net_pnl": 47.84799255917997,
+            "trades": 445,
+            "wins": 341
+          },
+          "0.80_0.95": {
+            "losses": 25,
+            "net_pnl": 1.5874903415000112,
+            "trades": 202,
+            "wins": 177
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 307,
+            "net_pnl": -92.1182132625,
+            "trades": 636,
+            "wins": 329
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 164.76190476190476,
+          "average_share_cost": 0.7557142857142858,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 7,
+              "net_pnl": -10.930565000000001,
+              "trades": 21,
+              "wins": 14
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 3,
+              "net_pnl": -8.571595000000002,
+              "trades": 6,
+              "wins": 3
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 5.313905,
+              "trades": 11,
+              "wins": 11
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": -7.6728749999999994,
+              "trades": 4,
+              "wins": 0
+            }
+          },
+          "expectancy_per_trade": -0.5205030952380953,
+          "gross_loss": 19.772070000000003,
+          "gross_profit": 8.841505,
+          "losing_trades": 7,
+          "loss_recovery_wins": 4.472557556660321,
+          "market_coverage": 0.012507444907683145,
+          "maximum_daily_pnl_concentration": 0.9494175069208185,
+          "maximum_drawdown": 14.025430000000004,
+          "net_pnl": -10.930565000000001,
+          "profit_factor": 0.4471714393080744,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -11.980565000000002,
+          "trades": 21,
+          "win_loss_ratio": 2.0,
+          "win_rate": 0.6666666666666666,
+          "winning_trades": 14
+        },
+        "expectancy_per_trade": -0.033267911427763086,
+        "gross_loss": 1308.77675626754,
+        "gross_profit": 1266.09402590572,
+        "losing_trades": 436,
+        "loss_recovery_wins": 2.008151781570447,
+        "market_coverage": 0.764145324597975,
+        "maximum_daily_pnl_concentration": 0.8658962156465166,
+        "maximum_drawdown": 129.4109757287802,
+        "net_pnl": -42.68273036182004,
+        "profit_factor": 0.9673873102059471,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -106.83273036182004,
+        "trades": 1283,
+        "win_loss_ratio": 1.9426605504587156,
+        "win_rate": 0.6601714731098987,
+        "winning_trades": 847
+      }
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "hybrid_dual_l2": {
+        "active_days": 5,
+        "average_entry_second": 82.23140495867769,
+        "average_share_cost": 0.7362213974455296,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 63,
+            "net_pnl": -44.369745776720016,
+            "trades": 196,
+            "wins": 133
+          },
+          "150_180": {
+            "losses": 8,
+            "net_pnl": 6.065959999999997,
+            "trades": 40,
+            "wins": 32
+          },
+          "60_89": {
+            "losses": 215,
+            "net_pnl": 37.40159013257997,
+            "trades": 922,
+            "wins": 707
+          },
+          "90_119": {
+            "losses": 57,
+            "net_pnl": -77.3458821365,
+            "trades": 173,
+            "wins": 116
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 176,
+            "net_pnl": 1.727860545079949,
+            "trades": 732,
+            "wins": 556
+          },
+          "0.80_0.95": {
+            "losses": 49,
+            "net_pnl": -25.67143999999999,
+            "trades": 334,
+            "wins": 285
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 118,
+            "net_pnl": -54.30449832572001,
+            "trades": 265,
+            "wins": 147
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.75,
+          "average_share_cost": 0.7525000000000001,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 8,
+              "net_pnl": 6.065959999999997,
+              "trades": 40,
+              "wins": 32
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 2,
+              "net_pnl": 10.875539999999999,
+              "trades": 18,
+              "wins": 16
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 2.523555,
+              "trades": 13,
+              "wins": 12
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 5,
+              "net_pnl": -7.333135000000002,
+              "trades": 9,
+              "wins": 4
+            }
+          },
+          "expectancy_per_trade": 0.15164899999999992,
+          "gross_loss": 26.562325,
+          "gross_profit": 32.62828499999999,
+          "losing_trades": 8,
+          "loss_recovery_wins": 3.256355643577345,
+          "market_coverage": 0.023823704586063133,
+          "maximum_daily_pnl_concentration": 0.45200055685456725,
+          "maximum_drawdown": 9.548505,
+          "net_pnl": 6.065959999999997,
+          "profit_factor": 1.2283670574770842,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 4.065959999999993,
+          "trades": 40,
+          "win_loss_ratio": 4.0,
+          "win_rate": 0.8,
+          "winning_trades": 32
+        },
+        "expectancy_per_trade": -0.05878893897869274,
+        "gross_loss": 1217.6388271946598,
+        "gross_profit": 1139.3907494140199,
+        "losing_trades": 343,
+        "loss_recovery_wins": 3.0782835641878163,
+        "market_coverage": 0.7927337701012508,
+        "maximum_daily_pnl_concentration": 0.6786752808499831,
+        "maximum_drawdown": 125.44253378608032,
+        "net_pnl": -78.24807778064003,
+        "profit_factor": 0.9357378591803638,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -144.79807778064009,
+        "trades": 1331,
+        "win_loss_ratio": 2.880466472303207,
+        "win_rate": 0.7422990232907588,
+        "winning_trades": 988
+      },
+      "hybrid_no_l2": {
+        "active_days": 5,
+        "average_entry_second": 80.1680358476475,
+        "average_share_cost": 0.7148461090365945,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 34,
+            "net_pnl": -10.900155000000005,
+            "trades": 115,
+            "wins": 81
+          },
+          "150_180": {
+            "losses": 16,
+            "net_pnl": -0.801849421140002,
+            "trades": 59,
+            "wins": 43
+          },
+          "60_89": {
+            "losses": 246,
+            "net_pnl": 53.02584490311999,
+            "trades": 979,
+            "wins": 733
+          },
+          "90_119": {
+            "losses": 72,
+            "net_pnl": -93.15802993600002,
+            "trades": 186,
+            "wins": 114
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 140,
+            "net_pnl": 23.489522669079946,
+            "trades": 608,
+            "wins": 468
+          },
+          "0.80_0.95": {
+            "losses": 52,
+            "net_pnl": -24.657099421139982,
+            "trades": 355,
+            "wins": 303
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 176,
+            "net_pnl": -50.66661270196,
+            "trades": 376,
+            "wins": 200
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 165.25423728813558,
+          "average_share_cost": 0.7137142372881355,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 16,
+              "net_pnl": -0.801849421140002,
+              "trades": 59,
+              "wins": 43
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 5,
+              "net_pnl": 7.330480000000001,
+              "trades": 27,
+              "wins": 22
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": 0.09256057885999924,
+              "trades": 16,
+              "wins": 14
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 9,
+              "net_pnl": -8.224890000000002,
+              "trades": 16,
+              "wins": 7
+            }
+          },
+          "expectancy_per_trade": -0.013590668154915289,
+          "gross_loss": 50.930655,
+          "gross_profit": 50.12880557886,
+          "losing_trades": 16,
+          "loss_recovery_wins": 2.730488662794362,
+          "market_coverage": 0.03513996426444312,
+          "maximum_daily_pnl_concentration": 0.5049474307343109,
+          "maximum_drawdown": 19.661654421140003,
+          "net_pnl": -0.801849421140002,
+          "profit_factor": 0.9842560551962272,
+          "profitable_day_ratio": 0.4,
+          "stress_net_pnl": -3.751849421140002,
+          "trades": 59,
+          "win_loss_ratio": 2.6875,
+          "win_rate": 0.7288135593220338,
+          "winning_trades": 43
+        },
+        "expectancy_per_trade": -0.03871111983123229,
+        "gross_loss": 1231.7303158386198,
+        "gross_profit": 1179.8961263846,
+        "losing_trades": 368,
+        "loss_recovery_wins": 2.754503106373283,
+        "market_coverage": 0.7974985110184634,
+        "maximum_daily_pnl_concentration": 0.8536819745620732,
+        "maximum_drawdown": 87.59264778871996,
+        "net_pnl": -51.83418945402003,
+        "profit_factor": 0.9579175824549477,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -118.78418945402004,
+        "trades": 1339,
+        "win_loss_ratio": 2.6385869565217392,
+        "win_rate": 0.7251680358476476,
+        "winning_trades": 971
+      },
+      "programmatic": {
+        "active_days": 5,
+        "average_entry_second": 80.3596837944664,
+        "average_share_cost": 0.664050371541502,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 29,
+            "net_pnl": -7.9301405945599965,
+            "trades": 72,
+            "wins": 43
+          },
+          "150_180": {
+            "losses": 2,
+            "net_pnl": 1.1928499999999997,
+            "trades": 13,
+            "wins": 11
+          },
+          "60_89": {
+            "losses": 288,
+            "net_pnl": -6.935993561620002,
+            "trades": 707,
+            "wins": 419
+          },
+          "90_119": {
+            "losses": 91,
+            "net_pnl": -33.4119227829,
+            "trades": 473,
+            "wins": 382
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 50,
+            "net_pnl": -17.095235000000006,
+            "trades": 200,
+            "wins": 150
+          },
+          "0.80_0.95": {
+            "losses": 39,
+            "net_pnl": -6.138457782899991,
+            "trades": 292,
+            "wins": 253
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 321,
+            "net_pnl": -23.851514156180016,
+            "trades": 773,
+            "wins": 452
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 5,
+          "average_entry_second": 162.30769230769232,
+          "average_share_cost": 0.8123076923076922,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 2,
+              "net_pnl": 1.1928499999999997,
+              "trades": 13,
+              "wins": 11
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 1,
+              "net_pnl": -0.3601200000000009,
+              "trades": 4,
+              "wins": 3
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": 1.5529700000000008,
+              "trades": 9,
+              "wins": 8
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "expectancy_per_trade": 0.09175769230769229,
+          "gross_loss": 8.304685,
+          "gross_profit": 9.497535,
+          "losing_trades": 2,
+          "loss_recovery_wins": 4.809223393227822,
+          "market_coverage": 0.007742703990470518,
+          "maximum_daily_pnl_concentration": 0.355185779590607,
+          "maximum_drawdown": 4.319624999999999,
+          "net_pnl": 1.1928499999999997,
+          "profit_factor": 1.1436357911227217,
+          "profitable_day_ratio": 0.8,
+          "stress_net_pnl": 0.5428499999999984,
+          "trades": 13,
+          "win_loss_ratio": 5.5,
+          "win_rate": 0.8461538461538461,
+          "winning_trades": 11
+        },
+        "expectancy_per_trade": -0.03722150746172334,
+        "gross_loss": 1285.8501624125,
+        "gross_profit": 1238.76495547342,
+        "losing_trades": 410,
+        "loss_recovery_wins": 2.164630190552599,
+        "market_coverage": 0.7534246575342466,
+        "maximum_daily_pnl_concentration": 0.6190926180996362,
+        "maximum_drawdown": 119.78795768794022,
+        "net_pnl": -47.085206939080024,
+        "profit_factor": 0.9633820422352017,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -110.33520693908005,
+        "trades": 1265,
+        "win_loss_ratio": 2.0853658536585367,
+        "win_rate": 0.6758893280632411,
+        "winning_trades": 855
+      },
+      "veto_disabled": {
+        "active_days": 5,
+        "average_entry_second": 62.9644412191582,
+        "average_share_cost": 0.6716831640058055,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 2,
+            "net_pnl": 2.87724,
+            "trades": 13,
+            "wins": 11
+          },
+          "150_180": {
+            "losses": 1,
+            "net_pnl": 0.08749499999999921,
+            "trades": 9,
+            "wins": 8
+          },
+          "60_89": {
+            "losses": 422,
+            "net_pnl": -35.44096873288004,
+            "trades": 1325,
+            "wins": 903
+          },
+          "90_119": {
+            "losses": 16,
+            "net_pnl": -42.611045,
+            "trades": 31,
+            "wins": 15
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 136,
+            "net_pnl": -18.452929454920024,
+            "trades": 528,
+            "wins": 392
+          },
+          "0.80_0.95": {
+            "losses": 33,
+            "net_pnl": -20.027584999999988,
+            "trades": 233,
+            "wins": 200
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 272,
+            "net_pnl": -36.606764277960025,
+            "trades": 617,
+            "wins": 345
+          }
+        },
+        "entries_150_180_only": {
+          "active_days": 3,
+          "average_entry_second": 161.66666666666666,
+          "average_share_cost": 0.8744444444444445,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 1,
+              "net_pnl": 0.08749499999999921,
+              "trades": 9,
+              "wins": 8
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 1.01494,
+              "trades": 1,
+              "wins": 1
+            },
+            "0.80_0.95": {
+              "losses": 1,
+              "net_pnl": -0.9274450000000007,
+              "trades": 8,
+              "wins": 7
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "expectancy_per_trade": 0.00972166666666658,
+          "gross_loss": 4.319624999999999,
+          "gross_profit": 4.407119999999999,
+          "losing_trades": 1,
+          "loss_recovery_wins": 7.841175189239232,
+          "market_coverage": 0.005360333531864205,
+          "maximum_daily_pnl_concentration": 0.883804130092929,
+          "maximum_drawdown": 4.319624999999999,
+          "net_pnl": 0.08749499999999921,
+          "profit_factor": 1.0202552304887575,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": -0.36250500000000163,
+          "trades": 9,
+          "win_loss_ratio": 8.0,
+          "win_rate": 0.8888888888888888,
+          "winning_trades": 8
+        },
+        "expectancy_per_trade": -0.054490042621828765,
+        "gross_loss": 1405.8588108125,
+        "gross_profit": 1330.77153207962,
+        "losing_trades": 441,
+        "loss_recovery_wins": 2.24460128197299,
+        "market_coverage": 0.820726622989875,
+        "maximum_daily_pnl_concentration": 0.9483212204118523,
+        "maximum_drawdown": 132.06499209984028,
+        "net_pnl": -75.08727873288004,
+        "profit_factor": 0.9465897441795851,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -143.98727873288007,
+        "trades": 1378,
+        "win_loss_ratio": 2.124716553287982,
+        "win_rate": 0.6799709724238027,
+        "winning_trades": 937
+      }
+    }
+  },
+  "heldout_predictive": {
+    "crossvenue_middle_specialist": {
+      "accuracy": 0.7773127505110828,
+      "bridge_target_brier_score": 0.15508726582784815,
+      "bridge_target_cross_entropy": 0.47195632992945535,
+      "brier_score": 0.15508726582784815,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7499503672821124,
+          "bridge_target_brier_score": 0.17254289748020932,
+          "bridge_target_cross_entropy": 0.5193567624655892,
+          "brier_score": 0.17254289748020932,
+          "ece_15": 0.036865615382486394,
+          "log_loss": 0.5193567624655892,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7874585212286225,
+          "bridge_target_brier_score": 0.150929509341552,
+          "bridge_target_cross_entropy": 0.4669623588598085,
+          "brier_score": 0.150929509341552,
+          "ece_15": 0.028585612966563288,
+          "log_loss": 0.4669623588598085,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.687909469922573,
+          "bridge_target_brier_score": 0.20361077832418795,
+          "bridge_target_cross_entropy": 0.5955361942275518,
+          "brier_score": 0.20361077832418795,
+          "ece_15": 0.03768351110614387,
+          "log_loss": 0.5955361942275518,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7215604526503872,
+          "bridge_target_brier_score": 0.18926429855596547,
+          "bridge_target_cross_entropy": 0.560342673341564,
+          "brier_score": 0.18926429855596547,
+          "ece_15": 0.03732755302729899,
+          "log_loss": 0.560342673341564,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.025753725499952924,
+      "log_loss": 0.47195632992945535,
+      "markets": 1679,
+      "mean_probability": 0.5029678829744472,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "external_flow_only_control": {
+      "accuracy": 0.76132833250165,
+      "bridge_target_brier_score": 0.16176065263037598,
+      "bridge_target_cross_entropy": 0.4900314306601868,
+      "brier_score": 0.16176065263037598,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7410164780623387,
+          "bridge_target_brier_score": 0.1793668444843799,
+          "bridge_target_cross_entropy": 0.5413961241927182,
+          "brier_score": 0.1793668444843799,
+          "ece_15": 0.05918152163605376,
+          "log_loss": 0.5413961241927182,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7712924359737939,
+          "bridge_target_brier_score": 0.15745307208338832,
+          "bridge_target_cross_entropy": 0.4827413660129994,
+          "brier_score": 0.15745307208338832,
+          "ece_15": 0.05477809989277693,
+          "log_loss": 0.4827413660129994,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6679571173317451,
+          "bridge_target_brier_score": 0.2132532800682576,
+          "bridge_target_cross_entropy": 0.6181049392566065,
+          "brier_score": 0.2132532800682576,
+          "ece_15": 0.06603910123438458,
+          "log_loss": 0.6181049392566065,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7008139765733572,
+          "bridge_target_brier_score": 0.19756398087969915,
+          "bridge_target_cross_entropy": 0.5840092814244306,
+          "brier_score": 0.19756398087969915,
+          "ece_15": 0.062488773866582546,
+          "log_loss": 0.5840092814244306,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.04855964188409687,
+      "log_loss": 0.4900314306601868,
+      "markets": 1679,
+      "mean_probability": 0.5123544282789866,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "latent_boundary_margin_specialist": {
+      "accuracy": 0.7760410797933133,
+      "bridge_target_brier_score": 0.1572711405267314,
+      "bridge_target_cross_entropy": 0.48521592848305206,
+      "brier_score": 0.1572711405267314,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7457812189795513,
+          "bridge_target_brier_score": 0.17556751781715474,
+          "bridge_target_cross_entropy": 0.5348079371145036,
+          "brier_score": 0.17556751781715474,
+          "ece_15": 0.04984664213533366,
+          "log_loss": 0.5348079371145036,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7878839445248021,
+          "bridge_target_brier_score": 0.15253589290424735,
+          "bridge_target_cross_entropy": 0.47547285622469765,
+          "brier_score": 0.15253589290424735,
+          "ece_15": 0.02824990930103804,
+          "log_loss": 0.47547285622469765,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.688306531665674,
+          "bridge_target_brier_score": 0.20690134664666918,
+          "bridge_target_cross_entropy": 0.6093045008288447,
+          "brier_score": 0.20690134664666918,
+          "ece_15": 0.0684004856825221,
+          "log_loss": 0.6093045008288447,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7195751439348819,
+          "bridge_target_brier_score": 0.1932453022499144,
+          "bridge_target_cross_entropy": 0.5804294029029688,
+          "brier_score": 0.1932453022499144,
+          "ece_15": 0.06440101431009318,
+          "log_loss": 0.5804294029029688,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.02892077733971855,
+      "log_loss": 0.48521592848305206,
+      "markets": 1679,
+      "mean_probability": 0.5029362986083198,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_agreement_ensemble": {
+      "accuracy": 0.7774093330972426,
+      "bridge_target_brier_score": 0.15379301439344484,
+      "bridge_target_cross_entropy": 0.46736341513715646,
+      "brier_score": 0.15379301439344484,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.749454040103236,
+          "bridge_target_brier_score": 0.171565965428253,
+          "bridge_target_cross_entropy": 0.5159259731134372,
+          "brier_score": 0.171565965428253,
+          "ece_15": 0.03424635902051995,
+          "log_loss": 0.5159259731134372,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7894154683910491,
+          "bridge_target_brier_score": 0.14948154713272943,
+          "bridge_target_cross_entropy": 0.4603856907995137,
+          "brier_score": 0.14948154713272943,
+          "ece_15": 0.02522471433686278,
+          "log_loss": 0.4603856907995137,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.686023426642843,
+          "bridge_target_brier_score": 0.2033282802721587,
+          "bridge_target_cross_entropy": 0.5933471090864891,
+          "brier_score": 0.2033282802721587,
+          "ece_15": 0.04195411831345402,
+          "log_loss": 0.5933471090864891,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7202700019853087,
+          "bridge_target_brier_score": 0.1888453917087076,
+          "bridge_target_cross_entropy": 0.5594808104680367,
+          "brier_score": 0.1888453917087076,
+          "ece_15": 0.037613421656888545,
+          "log_loss": 0.5594808104680367,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.023740472099270386,
+      "log_loss": 0.46736341513715646,
+      "markets": 1679,
+      "mean_probability": 0.5030126123917658,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_q5_admission": {
+      "accuracy": 0.77715177953415,
+      "bridge_target_brier_score": 0.1541321546029382,
+      "bridge_target_cross_entropy": 0.46876541572060765,
+      "brier_score": 0.1541321546029382,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7466746079015287,
+          "bridge_target_brier_score": 0.1711539688663567,
+          "bridge_target_cross_entropy": 0.5142701222113045,
+          "brier_score": 0.1711539688663567,
+          "ece_15": 0.03168913183600027,
+          "log_loss": 0.5142701222113045,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.789585637709521,
+          "bridge_target_brier_score": 0.15008625714559717,
+          "bridge_target_cross_entropy": 0.4648065535578913,
+          "brier_score": 0.15008625714559717,
+          "ece_15": 0.036106312258116474,
+          "log_loss": 0.4648065535578913,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6870160810005956,
+          "bridge_target_brier_score": 0.20284991552422985,
+          "bridge_target_cross_entropy": 0.5924187151278438,
+          "brier_score": 0.20284991552422985,
+          "ece_15": 0.03556758471374127,
+          "log_loss": 0.5924187151278438,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7221560452650387,
+          "bridge_target_brier_score": 0.1883303296685907,
+          "bridge_target_cross_entropy": 0.5580050751727058,
+          "brier_score": 0.1883303296685907,
+          "ece_15": 0.037213065119113514,
+          "log_loss": 0.5580050751727058,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.026172312665959912,
+      "log_loss": 0.46876541572060765,
+      "markets": 1679,
+      "mean_probability": 0.4989967356737603,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_specialist_refit": {
+      "accuracy": 0.7761215652817797,
+      "bridge_target_brier_score": 0.15413997117746286,
+      "bridge_target_cross_entropy": 0.4681846108131552,
+      "brier_score": 0.15413997117746286,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7447885646217987,
+          "bridge_target_brier_score": 0.17188821961871106,
+          "bridge_target_cross_entropy": 0.5153951782742618,
+          "brier_score": 0.17188821961871106,
+          "ece_15": 0.03194143295587423,
+          "log_loss": 0.5153951782742618,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7876286905470944,
+          "bridge_target_brier_score": 0.15045941281968525,
+          "bridge_target_cross_entropy": 0.46554115322957285,
+          "brier_score": 0.15045941281968525,
+          "ece_15": 0.03142744911052959,
+          "log_loss": 0.46554115322957285,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6861226920786182,
+          "bridge_target_brier_score": 0.20251871083284564,
+          "bridge_target_cross_entropy": 0.5913159859970516,
+          "brier_score": 0.20251871083284564,
+          "ece_15": 0.0361194950704428,
+          "log_loss": 0.5913159859970516,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7213619217788366,
+          "bridge_target_brier_score": 0.18807387268516548,
+          "bridge_target_cross_entropy": 0.5570983413964608,
+          "brier_score": 0.18807387268516548,
+          "ece_15": 0.033994115846373796,
+          "log_loss": 0.5570983413964608,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.023100797597259203,
+      "log_loss": 0.4681846108131552,
+      "markets": 1679,
+      "mean_probability": 0.4978077164233146,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "accuracy": 0.7770712940456835,
+      "bridge_target_brier_score": 0.17661354749177013,
+      "bridge_target_cross_entropy": 0.6752924949101186,
+      "brier_score": 0.17661354749177013,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7462775461584277,
+          "bridge_target_brier_score": 0.19965891783418097,
+          "bridge_target_cross_entropy": 0.76798328120086,
+          "brier_score": 0.19965891783418097,
+          "ece_15": 0.1565210642336769,
+          "log_loss": 0.76798328120086,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7891602144133413,
+          "bridge_target_brier_score": 0.16990157820199997,
+          "bridge_target_cross_entropy": 0.6750987789313763,
+          "brier_score": 0.16990157820199997,
+          "ece_15": 0.12886938171793216,
+          "log_loss": 0.6750987789313763,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6887035934087751,
+          "bridge_target_brier_score": 0.23941572068780642,
+          "bridge_target_cross_entropy": 0.8450308997704632,
+          "brier_score": 0.23941572068780642,
+          "ece_15": 0.1857586563990036,
+          "log_loss": 0.8450308997704632,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7197736748064324,
+          "bridge_target_brier_score": 0.22124850458554957,
+          "bridge_target_cross_entropy": 0.8310920983129656,
+          "brier_score": 0.22124850458554957,
+          "ece_15": 0.1731275756500928,
+          "log_loss": 0.8310920983129656,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.13318498585746172,
+      "log_loss": 0.6752924949101186,
+      "markets": 1679,
+      "mean_probability": 0.5027343224441546,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    }
+  },
+  "integrity": {
+    "artifact_round_trip_load": true,
+    "database_mutations": false,
+    "deployed": false,
+    "full_history_retained": true,
+    "images_rebuilt": false,
+    "kraken_l2_included": true,
+    "market_disjoint": true,
+    "nested_chronological_admission_oof": true,
+    "new_ingesters": false,
+    "new_schemas": false,
+    "new_sources": false,
+    "new_tables": false,
+    "optional_missingness_preserves_rows": true,
+    "passed": true,
+    "runtime_exported": false,
+    "twap_inference_feature": false
+  },
+  "learned_base_model_count": 5,
+  "limitations": [
+    "August 21-26 is chronologically held out but was observed during earlier research, so it is not epistemically fresh.",
+    "Kraken L2 archive coverage ends during August 19 and therefore provides no direct L2 observations in the August 21-26 heldout block.",
+    "The Kraken files contain incremental updates without periodic snapshots; features represent update flow rather than exact full-book depth.",
+    "Projected PnL assumes recorded Polymarket ask VWAP was fillable and does not model queue position."
+  ],
+  "oof_predictive": {
+    "crossvenue_middle_specialist": {
+      "accuracy": 0.7823426482273615,
+      "bridge_target_brier_score": 0.13595373189296345,
+      "bridge_target_cross_entropy": 0.45714606324470125,
+      "brier_score": 0.14889495819777004,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7604924934194168,
+          "bridge_target_brier_score": 0.15104881080348764,
+          "bridge_target_cross_entropy": 0.5006967961428783,
+          "brier_score": 0.16415066970338857,
+          "ece_15": 0.012790333737499528,
+          "log_loss": 0.4989298692075742,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7990034504426047,
+          "bridge_target_brier_score": 0.12774886871734864,
+          "bridge_target_cross_entropy": 0.4394176109432499,
+          "brier_score": 0.14062589581351007,
+          "ece_15": 0.0098318394499125,
+          "log_loss": 0.4368273793865059,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6877931253268856,
+          "bridge_target_brier_score": 0.18897874434013023,
+          "bridge_target_cross_entropy": 0.5917959877963629,
+          "brier_score": 0.20246132241468073,
+          "ece_15": 0.022916914155433267,
+          "log_loss": 0.5910505777196804,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7246701134346786,
+          "bridge_target_brier_score": 0.17094271734242095,
+          "bridge_target_cross_entropy": 0.5493246643388227,
+          "brier_score": 0.18423932250837854,
+          "ece_15": 0.014563730091848819,
+          "log_loss": 0.548150321940165,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.00766656342153229,
+      "log_loss": 0.4547488995784232,
+      "markets": 38877,
+      "mean_probability": 0.4925472199077834,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "external_flow_only_control": {
+      "accuracy": 0.7623641853134869,
+      "bridge_target_brier_score": 0.14719784335345615,
+      "bridge_target_cross_entropy": 0.48751418114898043,
+      "brier_score": 0.16035569640256037,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7420668604401918,
+          "bridge_target_brier_score": 0.16106033135314868,
+          "bridge_target_cross_entropy": 0.5255273052381846,
+          "brier_score": 0.17433808717196653,
+          "ece_15": 0.01046730066857718,
+          "log_loss": 0.5243227855703627,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7792047446341759,
+          "bridge_target_brier_score": 0.1396559853002721,
+          "bridge_target_cross_entropy": 0.471653491283046,
+          "brier_score": 0.15279672381133833,
+          "ece_15": 0.011352020123888036,
+          "log_loss": 0.4699312262513411,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.670777923536624,
+          "bridge_target_brier_score": 0.19611265661441138,
+          "bridge_target_cross_entropy": 0.6082139339960883,
+          "brier_score": 0.20967325041844745,
+          "ece_15": 0.014888749056123514,
+          "log_loss": 0.6077205963654455,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7067717845169809,
+          "bridge_target_brier_score": 0.1796278501392178,
+          "bridge_target_cross_entropy": 0.570430060632293,
+          "brier_score": 0.1930626451836145,
+          "ece_15": 0.011855046392541008,
+          "log_loss": 0.5696698180778509,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.007596456492247243,
+      "log_loss": 0.4858401021823626,
+      "markets": 38877,
+      "mean_probability": 0.49947210934585795,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "latent_boundary_margin_specialist": {
+      "accuracy": 0.7806401200181584,
+      "bridge_target_brier_score": 0.1375107414635167,
+      "bridge_target_cross_entropy": 0.46620322032540834,
+      "brier_score": 0.15054542677538305,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7586062024676116,
+          "bridge_target_brier_score": 0.15211612797476676,
+          "bridge_target_cross_entropy": 0.5062272452930545,
+          "brier_score": 0.1652548580421367,
+          "ece_15": 0.018802303228083152,
+          "log_loss": 0.5045196007488388,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7981435957360026,
+          "bridge_target_brier_score": 0.12890011255838485,
+          "bridge_target_cross_entropy": 0.4459650679654366,
+          "brier_score": 0.14184345420022637,
+          "ece_15": 0.011224136715149298,
+          "log_loss": 0.4436800205378952,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6865456010837598,
+          "bridge_target_brier_score": 0.19064255885186468,
+          "bridge_target_cross_entropy": 0.5995516929671622,
+          "brier_score": 0.20413438846755128,
+          "ece_15": 0.03874454414179895,
+          "log_loss": 0.5988336668813892,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7218964083305468,
+          "bridge_target_brier_score": 0.17218402532123228,
+          "bridge_target_cross_entropy": 0.5554666836942231,
+          "brier_score": 0.1854704829994426,
+          "ece_15": 0.026148735825955657,
+          "log_loss": 0.5542397817811141,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.009491600877974434,
+      "log_loss": 0.464178211926529,
+      "markets": 38877,
+      "mean_probability": 0.492667319096994,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "middle_agreement_ensemble": {
+      "accuracy": 0.7816613588663901,
+      "bridge_target_brier_score": 0.13553698685224574,
+      "bridge_target_cross_entropy": 0.45613530539185776,
+      "brier_score": 0.1485423406055484,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7598151434867231,
+          "bridge_target_brier_score": 0.15037169493051608,
+          "bridge_target_cross_entropy": 0.49798862075711575,
+          "brier_score": 0.16351524283327715,
+          "ece_15": 0.006966972290554117,
+          "log_loss": 0.4963795185841199,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7986874354649646,
+          "bridge_target_brier_score": 0.12746014255121008,
+          "bridge_target_cross_entropy": 0.43811225367418366,
+          "brier_score": 0.14040141274242285,
+          "ece_15": 0.013789130410044996,
+          "log_loss": 0.4358225941591215,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6885605027822792,
+          "bridge_target_brier_score": 0.18762316649277175,
+          "bridge_target_cross_entropy": 0.5878596469295067,
+          "brier_score": 0.201122971133248,
+          "ece_15": 0.014619000226500718,
+          "log_loss": 0.5871794100761734,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7238813008548327,
+          "bridge_target_brier_score": 0.16989231138261726,
+          "bridge_target_cross_entropy": 0.5459740194700423,
+          "brier_score": 0.1832206043019245,
+          "ece_15": 0.00900685887930598,
+          "log_loss": 0.5448996030519109,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.011522947611880443,
+      "log_loss": 0.4540222587725837,
+      "markets": 38877,
+      "mean_probability": 0.49291737243425077,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "middle_q5_admission": {
+      "accuracy": 0.7822932895083524,
+      "bridge_target_brier_score": 0.13588833918951768,
+      "bridge_target_cross_entropy": 0.4567616346171653,
+      "brier_score": 0.14883273761368793,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7598794488600801,
+          "bridge_target_brier_score": 0.15099072931202265,
+          "bridge_target_cross_entropy": 0.5001948344028075,
+          "brier_score": 0.16410427284521933,
+          "ece_15": 0.012153586004881412,
+          "log_loss": 0.49841297558093134,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7986874354649646,
+          "bridge_target_brier_score": 0.12785429710427323,
+          "bridge_target_cross_entropy": 0.4393861031077655,
+          "brier_score": 0.14072898075432894,
+          "ece_15": 0.010468767930263469,
+          "log_loss": 0.4366607868820542,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6885605027822792,
+          "bridge_target_brier_score": 0.1885172531539393,
+          "bridge_target_cross_entropy": 0.5904257118629078,
+          "brier_score": 0.20199850894034305,
+          "ece_15": 0.02339873590696125,
+          "log_loss": 0.5896773160372843,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7245800859119788,
+          "bridge_target_brier_score": 0.1706355585637234,
+          "bridge_target_cross_entropy": 0.5480937311619896,
+          "brier_score": 0.18395904884271816,
+          "ece_15": 0.013251511233440191,
+          "log_loss": 0.5469485881143572,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.008642368756840832,
+      "log_loss": 0.4542779471796019,
+      "markets": 38877,
+      "mean_probability": 0.4901678463533726,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "middle_specialist_refit": {
+      "accuracy": 0.7822912039286759,
+      "bridge_target_brier_score": 0.135900235551582,
+      "bridge_target_cross_entropy": 0.4567107507943199,
+      "brier_score": 0.14884884122814795,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7601666795277413,
+          "bridge_target_brier_score": 0.15100382292110875,
+          "bridge_target_cross_entropy": 0.5002059284653595,
+          "brier_score": 0.16408967411562853,
+          "ece_15": 0.01231889689006307,
+          "log_loss": 0.498396189394603,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7987131576143074,
+          "bridge_target_brier_score": 0.12777642932733352,
+          "bridge_target_cross_entropy": 0.43911089162887124,
+          "brier_score": 0.14064698938427253,
+          "ece_15": 0.010599805779420044,
+          "log_loss": 0.43644196699608007,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6882175407910418,
+          "bridge_target_brier_score": 0.18865235714308007,
+          "bridge_target_cross_entropy": 0.5907000978222346,
+          "brier_score": 0.20213512306478443,
+          "ece_15": 0.02323608679032317,
+          "log_loss": 0.5899205743943974,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7247387058329261,
+          "bridge_target_brier_score": 0.1706428964924018,
+          "bridge_target_cross_entropy": 0.5481937485656526,
+          "brier_score": 0.18394301292137838,
+          "ece_15": 0.013593683366662949,
+          "log_loss": 0.5469759906606148,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.008171298095584666,
+      "log_loss": 0.4542664613255948,
+      "markets": 38877,
+      "mean_probability": 0.4897323674672463,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "accuracy": 0.7813040295484929,
+      "bridge_target_brier_score": 0.1512515794574001,
+      "bridge_target_cross_entropy": 0.5983500785758467,
+      "brier_score": 0.16398983197183714,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7597894213373803,
+          "bridge_target_brier_score": 0.16866289110920032,
+          "bridge_target_cross_entropy": 0.6699030464353953,
+          "brier_score": 0.18152544029542428,
+          "ece_15": 0.10450051621699791,
+          "log_loss": 0.6662215967516738,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "150_180": {
+          "accuracy": 0.7984191901932468,
+          "bridge_target_brier_score": 0.14091202680276213,
+          "bridge_target_cross_entropy": 0.5796649635781791,
+          "brier_score": 0.1535072472102695,
+          "ece_15": 0.08280701039933853,
+          "log_loss": 0.5741930071772336,
+          "markets": 38877,
+          "rows": 272139
+        },
+        "60_89": {
+          "accuracy": 0.6875359038334576,
+          "bridge_target_brier_score": 0.21478215268178383,
+          "bridge_target_cross_entropy": 0.7779180953696265,
+          "brier_score": 0.22814238136412157,
+          "ece_15": 0.13372896192903436,
+          "log_loss": 0.7764744137101891,
+          "markets": 38877,
+          "rows": 233262
+        },
+        "90_119": {
+          "accuracy": 0.7226852209103926,
+          "bridge_target_brier_score": 0.19189280125597555,
+          "bridge_target_cross_entropy": 0.7247814107140162,
+          "brier_score": 0.2049540068800072,
+          "ece_15": 0.11748169659776836,
+          "log_loss": 0.7222204928285748,
+          "markets": 38877,
+          "rows": 233262
+        }
+      },
+      "ece_15": 0.0885656666758265,
+      "log_loss": 0.5937096690130045,
+      "markets": 38877,
+      "mean_probability": 0.5095591846388298,
+      "positive_rate": 0.4954085963423104,
+      "rows": 1438449
+    }
+  },
+  "positive_expectancy_modes": [],
+  "producing_commit": "2f4149684ebd0554926c5ae351ef73e3b54bd565",
+  "qualification_status": "trained_evaluated_not_promoted_negative_expectancy",
+  "run_id": "20260901T031058Z",
+  "runtime": {
+    "numpy": "2.5.2",
+    "polars": "1.44.1",
+    "python": "3.12.8",
+    "sklearn": "1.9.0"
+  },
+  "schema_version": "btc-hybrid-payoff-admission-tournament-v1",
+  "selection_frozen_at": "2026-09-01T03:43:15.962960+00:00",
+  "source_panel": {
+    "all_label_weights_nonzero": true,
+    "all_markets_retained": true,
+    "authentic_only_filter": false,
+    "base_panel": {
+      "manifest_sha256": "7007e830e31788d07aecfe741acfe56cb7c278496dc0b233b1e462f96bab0bda",
+      "path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-multivenue-early-entry-tournament/packages/btc-directional-model/data/btc-signal-attribution-bridge-20260321-20260905/middle-panel.parquet",
+      "sha256": "3c20ce619aea24fb9149516eeac17fc834f3f8f4c431d5618f122963e72cbb09"
+    },
+    "bridge_calibration": {
+      "binance_to_exact": {
+        "location_bps": 0.012139720462760906,
+        "mae_bps": 0.3615354528103826,
+        "p95_absolute_bps": 0.9612219123967793,
+        "p99_absolute_bps": 1.346423713287536,
+        "paired_markets": 1983,
+        "scale_bps": 0.4741786271415441
+      },
+      "end_exclusive": "2026-08-08T00:00:00+00:00",
+      "refprice_to_exact": {
+        "location_bps": -3.334263964660522e-05,
+        "mae_bps": 0.10835883422172046,
+        "p95_absolute_bps": 0.348774292105125,
+        "p99_absolute_bps": 0.6126626632389912,
+        "paired_markets": 1983,
+        "scale_bps": 0.16393576044409458
+      },
+      "sealed_rows_used": false,
+      "start_inclusive": "2026-08-01T02:40:00+00:00"
+    },
+    "bridge_validation": {
+      "binance_to_exact": {
+        "location_bps": 0.016138801515106938,
+        "mae_bps": 0.37676768112582976,
+        "p95_absolute_bps": 1.0156764808685983,
+        "p99_absolute_bps": 1.593022576693676,
+        "paired_markets": 1440,
+        "scale_bps": 0.5172389560648623
+      },
+      "end_exclusive": "2026-08-14T00:00:00+00:00",
+      "parameters_refitted": false,
+      "refprice_to_exact": {
+        "location_bps": -0.0007291971536874664,
+        "mae_bps": 0.08233701376678842,
+        "p95_absolute_bps": 0.27559686102724673,
+        "p99_absolute_bps": 0.5332819177965165,
+        "paired_markets": 1440,
+        "scale_bps": 0.13888992493558916
+      },
+      "start_inclusive": "2026-08-08T00:00:00+00:00"
+    },
+    "coverage": {
+      "binance_prints": {
+        "markets": 10302,
+        "rows": 190777
+      },
+      "candles": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "core": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "kraken": {
+        "markets": 42563,
+        "rows": 766254
+      },
+      "kraken_l2": {
+        "first_observed_at": "2026-04-01 00:01:00+00:00",
+        "last_observed_at": "2026-08-19 23:59:00+00:00",
+        "markets": 36876,
+        "rows": 1364364
+      },
+      "open_interest": {
+        "markets": 15786,
+        "rows": 584082
+      },
+      "oracle": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "refprice": {
+        "markets": 22997,
+        "rows": 844888
+      },
+      "spot_l2": {
+        "markets": 23052,
+        "rows": 834908
+      }
+    },
+    "database_mutations": false,
+    "feature_groups": {
+      "binance_prints": [
+        "binance_print_return_5s_bps",
+        "binance_print_signed_share_5s",
+        "binance_print_log_quote_volume_5s",
+        "binance_print_log_trade_count_5s",
+        "binance_print_return_15s_bps",
+        "binance_print_signed_share_15s",
+        "binance_print_log_quote_volume_15s",
+        "binance_print_log_trade_count_15s",
+        "binance_print_return_30s_bps",
+        "binance_print_signed_share_30s",
+        "binance_print_log_quote_volume_30s",
+        "binance_print_log_trade_count_30s",
+        "binance_print_return_60s_bps",
+        "binance_print_signed_share_60s",
+        "binance_print_log_quote_volume_60s",
+        "binance_print_log_trade_count_60s"
+      ],
+      "candles": [
+        "chainlink_candle_return_5m_bps",
+        "chainlink_candle_return_15m_bps",
+        "chainlink_candle_return_30m_bps",
+        "chainlink_candle_return_60m_bps",
+        "chainlink_candle_realized_volatility_15m_bps",
+        "chainlink_candle_realized_volatility_60m_bps",
+        "chainlink_candle_range_15m_bps",
+        "chainlink_candle_range_60m_bps"
+      ],
+      "core": [
+        "seconds_elapsed_scaled",
+        "seconds_remaining_scaled",
+        "btc_path_from_window_open_bps",
+        "btc_cross_venue_boundary_gap_bps",
+        "btc_window_open_cross_venue_basis_bps",
+        "btc_return_1s_bps",
+        "btc_return_5s_bps",
+        "btc_return_15s_bps",
+        "btc_return_30s_bps",
+        "btc_return_60s_bps",
+        "btc_return_90s_bps",
+        "btc_return_120s_bps",
+        "btc_return_180s_bps",
+        "btc_realized_volatility_5s_bps",
+        "btc_realized_volatility_15s_bps",
+        "btc_realized_volatility_30s_bps",
+        "btc_realized_volatility_60s_bps",
+        "btc_realized_volatility_90s_bps",
+        "btc_realized_volatility_120s_bps",
+        "btc_realized_volatility_180s_bps",
+        "btc_range_5s_bps",
+        "btc_range_30s_bps",
+        "btc_range_60s_bps",
+        "btc_path_efficiency_30s",
+        "btc_path_efficiency_60s",
+        "btc_range_position_30s",
+        "btc_range_position_60s",
+        "btc_signed_flow_5s",
+        "btc_signed_flow_30s",
+        "btc_signed_flow_60s",
+        "btc_signed_flow_90s",
+        "btc_signed_flow_120s",
+        "btc_signed_flow_180s",
+        "btc_path_cross_count",
+        "btc_boundary_cross_count",
+        "btc_seconds_since_path_cross",
+        "btc_seconds_since_boundary_cross",
+        "btc_path_terminal_volatility_z",
+        "btc_boundary_terminal_volatility_z",
+        "btc_boundary_distance_velocity_5s_bps",
+        "btc_boundary_momentum_alignment_5s",
+        "btc_momentum_multihorizon_score",
+        "btc_momentum_acceleration_5_vs_30",
+        "btc_momentum_acceleration_15_vs_60",
+        "btc_reversal_5_vs_30",
+        "btc_path_max_favorable_excursion_bps",
+        "btc_path_max_adverse_excursion_bps",
+        "btc_path_pullback_from_favorable_extreme_bps",
+        "btc_path_recovery_from_adverse_extreme_bps",
+        "btc_seconds_since_path_high_scaled",
+        "btc_seconds_since_path_low_scaled",
+        "btc_volatility_shock_30_vs_120",
+        "btc_volatility_shock_60_vs_180",
+        "btc_path_sign_normalized_return_5s_bps",
+        "btc_path_sign_normalized_return_30s_bps",
+        "btc_path_sign_normalized_return_60s_bps",
+        "btc_path_sign_normalized_return_90s_bps",
+        "btc_path_sign_normalized_return_120s_bps",
+        "btc_path_sign_normalized_flow_5s",
+        "btc_path_sign_normalized_flow_30s",
+        "btc_path_sign_normalized_flow_60s",
+        "btc_path_sign_normalized_flow_90s",
+        "btc_path_sign_normalized_flow_120s",
+        "hour_sin",
+        "hour_cos",
+        "weekday_sin",
+        "weekday_cos"
+      ],
+      "execution": [
+        "up_ask_vwap_5",
+        "up_ask_vwap_10",
+        "up_ask_vwap_15",
+        "up_ask_vwap_20",
+        "up_ask_vwap_25",
+        "up_ask_vwap_30",
+        "up_ask_vwap_40",
+        "up_ask_vwap_50",
+        "up_ask_vwap_75",
+        "up_ask_vwap_100",
+        "up_ask_vwap_125",
+        "up_ask_vwap_150",
+        "up_ask_vwap_175",
+        "up_ask_vwap_200",
+        "down_ask_vwap_5",
+        "down_ask_vwap_10",
+        "down_ask_vwap_15",
+        "down_ask_vwap_20",
+        "down_ask_vwap_25",
+        "down_ask_vwap_30",
+        "down_ask_vwap_40",
+        "down_ask_vwap_50",
+        "down_ask_vwap_75",
+        "down_ask_vwap_100",
+        "down_ask_vwap_125",
+        "down_ask_vwap_150",
+        "down_ask_vwap_175",
+        "down_ask_vwap_200",
+        "pm_vwap5_overround",
+        "pm_vwap50_overround",
+        "pm_vwap200_overround",
+        "pm_up_slope_5_25",
+        "pm_up_slope_25_100",
+        "pm_up_slope_100_200",
+        "pm_down_slope_5_25",
+        "pm_down_slope_25_100",
+        "pm_down_slope_100_200",
+        "pm_up_depth_log",
+        "pm_down_depth_log",
+        "pm_depth_imbalance",
+        "pm_up_book_age_seconds",
+        "pm_down_book_age_seconds",
+        "pm_yes_cost_per_share",
+        "pm_no_cost_per_share",
+        "pm_yes_vwap_slippage",
+        "pm_no_vwap_slippage",
+        "pm_yes_depth_log",
+        "pm_no_depth_log",
+        "pm_yes_book_age_seconds",
+        "pm_no_book_age_seconds",
+        "pm_yes_cost_logit",
+        "pm_no_cost_logit",
+        "pm_cost_overround",
+        "pm_yes_minus_no_cost"
+      ],
+      "kraken": [
+        "kraken_return_5s_bps",
+        "kraken_return_15s_bps",
+        "kraken_return_30s_bps",
+        "kraken_return_60s_bps",
+        "kraken_return_120s_bps",
+        "kraken_realized_volatility_30s_bps",
+        "kraken_realized_volatility_60s_bps",
+        "kraken_log_quote_volume_30s",
+        "kraken_log_quote_volume_60s",
+        "kraken_print_signed_share_5s",
+        "kraken_print_signed_share_30s",
+        "kraken_print_signed_share_60s",
+        "kraken_log_trade_count_30s",
+        "kraken_log_trade_count_60s",
+        "kraken_binance_basis_bps",
+        "kraken_binance_return_agreement_30s",
+        "kraken_binance_flow_agreement_30s"
+      ],
+      "kraken_l2": [
+        "kraken_l2_update_imbalance_5s",
+        "kraken_l2_quantity_imbalance_5s",
+        "kraken_l2_cancel_imbalance_5s",
+        "kraken_l2_log_update_count_5s",
+        "kraken_l2_log_quote_quantity_5s",
+        "kraken_l2_update_imbalance_15s",
+        "kraken_l2_quantity_imbalance_15s",
+        "kraken_l2_cancel_imbalance_15s",
+        "kraken_l2_log_update_count_15s",
+        "kraken_l2_log_quote_quantity_15s",
+        "kraken_l2_update_imbalance_30s",
+        "kraken_l2_quantity_imbalance_30s",
+        "kraken_l2_cancel_imbalance_30s",
+        "kraken_l2_log_update_count_30s",
+        "kraken_l2_log_quote_quantity_30s",
+        "kraken_l2_update_imbalance_60s",
+        "kraken_l2_quantity_imbalance_60s",
+        "kraken_l2_cancel_imbalance_60s",
+        "kraken_l2_log_update_count_60s",
+        "kraken_l2_log_quote_quantity_60s",
+        "kraken_l2_last_update_spread_bps",
+        "kraken_l2_last_update_mid_to_binance_bps",
+        "kraken_l2_age_seconds",
+        "has_kraken_l2"
+      ],
+      "open_interest": [
+        "binance_oi_change_5m_bps",
+        "binance_oi_change_15m_bps",
+        "binance_oi_change_30m_bps",
+        "binance_oi_change_60m_bps",
+        "binance_oi_value_change_15m_bps",
+        "binance_oi_value_change_60m_bps",
+        "binance_oi_acceleration_5_vs_30_bps",
+        "binance_oi_path_agreement_15m",
+        "binance_oi_path_agreement_60m"
+      ],
+      "oracle": [
+        "oracle_return_from_window_open_bps",
+        "oracle_round_age_seconds_scaled",
+        "oracle_update_count_since_open_scaled",
+        "binance_oracle_basis_bps"
+      ],
+      "refprice": [
+        "chainlink_ref_return_1s_bps",
+        "chainlink_ref_return_5s_bps",
+        "chainlink_ref_return_15s_bps",
+        "chainlink_ref_return_30s_bps",
+        "chainlink_ref_return_60s_bps",
+        "chainlink_ref_binance_basis_bps",
+        "chainlink_ref_boundary_gap_bps",
+        "chainlink_ref_spread_bps",
+        "chainlink_ref_spread_change_30s_bps",
+        "chainlink_ref_binance_direction_agreement_30s",
+        "chainlink_ref_return_90s_bps",
+        "chainlink_ref_return_120s_bps",
+        "chainlink_ref_momentum_alignment_5_30",
+        "chainlink_ref_reversal_5_vs_30",
+        "chainlink_ref_reversal_15_vs_60",
+        "chainlink_ref_boundary_velocity_5s_bps",
+        "chainlink_ref_realized_volatility_5s_bps",
+        "chainlink_ref_realized_volatility_15s_bps",
+        "chainlink_ref_realized_volatility_30s_bps",
+        "chainlink_ref_realized_volatility_60s_bps",
+        "chainlink_ref_realized_volatility_90s_bps",
+        "chainlink_ref_realized_volatility_120s_bps",
+        "chainlink_ref_range_15s_bps",
+        "chainlink_ref_range_30s_bps",
+        "chainlink_ref_range_60s_bps",
+        "chainlink_ref_range_90s_bps",
+        "chainlink_ref_range_120s_bps",
+        "chainlink_ref_path_efficiency_30s",
+        "chainlink_ref_path_efficiency_60s",
+        "chainlink_ref_range_position_60s",
+        "chainlink_ref_boundary_cross_count_60s",
+        "chainlink_ref_direction_changes_60s",
+        "chainlink_ref_age_seconds",
+        "chainlink_ref_reports_60s",
+        "chainlink_ref_max_gap_60s",
+        "chainlink_ref_binance_basis_velocity_5s_bps",
+        "chainlink_ref_binance_disagreement_30s",
+        "chainlink_ref_source_skew_seconds"
+      ],
+      "spot_l2": [
+        "spot_l2_midpoint_to_kline_close_bps",
+        "spot_l2_microprice_to_midpoint_bps",
+        "spot_l2_spread_bps",
+        "spot_l2_bid_depth_5_log",
+        "spot_l2_ask_depth_5_log",
+        "spot_l2_imbalance_5",
+        "spot_l2_bid_depth_10_log",
+        "spot_l2_ask_depth_10_log",
+        "spot_l2_imbalance_10",
+        "spot_l2_bid_depth_20_log",
+        "spot_l2_ask_depth_20_log",
+        "spot_l2_imbalance_20",
+        "spot_l2_bid_depth_slope_20",
+        "spot_l2_ask_depth_slope_20",
+        "spot_l2_bid_depth_concentration_20",
+        "spot_l2_ask_depth_concentration_20",
+        "spot_l2_bid_quote_replenishment_1s_log",
+        "spot_l2_ask_quote_replenishment_1s_log",
+        "spot_l2_bid_quote_churn_1s_log",
+        "spot_l2_ask_quote_churn_1s_log",
+        "spot_l2_midpoint_change_1s_bps",
+        "spot_l2_spread_change_1s_bps",
+        "spot_l2_depth_20_change_1s_bps",
+        "spot_l2_imbalance_20_change_1s",
+        "spot_l2_midpoint_change_5s_bps",
+        "spot_l2_spread_change_5s_bps",
+        "spot_l2_depth_20_change_5s_bps",
+        "spot_l2_imbalance_20_change_5s",
+        "spot_l2_midpoint_change_15s_bps",
+        "spot_l2_spread_change_15s_bps",
+        "spot_l2_depth_20_change_15s_bps",
+        "spot_l2_imbalance_20_change_15s",
+        "spot_l2_midpoint_change_30s_bps",
+        "spot_l2_spread_change_30s_bps",
+        "spot_l2_depth_20_change_30s_bps",
+        "spot_l2_imbalance_20_change_30s",
+        "spot_l2_midpoint_change_60s_bps",
+        "spot_l2_spread_change_60s_bps",
+        "spot_l2_depth_20_change_60s_bps",
+        "spot_l2_imbalance_20_change_60s"
+      ]
+    },
+    "historical_official_label_preserved": true,
+    "kraken_l2_included": true,
+    "kraken_l2_source": {
+      "manifest_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-multivenue-early-entry-tournament/packages/btc-directional-model/data/btc-hybrid-payoff-admission-20260321-20260827/kraken-l2-manifest.json",
+      "manifest_sha256": "8af00e462ffc84af0bf9f5701581e8a229b77fd8ecf37e7ffcb2cc280cb675c9",
+      "representation": "incremental update-flow; not reconstructed full-book depth"
+    },
+    "label_coverage": [
+      {
+        "different_from_historical_official": 3335,
+        "first_market": "2026-03-21 00:05:00+00:00",
+        "label_source": "binance_twap60_bridge",
+        "last_market": "2026-06-07 05:45:00+00:00",
+        "markets": 22533,
+        "mean_weight": 0.9588041280176096
+      },
+      {
+        "different_from_historical_official": 2366,
+        "first_market": "2026-06-07 05:50:00+00:00",
+        "label_source": "refprice_twap60_bridge",
+        "last_market": "2026-08-20 20:55:00+00:00",
+        "markets": 16114,
+        "mean_weight": 0.981317240761068
+      },
+      {
+        "different_from_historical_official": 368,
+        "first_market": "2026-08-01 02:40:00+00:00",
+        "label_source": "exact_twap60_bridge",
+        "last_market": "2026-08-20 23:55:00+00:00",
+        "markets": 5412,
+        "mean_weight": 1.0
+      },
+      {
+        "different_from_historical_official": 0,
+        "first_market": "2026-08-21 00:00:00+00:00",
+        "label_source": "official_twap60_exact",
+        "last_market": "2026-08-26 23:55:00+00:00",
+        "markets": 1679,
+        "mean_weight": 1.0
+      }
+    ],
+    "markets": 45738,
+    "new_ingesters": false,
+    "new_sources": false,
+    "new_tables": false,
+    "optional_missingness_preserves_rows": true,
+    "probabilistic_proxy_supervision": true,
+    "range_end": "2026-09-05T00:00:00+00:00",
+    "range_start": "2026-03-21T00:00:00+00:00",
+    "rows": 1692306,
+    "schema_version": "btc-hybrid-payoff-admission-tournament-v1",
+    "settlement_source_ledger": {
+      "contract": {
+        "columns_used": [
+          "market_id",
+          "window_start",
+          "window_end",
+          "official_outcome",
+          "legacy_open_price",
+          "legacy_close_price",
+          "proxy_label_up",
+          "proxy_margin_bps",
+          "binance_raw_label_up",
+          "binance_raw_margin_bps",
+          "binance_label_complete",
+          "authentic_label_up",
+          "authentic_margin_bps"
+        ],
+        "database_mutations": false,
+        "read_only": true,
+        "schema_version": "btc-source-preserving-settlement-bridge-data-v1",
+        "source_manifest_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/source-manifest.json",
+        "source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4",
+        "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/label-audit.parquet",
+        "source_sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130",
+        "source_values_remain_distinct": true
+      },
+      "local_path": "settlement-source-ledger.parquet",
+      "rows": 46027,
+      "sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130"
+    },
+    "sha256": "73d3f101cfedec77339ba3e982c0ac83695bf8bf2f61da2eebfa07b551cbfde3",
+    "source_values_remain_distinct": true,
+    "twap_inference_feature": false
+  },
+  "split_manifest": {
+    "fit_end_exclusive": "2026-08-21T00:00:00+00:00",
+    "folds": [
+      {
+        "name": "april",
+        "test_end": "2026-05-01T00:00:00Z",
+        "test_start": "2026-04-01T00:00:00Z"
+      },
+      {
+        "name": "may",
+        "test_end": "2026-06-01T00:00:00Z",
+        "test_start": "2026-05-01T00:00:00Z"
+      },
+      {
+        "name": "june",
+        "test_end": "2026-07-01T00:00:00Z",
+        "test_start": "2026-06-01T00:00:00Z"
+      },
+      {
+        "name": "july",
+        "test_end": "2026-08-01T00:00:00Z",
+        "test_start": "2026-07-01T00:00:00Z"
+      },
+      {
+        "name": "august_bridge_validation",
+        "test_end": "2026-08-14T00:00:00Z",
+        "test_start": "2026-08-08T00:00:00Z"
+      },
+      {
+        "name": "august_exact_fit",
+        "test_end": "2026-08-21T00:00:00Z",
+        "test_start": "2026-08-14T00:00:00Z"
+      }
+    ],
+    "heldout_end_exclusive": "2026-08-27T00:00:00+00:00",
+    "heldout_excluded_from_model_and_policy_selection": true,
+    "heldout_start_inclusive": "2026-08-21T00:00:00+00:00",
+    "market_disjoint": true,
+    "nested_chronological_admission_oof": true,
+    "predictive_oof_only_for_admission": true,
+    "source_start": "2026-03-21T00:00:00+00:00"
+  }
+}

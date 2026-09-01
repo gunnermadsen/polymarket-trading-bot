@@ -1,0 +1,42 @@
+{
+  "fit_end_exclusive": "2026-08-21T00:00:00+00:00",
+  "folds": [
+    {
+      "name": "april",
+      "test_end": "2026-05-01T00:00:00Z",
+      "test_start": "2026-04-01T00:00:00Z"
+    },
+    {
+      "name": "may",
+      "test_end": "2026-06-01T00:00:00Z",
+      "test_start": "2026-05-01T00:00:00Z"
+    },
+    {
+      "name": "june",
+      "test_end": "2026-07-01T00:00:00Z",
+      "test_start": "2026-06-01T00:00:00Z"
+    },
+    {
+      "name": "july",
+      "test_end": "2026-08-01T00:00:00Z",
+      "test_start": "2026-07-01T00:00:00Z"
+    },
+    {
+      "name": "august_bridge_validation",
+      "test_end": "2026-08-14T00:00:00Z",
+      "test_start": "2026-08-08T00:00:00Z"
+    },
+    {
+      "name": "august_exact_fit",
+      "test_end": "2026-08-21T00:00:00Z",
+      "test_start": "2026-08-14T00:00:00Z"
+    }
+  ],
+  "heldout_end_exclusive": "2026-08-27T00:00:00+00:00",
+  "heldout_excluded_from_model_and_policy_selection": true,
+  "heldout_start_inclusive": "2026-08-21T00:00:00+00:00",
+  "market_disjoint": true,
+  "nested_chronological_admission_oof": true,
+  "predictive_oof_only_for_admission": true,
+  "source_start": "2026-03-21T00:00:00+00:00"
+}
