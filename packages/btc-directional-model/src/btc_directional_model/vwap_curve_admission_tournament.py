@@ -1,10 +1,11 @@
-"""Frozen seven-candidate tournament with full-August holdout and VWAP-curve admission."""
+"""Frozen seven-candidate tournament with chronological VWAP-curve admission."""
 
 from __future__ import annotations
 
 import argparse
 import copy
 import json
+import math
 import os
 import platform
 import subprocess
@@ -96,6 +97,23 @@ def _cache(config: TournamentDataConfig) -> Path:
     return config.package_root / config.raw["paths"]["cache"]
 
 
+def _development_window(
+    config: TournamentDataConfig,
+) -> tuple[datetime, datetime] | None:
+    windows = config.raw["windows"]
+    if "development_start" not in windows or "development_end" not in windows:
+        return None
+    start = datetime.fromisoformat(windows["development_start"])
+    end = datetime.fromisoformat(windows["development_end"])
+    if start == config.sealed_start and end == config.sealed_end:
+        return None
+    if not config.fit_end <= start < end <= config.sealed_start:
+        raise RuntimeError(
+            "development window must follow predictive fit and end before sealed evaluation"
+        )
+    return start, end
+
+
 def _tail_config(config: TournamentDataConfig) -> TournamentDataConfig:
     tail_start = datetime.fromisoformat(config.raw["windows"]["tail_start"])
     relative = config.raw["paths"]["tail_cache"]
@@ -183,7 +201,7 @@ def build_vwap_panel(
         )
     )
     if set(fit["market_id"].unique()) & set(heldout["market_id"].unique()):
-        raise RuntimeError("predictive fit and full-August holdout markets overlap")
+        raise RuntimeError("predictive fit and heldout markets overlap")
 
     panel.write_parquet(destination, compression="zstd", statistics=True)
     groups = dict(base_manifest["feature_groups"])
@@ -832,6 +850,80 @@ def _hybrid_trades(
     return mst._select_trades(eligible, base_policy, config)
 
 
+def _economic_selection_score(
+    trades: pl.DataFrame, config: TournamentDataConfig
+) -> float:
+    """Rank supported policies without converting preferences into hard blockers."""
+
+    if trades.is_empty():
+        return -math.inf
+    pnl = trades["stress_net_pnl"].to_numpy().astype(float)
+    standard_error = 0.0 if len(pnl) < 2 else float(pnl.std(ddof=1) / math.sqrt(len(pnl)))
+    lower_stress_expectancy = float(pnl.mean()) - standard_error
+    metrics = mst.economic_metrics(trades, trades["market_id"].n_unique())
+    recovery = metrics["loss_recovery_wins"]
+    target = float(config.raw["execution"].get("recovery_soft_target", 3.5))
+    penalty_rate = float(config.raw["execution"].get("recovery_penalty", 0.0))
+    recovery_penalty = (
+        0.0 if recovery is None else penalty_rate * max(0.0, float(recovery) - target)
+    )
+    return lower_stress_expectancy - recovery_penalty + 0.0005 * math.sqrt(len(pnl))
+
+
+def select_programmatic_policies(
+    frame: pl.DataFrame, config: TournamentDataConfig
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    execution = config.raw["execution"]
+    selected: dict[str, Any] = {}
+    evidence: dict[str, Any] = {}
+    for band, start, end in mst._calibration_cells(config):
+        part = frame.filter(
+            pl.col("seconds_elapsed").is_between(start, end, closed="both")
+        )
+        best: tuple[float, dict[str, float], pl.DataFrame] | None = None
+        attempted = 0
+        for edge in execution["minimum_edges"]:
+            for confidence in execution["minimum_confidences"]:
+                for cost in execution["maximum_share_costs"]:
+                    attempted += 1
+                    policy = {
+                        "minimum_edge": float(edge),
+                        "minimum_confidence": float(confidence),
+                        "maximum_share_cost": float(cost),
+                        "abstain": False,
+                    }
+                    trades = mst._select_trades(part, policy, config)
+                    if trades.height < int(execution["minimum_policy_trades"]):
+                        continue
+                    score = _economic_selection_score(trades, config)
+                    if best is None or score > best[0]:
+                        best = (score, policy, trades)
+        if best is None:
+            policy = _basic_policy(config)
+            trades = mst._select_trades(part, policy, config)
+            selected[band] = policy
+            evidence[band] = {
+                "attempted": attempted,
+                "fallback_to_unvetoed_cost_aware_policy": True,
+                "selection_score": _economic_selection_score(trades, config),
+                "development": mst.economic_metrics(
+                    trades, part["market_id"].n_unique()
+                ),
+            }
+            continue
+        score, policy, trades = best
+        selected[band] = policy
+        evidence[band] = {
+            "attempted": attempted,
+            "fallback_to_unvetoed_cost_aware_policy": False,
+            "selection_score": score,
+            "development": mst.economic_metrics(
+                trades, part["market_id"].n_unique()
+            ),
+        }
+    return selected, evidence
+
+
 def select_hybrid_policies(
     frame: pl.DataFrame, config: TournamentDataConfig
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -860,36 +952,44 @@ def select_hybrid_policies(
                         trades = _hybrid_trades(part, base, policy, config)
                         if trades.is_empty():
                             continue
-                        fold_pnl = trades.group_by("fold").agg(
-                            pl.col("net_pnl").sum()
-                        )
-                        stable = float((fold_pnl["net_pnl"] > 0).mean()) >= float(
-                            config.raw["execution"].get(
-                                "minimum_positive_fold_ratio", 0.0
-                            )
-                        )
-                        score = mst._policy_score(trades)
-                        metrics = mst.economic_metrics(
-                            trades, part["market_id"].n_unique()
-                        )
-                        stable = (
-                            stable
-                            and metrics["stress_net_pnl"] > 0
-                            and score > 0
-                        )
-                        if stable and (best is None or score > best[0]):
+                        score = _economic_selection_score(trades, config)
+                        if best is None or score > best[0]:
                             best = (score, policy, trades)
         if best is None:
-            selected[band] = {**base, "abstain": True}
-            evidence[band] = {"attempted": attempted, "abstained": True}
+            selected[band] = {
+                "minimum_admission_probability": float(
+                    min(spec["probability_thresholds"])
+                ),
+                "minimum_stress_edge_lower_bound": float(
+                    min(spec["lower_bound_thresholds"])
+                ),
+                "maximum_expected_shortfall": float(
+                    max(spec["maximum_expected_shortfalls"])
+                ),
+                "minimum_enter_now_advantage": float(
+                    min(spec["minimum_now_advantages"])
+                ),
+                "abstain": False,
+            }
+            trades = _hybrid_trades(part, base, selected[band], config)
+            evidence[band] = {
+                "attempted": attempted,
+                "abstained": False,
+                "fallback_to_least_restrictive_policy": True,
+                "selection_score": _economic_selection_score(trades, config),
+                "development": mst.economic_metrics(
+                    trades, part["market_id"].n_unique()
+                ),
+            }
         else:
             score, policy, trades = best
             selected[band] = policy
             evidence[band] = {
                 "attempted": attempted,
                 "abstained": False,
+                "fallback_to_least_restrictive_policy": False,
                 "selection_score": score,
-                "rolling_oof": mst.economic_metrics(
+                "development": mst.economic_metrics(
                     trades, part["market_id"].n_unique()
                 ),
             }
@@ -957,6 +1057,13 @@ def _mode_replays(
 
 
 def _periods(config: TournamentDataConfig) -> dict[str, tuple[datetime, datetime]]:
+    if _development_window(config) is not None:
+        return {
+            "sealed_post_cutover_august_20_25": (
+                config.sealed_start,
+                config.sealed_end,
+            )
+        }
     cutover = datetime.fromisoformat(config.raw["windows"]["cutover"])
     return {
         "full_august": (config.sealed_start, config.sealed_end),
@@ -973,11 +1080,12 @@ def _evaluate(
     admission_models: dict[str, dict[str, VwapAdmissionModel]],
     hybrid_policies: dict[str, dict[str, Any]],
     config: TournamentDataConfig,
+    periods: dict[str, tuple[datetime, datetime]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], pl.DataFrame]:
     economic: dict[str, Any] = {}
     predictive: dict[str, Any] = {}
     ledgers: list[pl.DataFrame] = []
-    periods = _periods(config)
+    periods = periods or _periods(config)
     for candidate in mst.ALL_NAMES:
         candidate_predictions = predictions.filter(pl.col("candidate") == candidate)
         predictive[candidate] = {}
@@ -1064,39 +1172,194 @@ def _preferred_modes(config: TournamentDataConfig) -> dict[str, str]:
     return {row["name"]: row["preferred_admission"] for row in config.raw["candidates"]}
 
 
+def _select_preferred_modes_from_development(
+    economic: dict[str, Any], config: TournamentDataConfig
+) -> tuple[dict[str, str], dict[str, Any]]:
+    period = "development_post_cutover_august_14_19"
+    band = str(config.raw["entry"].get("primary_competition_band", "60_89"))
+    defaults = _preferred_modes(config)
+    preferred: dict[str, str] = {}
+    evidence: dict[str, Any] = {}
+    for candidate in mst.ALL_NAMES:
+        ranked = []
+        for mode in ADMISSION_MODES:
+            row = economic[candidate][mode][period][band]
+            recovery = row["loss_recovery_wins"]
+            target = float(config.raw["execution"].get("recovery_soft_target", 3.5))
+            penalty = float(config.raw["execution"].get("recovery_penalty", 0.0))
+            score = (
+                -math.inf
+                if not row["trades"]
+                else row["stress_net_pnl"] / row["trades"]
+                - penalty
+                * max(0.0, 0.0 if recovery is None else float(recovery) - target)
+                + 0.0005 * math.sqrt(row["trades"])
+            )
+            ranked.append((score, mode, row))
+        ranked.sort(key=lambda value: value[0], reverse=True)
+        chosen = ranked[0][1] if math.isfinite(ranked[0][0]) else defaults[candidate]
+        preferred[candidate] = chosen
+        evidence[candidate] = {
+            "selection_period": period,
+            "selection_band": band,
+            "chosen": chosen,
+            "ranked": [
+                {
+                    "mode": mode,
+                    "score": None if not math.isfinite(score) else score,
+                    "metrics": row,
+                }
+                for score, mode, row in ranked
+            ],
+            "sealed_metrics_accessed": False,
+        }
+    return preferred, evidence
+
+
+def _weighted_fold_metric(rows: list[dict[str, Any]], name: str) -> float | None:
+    total = sum(int(row["markets"]) for row in rows)
+    if not total:
+        return None
+    return float(sum(float(row[name]) * int(row["markets"]) for row in rows) / total)
+
+
+def _twap_normalization_diagnostic(config: TournamentDataConfig) -> dict[str, Any]:
+    diagnostic = config.raw.get("diagnostics")
+    if not diagnostic:
+        return {}
+    attribution_path = config.package_root / diagnostic["twap_attribution"]
+    bridge_path = config.package_root / diagnostic["bridge_manifest"]
+    attribution = json.loads(attribution_path.read_text())
+    bridge = json.loads(bridge_path.read_text())
+    periods = {
+        "development_august_14_19": {
+            "official_20260814_15",
+            "official_20260816_17",
+            "official_20260818_19",
+        },
+        "sealed_august_20_24": {
+            "official_20260820_21",
+            "official_20260822_23",
+            "official_20260824",
+        },
+    }
+    summary: dict[str, Any] = {}
+    for arm, result in attribution["results"].items():
+        summary[arm] = {}
+        for period, names in periods.items():
+            rows = [row for row in result["folds"] if row["fold"] in names]
+            summary[arm][period] = {
+                "markets": sum(int(row["markets"]) for row in rows),
+                "brier_score": _weighted_fold_metric(rows, "brier"),
+                "log_loss": _weighted_fold_metric(rows, "log_loss"),
+                "expected_calibration_error_weighted": _weighted_fold_metric(
+                    rows, "expected_calibration_error"
+                ),
+            }
+    control = summary.get("refprice_only", {})
+    for arm, result in summary.items():
+        for period, row in result.items():
+            control_row = control.get(period, {})
+            row["brier_delta_vs_refprice_only"] = (
+                None
+                if row["brier_score"] is None
+                or control_row.get("brier_score") is None
+                else row["brier_score"] - control_row["brier_score"]
+            )
+    return {
+        "selection_influence": bool(diagnostic.get("selection_influence", False)),
+        "role": "report-only settlement diagnostic; official outcomes remain canonical",
+        "attribution_path": str(attribution_path.relative_to(config.package_root)),
+        "attribution_sha256": file_sha256(attribution_path),
+        "bridge_path": str(bridge_path.relative_to(config.package_root)),
+        "bridge_sha256": file_sha256(bridge_path),
+        "bridge_calibration": bridge.get("bridge_calibration"),
+        "bridge_validation": bridge.get("bridge_validation"),
+        "arms": summary,
+    }
+
+
+def _comparison_references(config: TournamentDataConfig) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for name, relative in config.raw.get("comparison", {}).items():
+        path = config.package_root / relative
+        payload = json.loads(path.read_text())
+        output[name] = {
+            "path": str(path.relative_to(config.package_root)),
+            "sha256": file_sha256(path),
+            "run_id": payload["run_id"],
+            "schema_version": payload["schema_version"],
+        }
+    return output
+
+
 def _report(metrics: dict[str, Any]) -> str:
     def fmt(value: Any, digits: int = 3) -> str:
         return "—" if value is None else f"{value:.{digits}f}"
 
     lines = [
-        "# Full-August VWAP-Curve Admission Tournament",
+        "# Early-Entry Economic Tournament",
         "",
         f"Run: `{metrics['run_id']}`",
         f"Qualification: **{metrics['qualification_status']}**",
         "",
-        "## High-level preferred-mode results: full August, combined 60–180 replay",
+        f"## High-level preferred-mode results: {metrics['headline_period']}, combined 60–180 replay",
         "",
-        "| Candidate | Admission | PnL | Stress PnL | PF | Coverage | W | L | W/L | Recovery wins/loss | Avg entry | Avg cost | Brier |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Candidate | Admission | PnL | Stress PnL | PF | Expectancy | Coverage | W | L | Win rate | W/L | Recovery wins/loss | Avg entry | Avg cost | Brier |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for candidate in metrics["candidate_names"]:
         mode = metrics["preferred_admission_modes"][candidate]
-        row = metrics["heldout_economic"][candidate][mode]["full_august"][
+        row = metrics["heldout_economic"][candidate][mode][metrics["headline_period"]][
             "combined_60_180"
         ]
-        brier = metrics["heldout_predictive"][candidate]["full_august"]["brier_score"]
+        brier = metrics["heldout_predictive"][candidate][metrics["headline_period"]]["brier_score"]
         lines.append(
-            f"| {candidate} | {mode} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {row['end_to_end_market_coverage']:.2%} | {row['winning_trades']} | {row['losing_trades']} | {fmt(row['win_loss_ratio'])} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(brier, 4)} |"
+            f"| {candidate} | {mode} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['end_to_end_market_coverage']:.2%} | {row['winning_trades']} | {row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['win_loss_ratio'])} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(brier, 4)} |"
         )
+    lines.extend(("", "## Independent sealed entry buckets", ""))
+    for band in metrics["entry_bands"]:
+        lines.extend((
+            f"### {band.replace('_', '–')} seconds",
+            "",
+            "| Candidate | Admission | PnL | Stress PnL | PF | Expectancy | Coverage | W | L | Win rate | Recovery wins/loss | Avg entry | Brier |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ))
+        for candidate in metrics["candidate_names"]:
+            mode = metrics["preferred_admission_modes"][candidate]
+            row = metrics["heldout_economic"][candidate][mode][metrics["headline_period"]][band]
+            brier = metrics["heldout_predictive"][candidate][metrics["headline_period"]]["brier_score"]
+            lines.append(
+                f"| {candidate} | {mode} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['end_to_end_market_coverage']:.2%} | {row['winning_trades']} | {row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(brier, 4)} |"
+            )
+    diagnostic = metrics.get("twap_normalization_diagnostic", {})
+    if diagnostic:
+        lines.extend((
+            "",
+            "## TWAP/RefPrice normalization diagnostic",
+            "",
+            "| Arm | Development Brier | Delta vs RefPrice | Sealed Brier | Delta vs RefPrice |",
+            "|---|---:|---:|---:|---:|",
+        ))
+        for arm, periods in diagnostic["arms"].items():
+            development = periods["development_august_14_19"]
+            sealed = periods["sealed_august_20_24"]
+            lines.append(
+                f"| {arm} | {fmt(development['brier_score'], 5)} | {fmt(development['brier_delta_vs_refprice_only'], 5)} | {fmt(sealed['brier_score'], 5)} | {fmt(sealed['brier_delta_vs_refprice_only'], 5)} |"
+            )
+        lines.extend((
+            "",
+            "This diagnostic was calculated after policy freeze and had no selection influence.",
+        ))
     lines.extend(
         (
             "",
             "## Evaluation contract",
             "",
-            "- Predictive fitting, probability calibration, admission fitting, and policy selection use only markets before August 1.",
-            "- August 1–31 is opened once after selection is frozen and is reported as full month, pre-cutover, and post-cutover.",
+            "- Predictive fitting and probability/admission estimation use only markets before August 14.",
+            "- August 14–19 selects admission thresholds and the preferred VWAP mode; August 20–25 is opened once after selection is frozen.",
             "- The 60–89, 90–119, 120–149, and 150–180 results are independent entry replays; combined 60–180 resets and selects the first crossing across the full range.",
-            "- Official resolved outcomes are the only predictive supervision. TWAP, RefPrice settlement normalization, and bridge targets are absent.",
+            "- Official resolved outcomes are the only predictive supervision. TWAP/RefPrice normalization is report-only and cannot influence selection.",
             "- All fourteen VWAP sizes are admission-only; directional candidate contracts remain unchanged.",
             "- Optional source gaps preserve rows and are encoded as missingness. No authentic-only filter is present.",
             "- No database writes, tables, schemas, ingesters, sources, runtime exports, deployments, or image rebuilds occurred.",
@@ -1145,7 +1408,17 @@ def train_tournament(
     else:
         ledgers.mkdir(parents=True, exist_ok=False)
 
+    development_window = _development_window(config)
     fit = panel.filter(pl.col("window_start") < config.fit_end)
+    development = (
+        panel.head(0)
+        if development_window is None
+        else panel.filter(
+            pl.col("window_start").is_between(
+                development_window[0], development_window[1], closed="left"
+            )
+        )
+    )
     heldout = panel.filter(
         pl.col("window_start").is_between(
             config.sealed_start, config.sealed_end, closed="left"
@@ -1153,23 +1426,36 @@ def train_tournament(
     )
     folds = config.raw["folds"]
     if any(datetime.fromisoformat(row["test_end"]) > config.fit_end for row in folds):
-        raise RuntimeError("an OOF fold extends into the full-August holdout")
+        raise RuntimeError("an OOF fold extends beyond the predictive fit window")
     fit_markets = set(fit["market_id"].unique())
+    development_markets = set(development["market_id"].unique())
     heldout_markets = set(heldout["market_id"].unique())
-    if fit_markets & heldout_markets:
-        raise RuntimeError("predictive fit and full-August holdout markets overlap")
+    if (
+        fit_markets & development_markets
+        or fit_markets & heldout_markets
+        or development_markets & heldout_markets
+    ):
+        raise RuntimeError("fit, admission-development, and sealed markets overlap")
     split = {
         "source_start": config.source_start.isoformat(),
         "fit_end_exclusive": config.fit_end.isoformat(),
+        "development_start_inclusive": (
+            development_window[0].isoformat() if development_window else None
+        ),
+        "development_end_exclusive": (
+            development_window[1].isoformat() if development_window else None
+        ),
         "heldout_start_inclusive": config.sealed_start.isoformat(),
         "heldout_end_exclusive": config.sealed_end.isoformat(),
         "fit_markets": len(fit_markets),
+        "development_markets": len(development_markets),
         "heldout_markets": len(heldout_markets),
         "folds": folds,
         "official_outcome_supervision_only": True,
-        "time_band_calibration_pre_august_only": True,
+        "time_band_calibration_pre_sealed_only": True,
         "predictive_oof_only_for_admission": True,
         "nested_chronological_admission_oof": True,
+        "admission_policy_selection_uses_development_only": bool(development_window),
         "heldout_excluded_from_model_calibration_admission_and_policy_selection": True,
         "market_disjoint": True,
     }
@@ -1234,6 +1520,23 @@ def train_tournament(
             compress=3,
         )
 
+    development_predictions = None
+    if development_window is not None:
+        development_predictions = mst._predict_frozen_candidates(
+            development,
+            final_models,
+            ensemble_calibrator,
+            "development_20260814_20260820",
+        )
+        development_predictions = apply_band_calibrators(
+            development_predictions, band_calibrators, config
+        )
+        development_predictions.write_parquet(
+            ledgers / "development-predictions.parquet",
+            compression="zstd",
+            statistics=True,
+        )
+
     programmatic: dict[str, Any] = {}
     programmatic_evidence: dict[str, Any] = {}
     admission_models: dict[str, dict[str, VwapAdmissionModel]] = {}
@@ -1242,9 +1545,22 @@ def train_tournament(
     for candidate_index, candidate in enumerate(mst.ALL_NAMES):
         candidate_oof = calibrated_oof.filter(pl.col("candidate") == candidate)
         frame = _admission_frame(candidate_oof, calibrated_oof, fit, config)
-        programmatic[candidate], programmatic_evidence[candidate] = mst._select_cell_policies(
-            frame, config
-        )
+        selection_frame = frame
+        if development_predictions is not None:
+            selection_frame = _admission_frame(
+                development_predictions.filter(pl.col("candidate") == candidate),
+                development_predictions,
+                development,
+                config,
+            )
+        if development_predictions is not None:
+            programmatic[candidate], programmatic_evidence[candidate] = (
+                select_programmatic_policies(selection_frame, config)
+            )
+        else:
+            programmatic[candidate], programmatic_evidence[candidate] = (
+                mst._select_cell_policies(frame, config)
+            )
         admission_models[candidate] = {}
         hybrid_policies[candidate] = {}
         admission_evidence[candidate] = {}
@@ -1262,10 +1578,23 @@ def train_tournament(
                     mode=mode,
                     seed=seed + 30_000 + 300 * candidate_index + 10 * mode_index,
                 )
-                policies, policy_evidence = select_hybrid_policies(
-                    admission_oof, config
+                policy_frame = (
+                    _attach_admission(selection_frame, model)
+                    if development_predictions is not None
+                    else admission_oof
                 )
-                evidence = {**model_evidence, "policy": policy_evidence}
+                policies, policy_evidence = select_hybrid_policies(
+                    policy_frame, config
+                )
+                evidence = {
+                    **model_evidence,
+                    "policy_selection_source": (
+                        "post_cutover_development"
+                        if development_predictions is not None
+                        else "rolling_oof"
+                    ),
+                    "policy": policy_evidence,
+                }
                 joblib.dump(
                     {"model": model, "policies": policies, "evidence": evidence},
                     checkpoint,
@@ -1276,6 +1605,32 @@ def train_tournament(
             admission_evidence[candidate][mode] = evidence
             print(f"admission checkpoint: {candidate} {mode}", flush=True)
 
+    preferred = _preferred_modes(config)
+    preferred_evidence: dict[str, Any] = {}
+    development_predictive: dict[str, Any] = {}
+    development_economic: dict[str, Any] = {}
+    development_trades = pl.DataFrame()
+    if development_predictions is not None and development_window is not None:
+        development_predictive, development_economic, development_trades = _evaluate(
+            predictions=development_predictions,
+            panel=development,
+            programmatic=programmatic,
+            admission_models=admission_models,
+            hybrid_policies=hybrid_policies,
+            config=config,
+            periods={
+                "development_post_cutover_august_14_19": development_window
+            },
+        )
+        development_trades.write_parquet(
+            ledgers / "development-trades.parquet",
+            compression="zstd",
+            statistics=True,
+        )
+        preferred, preferred_evidence = _select_preferred_modes_from_development(
+            development_economic, config
+        )
+
     selection_frozen_at = datetime.now(UTC).isoformat()
     selection_payload = {
         "frozen_at": selection_frozen_at,
@@ -1283,13 +1638,14 @@ def train_tournament(
         "programmatic_evidence": programmatic_evidence,
         "hybrid": hybrid_policies,
         "admission_evidence": admission_evidence,
-        "preferred_modes": _preferred_modes(config),
+        "preferred_modes": preferred,
+        "preferred_mode_evidence": preferred_evidence,
         "heldout_metrics_accessed": False,
     }
     _write_json(run_dir / "selection-freeze.json", selection_payload)
 
     heldout_predictions = mst._predict_frozen_candidates(
-        heldout, final_models, ensemble_calibrator, "heldout_20260801_20260901"
+        heldout, final_models, ensemble_calibrator, "sealed_20260820_20260826"
     )
     heldout_predictions = apply_band_calibrators(
         heldout_predictions, band_calibrators, config
@@ -1328,7 +1684,7 @@ def train_tournament(
             "admission_models": flattened_admission,
             "programmatic_policies": programmatic,
             "hybrid_policies": hybrid_policies,
-            "preferred_admission_modes": _preferred_modes(config),
+            "preferred_admission_modes": preferred,
             "deployment_status": "not_deployed",
         },
         artifact,
@@ -1338,10 +1694,10 @@ def train_tournament(
     artifact_sha = file_sha256(artifact)
     (run_dir / "tournament.sha256").write_text(f"{artifact_sha}  tournament.joblib\n")
 
-    preferred = _preferred_modes(config)
     positive = []
+    headline_period = next(iter(_periods(config)))
     for candidate, mode in preferred.items():
-        row = heldout_economic[candidate][mode]["full_august"]["combined_60_180"]
+        row = heldout_economic[candidate][mode][headline_period]["combined_60_180"]
         if (
             row["net_pnl"] > 0
             and row["stress_net_pnl"] > 0
@@ -1360,8 +1716,13 @@ def train_tournament(
         "probability_band_calibrator_count": 28,
         "admission_model_count": 21,
         "selection_frozen_at": selection_frozen_at,
+        "headline_period": headline_period,
+        "entry_bands": [name for name, _, _ in mst._calibration_cells(config)],
         "preferred_admission_modes": preferred,
+        "preferred_mode_evidence": preferred_evidence,
         "oof_predictive": oof_predictive,
+        "development_predictive": development_predictive,
+        "development_economic": development_economic,
         "heldout_predictive": heldout_predictive,
         "heldout_economic": heldout_economic,
         "positive_expectancy_preferred_modes": positive,
@@ -1372,16 +1733,21 @@ def train_tournament(
         ),
         "source_panel": panel_manifest,
         "split_manifest": split,
+        "twap_normalization_diagnostic": _twap_normalization_diagnostic(config),
+        "prior_tournament_references": _comparison_references(config),
         "artifact_sha256": artifact_sha,
         "frozen_comparator_references": mst._reference_manifests(config),
         "integrity": {
             "passed": True,
             "market_disjoint": True,
-            "full_august_heldout": True,
+            "sealed_post_cutover_heldout": bool(development_window),
             "official_outcome_supervision_only": True,
             "settlement_bridge_fields_absent": True,
-            "time_band_calibration_pre_august_only": True,
+            "time_band_calibration_pre_sealed_only": True,
             "nested_chronological_admission_oof": True,
+            "post_cutover_development_policy_selection": bool(development_window),
+            "twap_normalization_report_only": True,
+            "twap_normalization_selection_influence": False,
             "independent_entry_replays": True,
             "artifact_round_trip_load": True,
             "full_history_retained": True,
@@ -1405,10 +1771,11 @@ def train_tournament(
             "sklearn": sklearn.__version__,
         },
         "limitations": [
-            "The August holdout is chronologically clean for this run but was observed during earlier research, so it is not epistemically fresh.",
+            "The August 20–25 holdout is chronologically isolated for this run but was observed during earlier research, so it is not epistemically fresh.",
             "Kraken L2 incremental-update coverage ends during August 19; later rows preserve explicit L2 missingness.",
-            "Kraken candles and prints end during August 30; later rows preserve explicit Kraken missingness.",
+            "Kraken candles and prints are used only where observed; absent dimensions preserve explicit missingness.",
             "The latest capacity artifacts extend through August 31 20:59 UTC, but their August 27–31 snapshots contain missing-book flags and null curves; usable complete VWAP curves end August 25 23:59 UTC and later rows preserve explicit execution missingness.",
+            "The TWAP/RefPrice attribution artifact is a report-only diagnostic from a prior immutable validation and did not influence model, calibration, admission, or policy selection.",
             "Projected PnL assumes recorded Polymarket ask VWAP5 was fillable and does not model queue position.",
         ],
     }

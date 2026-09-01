@@ -13,9 +13,13 @@ from btc_directional_model.vwap_curve_admission_tournament import (
     TARGET_ONLY_COLUMNS,
     _attach_curve_features,
     _attach_enter_now_target,
+    _development_window,
+    _economic_selection_score,
     _features,
     _mode_replays,
+    _twap_normalization_diagnostic,
     build_vwap_panel,
+    select_programmatic_policies,
     train_tournament,
 )
 
@@ -23,6 +27,10 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = (
     PACKAGE_ROOT
     / "configs/btc-5m-full-august-vwap-admission-tournament-20260321-20260901.toml"
+)
+ECONOMIC_CONFIG = (
+    PACKAGE_ROOT
+    / "configs/btc-5m-early-entry-economic-tournament-20260321-20260826.toml"
 )
 
 
@@ -51,6 +59,71 @@ def test_contract_preserves_seven_candidates_without_bridge_or_authentic_lock() 
         "hybrid_full_vwap_no_l2",
         "hybrid_full_vwap_dual_l2",
     }
+
+
+def test_economic_tournament_has_disjoint_fit_development_and_sealed_windows() -> None:
+    config = load_data_config(ECONOMIC_CONFIG)
+    development = _development_window(config)
+    assert config.source_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert config.fit_end == datetime(2026, 8, 14, tzinfo=UTC)
+    assert development == (
+        datetime(2026, 8, 14, tzinfo=UTC),
+        datetime(2026, 8, 20, tzinfo=UTC),
+    )
+    assert config.sealed_start == datetime(2026, 8, 20, tzinfo=UTC)
+    assert config.sealed_end == datetime(2026, 8, 26, tzinfo=UTC)
+    assert len(config.raw["folds"]) == 5
+    assert all(
+        datetime.fromisoformat(fold["test_end"]) <= config.fit_end
+        for fold in config.raw["folds"]
+    )
+
+
+def test_economic_tournament_has_no_data_exclusion_or_settlement_supervision_lock() -> None:
+    text = ECONOMIC_CONFIG.read_text().lower()
+    config = load_data_config(ECONOMIC_CONFIG)
+    assert len(config.raw["candidates"]) == 7
+    assert "authentic_only" not in text
+    assert config.raw["diagnostics"]["selection_influence"] is False
+    assert config.raw["execution"]["allow_abstention"] is False
+    assert config.raw["entry"]["prediction_bands"] == [
+        [60, 89],
+        [90, 119],
+        [120, 149],
+        [150, 180],
+    ]
+
+
+def test_normalization_diagnostic_is_report_only_and_hashes_immutable_inputs() -> None:
+    diagnostic = _twap_normalization_diagnostic(load_data_config(ECONOMIC_CONFIG))
+    assert diagnostic["selection_influence"] is False
+    assert len(diagnostic["attribution_sha256"]) == 64
+    assert len(diagnostic["bridge_sha256"]) == 64
+    assert diagnostic["arms"]["refprice_only"]["sealed_august_20_24"][
+        "brier_delta_vs_refprice_only"
+    ] == 0.0
+    assert diagnostic["bridge_validation"]["refprice_to_exact"]["paired_markets"] > 0
+
+
+def test_development_selector_uses_soft_recovery_penalty_without_positive_pnl_gate() -> None:
+    config = load_data_config(ECONOMIC_CONFIG)
+    source = inspect.getsource(select_programmatic_policies)
+    assert "require_positive_stress_pnl" not in source
+    assert "minimum_positive_fold_ratio" not in source
+    trades = pl.DataFrame(
+        {
+            "market_id": ["a", "b"],
+            "stress_net_pnl": [0.2, -0.1],
+            "net_pnl": [0.25, -0.05],
+            "window_start": [
+                datetime(2026, 8, 14, tzinfo=UTC),
+                datetime(2026, 8, 14, tzinfo=UTC),
+            ],
+            "share_cost": [0.5, 0.5],
+            "seconds_elapsed": [65, 70],
+        }
+    )
+    assert _economic_selection_score(trades, config) != float("-inf")
 
 
 def test_full_curve_engineering_uses_every_frozen_vwap_quantity() -> None:
