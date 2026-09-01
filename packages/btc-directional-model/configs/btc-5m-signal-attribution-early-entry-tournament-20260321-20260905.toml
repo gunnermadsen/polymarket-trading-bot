@@ -1,0 +1,175 @@
+[training]
+profile = "btc_5m_signal_attribution_early_entry_tournament"
+model_family = "btc-5m-signal-attribution-early-entry"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260901
+data_watermark = "2026-09-05T00:00:00Z"
+candidate_freeze = "2026-08-29T00:00:00Z"
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+kraken_start = "2026-04-01T00:00:00Z"
+refprice_start = "2026-06-07T00:00:00Z"
+exact_twap_start = "2026-08-01T02:40:00Z"
+open_interest_start = "2026-07-03T00:00:00Z"
+binance_print_start = "2026-07-22T00:00:00Z"
+fit_end = "2026-08-21T00:00:00Z"
+development_start = "2026-08-21T00:00:00Z"
+development_end = "2026-08-29T00:00:00Z"
+sealed_start = "2026-08-29T00:00:00Z"
+sealed_end = "2026-09-05T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_inclusive = 180
+cadence_seconds = 5
+prediction_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+economic_start_second = 60
+economic_end_second_inclusive = 180
+calibration_cells = [[60, 89], [90, 119], [120, 149], [150, 180]]
+
+[settlement_bridge]
+calibration_start = "2026-08-01T02:40:00Z"
+calibration_end = "2026-08-08T00:00:00Z"
+validation_end = "2026-08-14T00:00:00Z"
+minimum_scale_bps = 0.10
+refprice_minimum_weight = 0.25
+binance_minimum_weight = 0.15
+fallback_weight = 0.10
+official_development_only = true
+official_sealed_only = true
+
+[model]
+learning_rate = 0.06
+max_iter = 120
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 1.5
+max_bins = 127
+calibration_fraction = 0.20
+margin_target_clip = 8.0
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.125, 0.15]
+minimum_confidences = [0.52, 0.55, 0.58, 0.60, 0.62, 0.65, 0.68, 0.70, 0.75, 0.80, 0.85, 0.90]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+minimum_policy_trades = 100
+minimum_positive_fold_ratio = 0.60
+require_positive_stress_pnl = true
+selection_source = "rolling_oof"
+allow_abstention = true
+
+[prospective]
+expected_complete_days = 7
+expected_markets = 2016
+partial_evaluation_allowed = true
+fresh_evidence = true
+
+[sources]
+kraken_spot_root = "/Volumes/docker-data/kraken-spot-data"
+kraken_symbol = "BTCUSD"
+kraken_candle_dataset = "ohlcv_1s"
+kraken_print_dataset = "trade_prints"
+kraken_l2_included = false
+binance_spot_l2_relation = "polymarket.binance_spot_btcusdt_l2_training_features"
+binance_twap_seed_cache = "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828"
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+binance_twap_source_sql = "sql/btc-counterfactual-twap-binance-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+binance_print_source_sql = "sql/btc-binance-trade-print-source.sql"
+spot_l2_source_sql = "sql/btc-middle-strategy-spot-l2-source.sql"
+cache = "data/btc-signal-attribution-early-entry-20260321-20260905"
+middle_cache = "data/btc-signal-attribution-middle-20260321-20260905"
+bridge_cache = "data/btc-signal-attribution-bridge-20260321-20260905"
+runs = "runs/btc-signal-attribution-early-entry-20260321-20260905"
+committed_results = "training-results/btc-5m-signal-attribution-early-entry-20260321-20260905"
+q5_manifest = "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json"
+specialist_manifest = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json"
+
+[comparison]
+prior_metrics = "training-results/btc-5m-source-preserving-settlement-bridge-middle-strategy-20260321-20260828/20260831T224530Z/metrics.json"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_bridge_validation"
+test_start = "2026-08-08T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[folds]]
+name = "august_exact_fit"
+test_start = "2026-08-14T00:00:00Z"
+test_end = "2026-08-21T00:00:00Z"
+
+[[candidates]]
+name = "external_flow_only_control"
+kind = "base"
+feature_groups = ["core", "open_interest", "binance_prints", "kraken", "spot_l2"]
+description = "Settlement-feed-free predictor using Binance and Kraken path, flow, positioning, and qualified L2 only."
+
+[[candidates]]
+name = "middle_specialist_refit"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice"]
+description = "RefPrice-context specialist without Polymarket price or execution inputs."
+
+[[candidates]]
+name = "middle_q5_admission"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "binance_prints"]
+description = "Selective RefPrice and Binance-flow predictor with execution isolated to admission."
+
+[[candidates]]
+name = "crossvenue_middle_specialist"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken", "spot_l2"]
+description = "Full cross-venue predictor without Polymarket price or execution inputs."
+
+[[candidates]]
+name = "latent_boundary_margin_specialist"
+kind = "margin_base"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken", "spot_l2"]
+description = "Continuous settlement-boundary margin regressor converted to calibrated outcome probability."
+
+[[candidates]]
+name = "middle_agreement_ensemble"
+kind = "agreement"
+members = ["external_flow_only_control", "middle_specialist_refit", "middle_q5_admission", "crossvenue_middle_specialist", "latent_boundary_margin_specialist"]
+description = "Abstaining consensus across all independently trained predictive families."
+
+[[candidates]]
+name = "price_time_calibrated_middle_ensemble"
+kind = "calibrated_ensemble"
+members = ["external_flow_only_control", "middle_specialist_refit", "middle_q5_admission", "crossvenue_middle_specialist", "latent_boundary_margin_specialist"]
+description = "Probability ensemble with separately abstaining admission in each entry-time band."

@@ -14,14 +14,17 @@ from btc_directional_model.middle_strategy_tournament import (
     ALL_NAMES,
     BridgeEnsembleCalibrator,
     BridgeTreeModel,
+    MarginTreeModel,
     _agreement_predictions,
     _candidate_contract,
     _counterfactual_economics,
     _fit_candidate_tree,
     _opportunities,
     _qualification_status,
+    _select_policy,
     _select_trades,
     _validate_artifact,
+    train_signal_attribution_tournament,
     train_tournament,
 )
 from btc_directional_model.multivenue_early_entry_data import load_data_config
@@ -35,6 +38,10 @@ NORMALIZED_CONFIG = (
 BRIDGE_CONFIG = (
     PACKAGE_ROOT
     / "configs/btc-5m-source-preserving-settlement-bridge-middle-strategy-tournament-20260321-20260828.toml"
+)
+SIGNAL_ATTRIBUTION_CONFIG = (
+    PACKAGE_ROOT
+    / "configs/btc-5m-signal-attribution-early-entry-tournament-20260321-20260905.toml"
 )
 
 
@@ -219,3 +226,75 @@ def test_prescribed_counterfactuals_are_reporting_only() -> None:
     assert training.index("selection_frozen_at =") < training.index(
         "counterfactual_economic[name]"
     )
+
+
+def test_signal_attribution_contract_preserves_full_history_and_fresh_seal() -> None:
+    config = load_data_config(SIGNAL_ATTRIBUTION_CONFIG)
+    assert config.source_start == datetime(2026, 3, 21, tzinfo=UTC)
+    assert config.fit_end == datetime(2026, 8, 21, tzinfo=UTC)
+    assert config.sealed_start == datetime(2026, 8, 29, tzinfo=UTC)
+    assert config.sealed_end == datetime(2026, 9, 5, tzinfo=UTC)
+    assert len(config.raw["candidates"]) == 7
+    assert config.raw["execution"]["selection_source"] == "rolling_oof"
+    assert max(config.raw["execution"]["minimum_confidences"]) == 0.90
+    assert config.raw["execution"]["allow_abstention"] is True
+    assert "authentic_only" not in SIGNAL_ATTRIBUTION_CONFIG.read_text().lower()
+
+
+def test_signal_attribution_predictors_exclude_execution_and_twap() -> None:
+    config = load_data_config(SIGNAL_ATTRIBUTION_CONFIG)
+    bases = [
+        row
+        for row in config.raw["candidates"]
+        if row["kind"] in {"base", "margin_base"}
+    ]
+    assert len(bases) == 5
+    assert all("execution" not in row["feature_groups"] for row in bases)
+    assert "refprice" not in bases[0]["feature_groups"]
+    assert "oracle" not in bases[0]["feature_groups"]
+    assert all("twap" not in group.lower() for row in bases for group in row["feature_groups"])
+
+
+def test_signal_attribution_freezes_policy_before_comparison_and_prospective() -> None:
+    source = inspect.getsource(train_signal_attribution_tournament)
+    assert source.index("selection_frozen_at =") < source.index(
+        "development = panel.filter"
+    )
+    assert source.index("development = panel.filter") < source.index(
+        "prospective = panel.filter"
+    )
+    assert 'policy_source = "rolling_oof_only"' not in source
+    assert '"policy_selection_source": "rolling_oof_only"' in source
+
+
+def test_margin_model_has_stable_import_identity() -> None:
+    assert MarginTreeModel.__module__ == "btc_directional_model.middle_strategy_tournament"
+
+
+def test_policy_selection_can_abstain_when_all_supported_policies_lose() -> None:
+    config = load_data_config(SIGNAL_ATTRIBUTION_CONFIG)
+    start = datetime(2026, 4, 1, tzinfo=UTC)
+    count = 120
+    opportunities = pl.DataFrame(
+        {
+            "market_id": [f"m-{index}" for index in range(count)],
+            "window_start": [start + timedelta(minutes=5 * index) for index in range(count)],
+            "observed_at": [start + timedelta(minutes=5 * index, seconds=60) for index in range(count)],
+            "seconds_elapsed": [60] * count,
+            "label_up": [0] * count,
+            "fold": ["a" if index < 60 else "b" for index in range(count)],
+            "candidate": ["x"] * count,
+            "probability": [0.9] * count,
+            "eligible_signal": [True] * count,
+            "side": ["up"] * count,
+            "selected_probability": [0.9] * count,
+            "share_cost": [0.5] * count,
+            "fee_per_share": [0.0] * count,
+            "expected_edge": [0.4] * count,
+            "pm_up_book_age_seconds": [1.0] * count,
+            "pm_down_book_age_seconds": [1.0] * count,
+        }
+    )
+    policy, evidence = _select_policy(opportunities, config)
+    assert policy["abstain"] is True
+    assert evidence["abstained"] is True

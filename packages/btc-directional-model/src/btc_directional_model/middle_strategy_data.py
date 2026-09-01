@@ -296,6 +296,12 @@ def build_source_preserving_bridge_panel(
         .then(pl.col("authentic_margin_bps"))
         .when(official_period & has_refprice)
         .then(pl.col("proxy_margin_bps") + ref_location)
+        .when(official_period & pl.col("official_label_up").is_not_null())
+        .then(
+            pl.when(pl.col("official_label_up") == 1)
+            .then(minimum_scale)
+            .otherwise(-minimum_scale)
+        )
         .when(exact_period & has_exact)
         .then(pl.col("authentic_margin_bps"))
         .when(refprice_period & has_refprice)
@@ -304,9 +310,9 @@ def build_source_preserving_bridge_panel(
         .then(pl.col("binance_raw_margin_bps") + binance_location)
         .otherwise(pl.col("official_margin_bps"))
     )
-    source_scale = (
-        pl.when(refprice_period).then(ref_scale).otherwise(binance_scale)
-    )
+    source_scale = pl.when(official_period & ~has_exact & ~has_refprice).then(
+        minimum_scale
+    ).when(refprice_period).then(ref_scale).otherwise(binance_scale)
     labels = labels.with_columns(
         source_margin.alias("target_margin_bps"),
         source_scale.alias("bridge_uncertainty_bps"),

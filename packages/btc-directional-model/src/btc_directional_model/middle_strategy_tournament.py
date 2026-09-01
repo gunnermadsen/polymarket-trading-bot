@@ -10,7 +10,7 @@ import platform
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,7 @@ import joblib
 import numpy as np
 import polars as pl
 import sklearn
-from scipy.special import expit, logit
+from scipy.special import expit, logit, ndtr
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression, Ridge
@@ -58,6 +58,9 @@ ALL_NAMES = (
     "crossvenue_middle_specialist",
     "price_time_calibrated_middle_ensemble",
 )
+AGREEMENT_NAME = "middle_agreement_ensemble"
+CALIBRATED_NAME = "price_time_calibrated_middle_ensemble"
+AGREEMENT_MEMBERS = BASE_NAMES[:2]
 
 CANONICAL_MODULE = "btc_directional_model.middle_strategy_tournament"
 if __name__ == "__main__":
@@ -82,8 +85,37 @@ class BridgeEnsembleCalibrator:
         return np.column_stack((1.0 - probability, probability))
 
 
+@dataclass(frozen=True)
+class MarginTreeModel:
+    features: tuple[str, ...]
+    estimator: HistGradientBoostingRegressor
+    calibrator: IsotonicRegression | None
+    neutralized_columns: tuple[int, ...]
+
+
 BridgeTreeModel.__module__ = CANONICAL_MODULE
 BridgeEnsembleCalibrator.__module__ = CANONICAL_MODULE
+MarginTreeModel.__module__ = CANONICAL_MODULE
+
+
+def _configure_roster(config: Any) -> None:
+    """Load one frozen candidate roster without changing training infrastructure."""
+
+    global AGREEMENT_MEMBERS, AGREEMENT_NAME, ALL_NAMES, BASE_NAMES, CALIBRATED_NAME
+    rows = config.raw["candidates"]
+    BASE_NAMES = tuple(
+        row["name"] for row in rows if row["kind"] in {"base", "margin_base"}
+    )
+    ALL_NAMES = tuple(row["name"] for row in rows)
+    agreements = [row for row in rows if row["kind"] == "agreement"]
+    calibrated = [row for row in rows if row["kind"] == "calibrated_ensemble"]
+    if len(agreements) != 1 or len(calibrated) != 1 or len(BASE_NAMES) < 2:
+        raise RuntimeError("candidate roster requires bases, one agreement, and one calibrator")
+    AGREEMENT_NAME = agreements[0]["name"]
+    AGREEMENT_MEMBERS = tuple(agreements[0]["members"])
+    CALIBRATED_NAME = calibrated[0]["name"]
+    if not set(AGREEMENT_MEMBERS) <= set(BASE_NAMES):
+        raise RuntimeError("agreement members must be learned base candidates")
 
 
 def _uses_normalized_supervision(config: Any) -> bool:
@@ -109,8 +141,13 @@ def _build_tournament_panel(config: Any, *, force: bool) -> tuple[pl.DataFrame, 
 
 
 def _fit_candidate_tree(
-    frame: pl.DataFrame, features: tuple[str, ...], config: Any, seed: int
-) -> TreeModel | BridgeTreeModel:
+    frame: pl.DataFrame,
+    features: tuple[str, ...],
+    config: Any,
+    seed: int,
+    *,
+    target_kind: str = "probability",
+) -> TreeModel | BridgeTreeModel | MarginTreeModel:
     """Fit the frozen tree family with the configured settlement supervision."""
 
     if "label_weight" not in frame.columns:
@@ -129,6 +166,48 @@ def _fit_candidate_tree(
     if not matrix.shape[1]:
         raise RuntimeError("all candidate features are constant or missing")
     spec = config.raw["model"]
+    if target_kind == "margin_base":
+        if "settlement_bridge_z" not in fit.columns:
+            raise RuntimeError("continuous-margin candidate requires bridge supervision")
+        estimator = HistGradientBoostingRegressor(
+            loss="squared_error",
+            learning_rate=float(spec["learning_rate"]),
+            max_iter=int(spec["max_iter"]),
+            max_leaf_nodes=int(spec["max_leaf_nodes"]),
+            min_samples_leaf=int(spec["min_samples_leaf"]),
+            l2_regularization=float(spec["l2_regularization"]),
+            max_bins=int(spec["max_bins"]),
+            early_stopping=False,
+            random_state=seed,
+        ).fit(
+            matrix,
+            np.clip(
+                fit["settlement_bridge_z"].to_numpy(),
+                -float(spec.get("margin_target_clip", 8.0)),
+                float(spec.get("margin_target_clip", 8.0)),
+            ),
+            sample_weight=fit["label_weight"].to_numpy(),
+        )
+        raw_probability = np.clip(
+            ndtr(
+                estimator.predict(
+                    _matrix(calibration, features, neutralized)
+                )
+            ),
+            1e-6,
+            1 - 1e-6,
+        )
+        target = calibration["bridge_probability_target"].to_numpy()
+        calibrator: IsotonicRegression | None = None
+        if np.ptp(raw_probability) > 1e-9 and np.ptp(target) > 1e-9:
+            calibrator = IsotonicRegression(
+                y_min=0.0, y_max=1.0, out_of_bounds="clip"
+            ).fit(
+                raw_probability,
+                target,
+                sample_weight=calibration["label_weight"].to_numpy(),
+            )
+        return MarginTreeModel(features, estimator, calibrator, neutralized)
     if "bridge_probability_target" in fit.columns:
         estimator = HistGradientBoostingRegressor(
             loss="squared_error",
@@ -186,8 +265,21 @@ def _fit_candidate_tree(
 
 
 def _predict_candidate_tree(
-    model: TreeModel | BridgeTreeModel, frame: pl.DataFrame
+    model: TreeModel | BridgeTreeModel | MarginTreeModel, frame: pl.DataFrame
 ) -> np.ndarray:
+    if isinstance(model, MarginTreeModel):
+        raw = np.clip(
+            ndtr(
+                model.estimator.predict(
+                    _matrix(frame, model.features, model.neutralized_columns)
+                )
+            ),
+            1e-6,
+            1 - 1e-6,
+        )
+        if model.calibrator is None:
+            return raw
+        return np.clip(model.calibrator.predict(raw), 1e-6, 1 - 1e-6)
     if isinstance(model, BridgeTreeModel):
         raw = np.clip(
             model.estimator.predict(
@@ -216,11 +308,12 @@ def _git_revision(package_root: Path) -> str:
 
 
 def _candidate_contract(config: Any, manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    _configure_roster(config)
     groups = {name: tuple(values) for name, values in manifest["feature_groups"].items()}
     output: dict[str, dict[str, Any]] = {}
     for row in config.raw["candidates"]:
         contract = dict(row)
-        if row["kind"] == "base":
+        if row["kind"] in {"base", "margin_base"}:
             features = tuple(
                 dict.fromkeys(
                     feature
@@ -287,6 +380,7 @@ def _base_oof(
                 tuple(contracts[name]["features"]),
                 config,
                 seed + 100 * fold_index + base_index,
+                target_kind=contracts[name]["kind"],
             )
             piece = _prediction_frame(
                 test, _predict_candidate_tree(model, test), fold["name"], name
@@ -325,16 +419,18 @@ def _wide_base_predictions(base: pl.DataFrame) -> pl.DataFrame:
 
 
 def _agreement_predictions(wide: pl.DataFrame) -> pl.DataFrame:
-    first, second = BASE_NAMES[:2]
-    agrees = (pl.col(first) >= 0.5) == (pl.col(second) >= 0.5)
-    probability = ((pl.col(first) + pl.col(second)) / 2.0).alias("probability")
+    directions = [pl.col(name) >= 0.5 for name in AGREEMENT_MEMBERS]
+    agrees = pl.all_horizontal(*directions) | pl.all_horizontal(
+        *(~direction for direction in directions)
+    )
+    probability = pl.mean_horizontal(*AGREEMENT_MEMBERS).alias("probability")
     optional = tuple(
         name
         for name in ("label_weight", "bridge_probability_target")
         if name in wide.columns
     )
     return wide.select(*KEY_COLUMNS, "label_up", *optional, "fold", probability, agrees.alias("eligible_signal")).with_columns(
-        pl.lit("middle_agreement_ensemble").alias("candidate")
+        pl.lit(AGREEMENT_NAME).alias("candidate")
     ).select(
         *KEY_COLUMNS,
         "label_up",
@@ -393,7 +489,7 @@ def _causal_calibrated_oof(wide: pl.DataFrame, config: Any) -> pl.DataFrame:
                 current,
                 probability,
                 fold["name"],
-                "price_time_calibrated_middle_ensemble",
+                CALIBRATED_NAME,
             )
         )
         prior.append(current)
@@ -422,9 +518,6 @@ def _ece(labels: np.ndarray, probability: np.ndarray, bins: int = 15) -> float:
 
 
 def predictive_metrics(frame: pl.DataFrame) -> dict[str, Any]:
-    labels = frame["label_up"].to_numpy().astype(float)
-    probability = frame["probability"].to_numpy().astype(float)
-
     def summary(part: pl.DataFrame) -> dict[str, Any]:
         if part.is_empty():
             return {
@@ -460,8 +553,14 @@ def predictive_metrics(frame: pl.DataFrame) -> dict[str, Any]:
             frame.filter(pl.col("seconds_elapsed").is_between(start, end, closed="both"))
         )
     result = summary(frame)
-    result["mean_probability"] = float(probability.mean())
-    result["positive_rate"] = float(labels.mean())
+    if frame.is_empty():
+        result["mean_probability"] = None
+        result["positive_rate"] = None
+    else:
+        labels = frame["label_up"].to_numpy().astype(float)
+        probability = frame["probability"].to_numpy().astype(float)
+        result["mean_probability"] = float(probability.mean())
+        result["positive_rate"] = float(labels.mean())
     result["by_timing_band"] = bands
     return result
 
@@ -497,6 +596,12 @@ def _opportunities(predictions: pl.DataFrame, panel: pl.DataFrame, config: Any) 
 
 
 def _select_trades(opportunities: pl.DataFrame, policy: dict[str, float], config: Any) -> pl.DataFrame:
+    if bool(policy.get("abstain", False)):
+        return opportunities.head(0).with_columns(
+            pl.lit(False).alias("won"),
+            pl.lit(None, dtype=pl.Float64).alias("net_pnl"),
+            pl.lit(None, dtype=pl.Float64).alias("stress_net_pnl"),
+        )
     quantity = int(config.raw["execution"]["quantity"])
     reserve = float(config.raw["execution"]["execution_reserve_per_share"])
     stress = float(config.raw["execution"]["stress_slippage_per_share"])
@@ -605,14 +710,38 @@ def _policy_score(trades: pl.DataFrame) -> float:
 def _select_policy(opportunities: pl.DataFrame, config: Any) -> tuple[dict[str, float], dict[str, Any]]:
     execution = config.raw["execution"]
     best: tuple[float, dict[str, float], pl.DataFrame] | None = None
+    tested = 0
+    supported = 0
     for edge in execution["minimum_edges"]:
         for confidence in execution["minimum_confidences"]:
             for cost in execution["maximum_share_costs"]:
-                policy = {"minimum_edge": float(edge), "minimum_confidence": float(confidence), "maximum_share_cost": float(cost)}
+                tested += 1
+                policy = {
+                    "minimum_edge": float(edge),
+                    "minimum_confidence": float(confidence),
+                    "maximum_share_cost": float(cost),
+                    "abstain": False,
+                }
                 trades = _select_trades(opportunities, policy, config)
                 if trades.height < int(execution["minimum_policy_trades"]):
                     continue
+                supported += 1
+                fold_pnl = trades.group_by("fold").agg(
+                    pl.col("net_pnl").sum().alias("net_pnl")
+                )
+                positive_fold_ratio = float((fold_pnl["net_pnl"] > 0).mean())
+                metrics = economic_metrics(
+                    trades, opportunities["market_id"].n_unique()
+                )
                 score = _policy_score(trades)
+                stable = positive_fold_ratio >= float(
+                    execution.get("minimum_positive_fold_ratio", 0.0)
+                )
+                if execution.get("require_positive_stress_pnl", False):
+                    stable = stable and metrics["stress_net_pnl"] > 0
+                stable = stable and score > 0
+                if not stable:
+                    continue
                 if best is None or score > best[0]:
                     best = (score, policy, trades)
     if best is None:
@@ -620,10 +749,32 @@ def _select_policy(opportunities: pl.DataFrame, config: Any) -> tuple[dict[str, 
             "minimum_edge": min(execution["minimum_edges"]),
             "minimum_confidence": min(execution["minimum_confidences"]),
             "maximum_share_cost": max(execution["maximum_share_costs"]),
+            "abstain": bool(execution.get("allow_abstention", True)),
         }
-        return policy, {"selection_score": None, "development": economic_metrics(pl.DataFrame(), opportunities["market_id"].n_unique())}
+        return policy, {
+            "selection_score": None,
+            "abstained": policy["abstain"],
+            "tested_policies": tested,
+            "supported_policies": supported,
+            "rolling_oof": economic_metrics(
+                pl.DataFrame(), opportunities["market_id"].n_unique()
+            ),
+        }
     score, policy, trades = best
-    return policy, {"selection_score": score, "development": economic_metrics(trades, opportunities["market_id"].n_unique())}
+    fold_pnl = trades.group_by("fold").agg(
+        pl.col("net_pnl").sum().alias("net_pnl")
+    )
+    return policy, {
+        "selection_score": score,
+        "abstained": False,
+        "tested_policies": tested,
+        "supported_policies": supported,
+        "positive_fold_ratio": float((fold_pnl["net_pnl"] > 0).mean()),
+        "fold_pnl": dict(fold_pnl.iter_rows()),
+        "rolling_oof": economic_metrics(
+            trades, opportunities["market_id"].n_unique()
+        ),
+    }
 
 
 def _calibration_cells(config: Any) -> tuple[tuple[str, int, int], ...]:
@@ -658,7 +809,7 @@ def _apply_candidate_policy(
     candidate: str,
     config: Any,
 ) -> pl.DataFrame:
-    if candidate == "price_time_calibrated_middle_ensemble":
+    if set(policy) == {name for name, _, _ in _calibration_cells(config)}:
         return _apply_cell_policies(opportunities, policy, config)
     return _select_trades(opportunities, policy, config)
 
@@ -705,19 +856,33 @@ def _prior_run_comparison(config: Any, metrics: dict[str, Any]) -> dict[str, Any
         "prior_metrics_path": str(path.relative_to(config.package_root)),
         "prior_metrics_sha256": file_sha256(path),
         "prior_run_id": prior["run_id"],
-        "same_sealed_market_contract": (
+        "same_market_contract": (
             prior["split_manifest"]["sealed_start_inclusive"]
-            == metrics["split_manifest"]["sealed_start_inclusive"]
+            == metrics["split_manifest"].get(
+                "development_start_inclusive",
+                metrics["split_manifest"]["sealed_start_inclusive"],
+            )
             and prior["split_manifest"]["sealed_end_exclusive"]
-            == metrics["split_manifest"]["sealed_end_exclusive"]
+            == metrics["split_manifest"].get(
+                "development_end_exclusive",
+                metrics["split_manifest"]["sealed_end_exclusive"],
+            )
         ),
         "candidates": {},
     }
+    new_predictive = metrics.get(
+        "known_comparison_predictive", metrics["sealed_predictive"]
+    )
+    new_economic = metrics.get(
+        "known_comparison_economic", metrics["sealed_economic"]
+    )
     for name in ALL_NAMES:
+        if name not in prior["sealed_predictive"]:
+            continue
         old_p = prior["sealed_predictive"][name]
-        new_p = metrics["sealed_predictive"][name]
+        new_p = new_predictive[name]
         old_e = prior["sealed_economic"][name]
-        new_e = metrics["sealed_economic"][name]
+        new_e = new_economic[name]
         comparison["candidates"][name] = {
             "brier_score_delta": new_p["brier_score"] - old_p["brier_score"],
             "net_pnl_delta": new_e["net_pnl"] - old_e["net_pnl"],
@@ -776,13 +941,21 @@ def _observed_ranges(config: Any) -> dict[str, Any]:
         "last_observed_market": observed["last_market"].isoformat(),
         "rows": observed["rows"],
         "markets": observed["markets"],
-        "sealed_first_observed_market": sealed["first_market"].isoformat(),
-        "sealed_last_observed_market": sealed["last_market"].isoformat(),
+        "sealed_first_observed_market": (
+            sealed["first_market"].isoformat() if sealed["first_market"] else None
+        ),
+        "sealed_last_observed_market": (
+            sealed["last_market"].isoformat() if sealed["last_market"] else None
+        ),
         "sealed_markets": sealed["markets"],
     }
 
 
-def _qualification_status(economic: dict[str, dict[str, Any]]) -> str:
+def _qualification_status(
+    economic: dict[str, dict[str, Any]], *, prospective_complete: bool = True
+) -> str:
+    if not prospective_complete:
+        return "trained_policy_frozen_prospective_evidence_pending"
     qualified = any(
         row["net_pnl"] > 0
         and row["stress_net_pnl"] > 0
@@ -803,23 +976,40 @@ def _report(metrics: dict[str, Any]) -> str:
 
     lines = [
         "# Middle-Strategy Tournament", "", f"Run: `{metrics['run_id']}`",
-        f"Qualification: **{metrics['qualification_status']}**", "", "## Sealed high-level results", "",
+        f"Qualification: **{metrics['qualification_status']}**", "", "## Prospective high-level results", "",
         "| Candidate | PnL | Stress PnL | Coverage | Wins | Losses | W/L | Recovery wins/loss | Brier | PF | Avg cost | Avg entry |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for name in ALL_NAMES:
         p, e = metrics["sealed_predictive"][name], metrics["sealed_economic"][name]
         lines.append(
-            f"| {name} | {e['net_pnl']:.2f} | {e['stress_net_pnl']:.2f} | {e['market_coverage']:.2%} | {e['winning_trades']} | {e['losing_trades']} | {fmt(e['win_loss_ratio'])} | {fmt(e['loss_recovery_wins'])} | {p['brier_score']:.4f} | {fmt(e['profit_factor'])} | {fmt(e['average_share_cost'])} | {fmt(e['average_entry_second'], 1)} |"
+            f"| {name} | {e['net_pnl']:.2f} | {e['stress_net_pnl']:.2f} | {e['market_coverage']:.2%} | {e['winning_trades']} | {e['losing_trades']} | {fmt(e['win_loss_ratio'])} | {fmt(e['loss_recovery_wins'])} | {fmt(p['brier_score'], 4)} | {fmt(e['profit_factor'])} | {fmt(e['average_share_cost'])} | {fmt(e['average_entry_second'], 1)} |"
         )
+    if metrics.get("prospective_evidence"):
+        evidence = metrics["prospective_evidence"]
+        lines.extend((
+            "",
+            f"Prospective completeness: **{evidence['complete']}**; {evidence['observed_days']} of {evidence['expected_days']} days and {evidence['observed_markets']} of {evidence['expected_markets']} expected markets observed.",
+        ))
+    if metrics.get("known_comparison_economic"):
+        lines.extend((
+            "", "## Known August 21-28 comparison", "",
+            "| Candidate | PnL | Stress PnL | PF | Coverage | Trades | Wins | Losses | Avg entry | Brier |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ))
+        for name in ALL_NAMES:
+            p = metrics["known_comparison_predictive"][name]
+            e = metrics["known_comparison_economic"][name]
+            lines.append(
+                f"| {name} | {e['net_pnl']:.2f} | {e['stress_net_pnl']:.2f} | {fmt(e['profit_factor'])} | {e['market_coverage']:.2%} | {e['trades']} | {e['winning_trades']} | {e['losing_trades']} | {fmt(e['average_entry_second'], 1)} | {fmt(p['brier_score'], 4)} |"
+            )
     if metrics.get("prior_run_comparison"):
         lines.extend((
             "", "## Paired change from the prior normalized tournament", "",
             "| Candidate | PnL delta | Stress PnL delta | Brier delta | PF delta | Coverage delta |",
             "|---|---:|---:|---:|---:|---:|",
         ))
-        for name in ALL_NAMES:
-            row = metrics["prior_run_comparison"]["candidates"][name]
+        for name, row in metrics["prior_run_comparison"]["candidates"].items():
             lines.append(
                 f"| {name} | {row['net_pnl_delta']:.2f} | {row['stress_net_pnl_delta']:.2f} | {row['brier_score_delta']:.5f} | {fmt(row['profit_factor_delta'])} | {row['coverage_delta']:.2%} |"
             )
@@ -850,8 +1040,8 @@ def _report(metrics: dict[str, Any]) -> str:
         "", "## Integrity", "",
         f"- Configured source interval: {metrics['data_observed']['configured_start']} through {metrics['data_observed']['configured_end_exclusive']} exclusive.",
         f"- Actual retained markets: {metrics['data_observed']['first_observed_market']} through {metrics['data_observed']['last_observed_market']}; optional-source gaps removed no core markets.",
-        "- Predictive training, policy development, and sealed testing are chronological and market-disjoint.",
-        "- The replay dates were observed in earlier research, so they are computationally sealed here but are not claimed as epistemically untouched.",
+        "- Predictive training, rolling policy selection, known comparison, and prospective testing are chronological and market-disjoint.",
+        "- August 21-28 is a known comparator; August 29-September 5 is the prospective qualification window.",
         "- Settlement supervision is absent from inference; no row-selection lock was applied to the retained full-history panel.",
         "- Economic results require both recorded books to be no more than two seconds old.",
         "- No database writes, tables, ingesters, sources, runtime exports, deployments, or trading-process changes were made.",
@@ -866,7 +1056,7 @@ def _validate_artifact(config: Any, artifact: Path) -> dict[str, Any]:
         [
             sys.executable,
             "-c",
-            "import joblib,sys; x=joblib.load(sys.argv[1]); assert len(x['base_models'])==3",
+            "import joblib,sys; x=joblib.load(sys.argv[1]); assert len(x['base_models'])==x.get('learned_base_model_count',3)",
             str(artifact),
         ],
         check=True,
@@ -896,7 +1086,7 @@ def _canonicalize_artifact(config: Any, artifact: Path) -> dict[str, Any]:
 
 def _predict_frozen_candidates(
     frame: pl.DataFrame,
-    models: dict[str, TreeModel | BridgeTreeModel],
+    models: dict[str, TreeModel | BridgeTreeModel | MarginTreeModel],
     calibrator: LogisticRegression | BridgeEnsembleCalibrator,
     fold: str,
 ) -> pl.DataFrame:
@@ -915,7 +1105,7 @@ def _predict_frozen_candidates(
         wide,
         calibrator.predict_proba(_ensemble_matrix(wide))[:, 1],
         fold,
-        "price_time_calibrated_middle_ensemble",
+        CALIBRATED_NAME,
     )
     return pl.concat((base, agreement, calibrated), how="vertical_relaxed")
 
@@ -1242,6 +1432,364 @@ def train_tournament(config: Any, *, force: bool = False) -> Path:
     return run_dir
 
 
+def _evaluate_candidate_set(
+    evaluation: pl.DataFrame,
+    predictions: pl.DataFrame,
+    policies: dict[str, Any],
+    config: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], pl.DataFrame]:
+    predictive: dict[str, Any] = {}
+    economic: dict[str, Any] = {}
+    counterfactual: dict[str, Any] = {}
+    pieces: list[pl.DataFrame] = []
+    total_markets = evaluation["market_id"].n_unique()
+    for name in ALL_NAMES:
+        prediction = predictions.filter(pl.col("candidate") == name)
+        predictive[name] = predictive_metrics(prediction)
+        opportunities = _opportunities(prediction, evaluation, config)
+        trades = _apply_candidate_policy(opportunities, policies[name], name, config)
+        if not trades.is_empty():
+            pieces.append(trades.with_columns(pl.lit(name).alias("candidate")))
+        economic[name] = economic_metrics(trades, total_markets)
+        counterfactual[name] = _counterfactual_economics(
+            opportunities, policies[name], name, config, total_markets
+        )
+    return (
+        predictive,
+        economic,
+        counterfactual,
+        pl.concat(pieces, how="diagonal_relaxed") if pieces else pl.DataFrame(),
+    )
+
+
+def train_signal_attribution_tournament(
+    config: Any, *, force: bool = False
+) -> Path:
+    """Train the seven frozen signal-attribution candidates and freeze admission."""
+
+    _configure_roster(config)
+    panel, panel_manifest = _build_tournament_panel(config, force=force)
+    contracts = _candidate_contract(config, panel_manifest)
+    for name in BASE_NAMES:
+        groups = set(contracts[name]["feature_groups"])
+        if "execution" in groups:
+            raise RuntimeError(f"{name} leaks execution data into prediction")
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = config.results / run_id
+    ledgers = run_dir / "ledgers"
+    ledgers.mkdir(parents=True, exist_ok=False)
+    entry = config.raw["entry"]
+    entry_seconds = list(
+        range(
+            int(entry["start_second"]),
+            int(entry["end_second_inclusive"]) + 1,
+            int(entry["cadence_seconds"]),
+        )
+    )
+    split = {
+        "source_start": config.source_start.isoformat(),
+        "fit_end_exclusive": config.fit_end.isoformat(),
+        "development_start_inclusive": config.raw["windows"]["development_start"],
+        "development_end_exclusive": config.raw["windows"]["development_end"],
+        "sealed_start_inclusive": config.sealed_start.isoformat(),
+        "sealed_end_exclusive": config.sealed_end.isoformat(),
+        "folds": config.raw["folds"],
+        "entry_seconds": entry_seconds,
+        "economic_seconds": [
+            int(entry["economic_start_second"]),
+            int(entry["economic_end_second_inclusive"]),
+        ],
+        "market_disjoint": True,
+        "policy_selection_source": "rolling_oof_only",
+        "known_comparison_excluded_from_selection": True,
+        "prospective_excluded_from_selection": True,
+        "known_comparison_epistemically_untouched": False,
+        "sealed_replay_epistemically_untouched": True,
+    }
+    _write_json(run_dir / "split-manifest.json", split)
+
+    predictive_fit = panel.filter(pl.col("window_start") < config.fit_end)
+    base_oof = _base_oof(predictive_fit, contracts, config)
+    oof, wide_oof = _all_oof(base_oof, config)
+    oof.write_parquet(
+        ledgers / "candidate-oof-predictions.parquet",
+        compression="zstd",
+        statistics=True,
+    )
+    oof_predictive = {
+        name: predictive_metrics(oof.filter(pl.col("candidate") == name))
+        for name in ALL_NAMES
+    }
+    predictive_ranking = sorted(
+        ALL_NAMES, key=lambda name: oof_predictive[name]["brier_score"]
+    )
+
+    seed = int(config.raw["training"]["random_seed"])
+    final_models: dict[
+        str, TreeModel | BridgeTreeModel | MarginTreeModel
+    ] = {}
+    for index, name in enumerate(BASE_NAMES):
+        final_models[name] = _fit_candidate_tree(
+            predictive_fit,
+            tuple(contracts[name]["features"]),
+            config,
+            seed + 10_000 + index,
+            target_kind=contracts[name]["kind"],
+        )
+    final_calibrator = _fit_ensemble_calibrator(wide_oof, seed + 20_000)
+    joblib.dump(
+        {
+            "base_models": final_models,
+            "ensemble_calibrator": final_calibrator,
+            "learned_base_model_count": len(BASE_NAMES),
+        },
+        run_dir / "predictive-model-checkpoint.joblib",
+        compress=3,
+    )
+
+    policies: dict[str, Any] = {}
+    policy_evidence: dict[str, Any] = {}
+    for name in ALL_NAMES:
+        opportunities = _opportunities(
+            oof.filter(pl.col("candidate") == name), predictive_fit, config
+        )
+        policies[name], policy_evidence[name] = _select_cell_policies(
+            opportunities, config
+        )
+    selection_frozen_at = datetime.now(UTC).isoformat()
+    _write_json(
+        run_dir / "selection-freeze.json",
+        {
+            "frozen_at": selection_frozen_at,
+            "predictive_ranking": predictive_ranking,
+            "policies": policies,
+            "known_comparison_metrics_accessed": False,
+            "sealed_metrics_accessed": False,
+        },
+    )
+
+    allowed_sources = {"official_twap60_exact", "official_twap60_source_gap"}
+    development_start = datetime.fromisoformat(
+        config.raw["windows"]["development_start"]
+    )
+    development_end = datetime.fromisoformat(
+        config.raw["windows"]["development_end"]
+    )
+    development = panel.filter(
+        pl.col("window_start").is_between(
+            development_start, development_end, closed="left"
+        )
+    )
+    prospective = panel.filter(
+        pl.col("window_start").is_between(
+            config.sealed_start, config.sealed_end, closed="left"
+        )
+    )
+    fit_ids = set(predictive_fit["market_id"].unique())
+    development_ids = set(development["market_id"].unique())
+    prospective_ids = set(prospective["market_id"].unique())
+    if fit_ids & development_ids or fit_ids & prospective_ids or development_ids & prospective_ids:
+        raise RuntimeError("predictive, known-comparison, and prospective markets overlap")
+    for name, frame in (("known comparison", development), ("prospective", prospective)):
+        if not set(frame["label_source"].unique()) <= allowed_sources:
+            raise RuntimeError(f"{name} contains non-canonical settlement labels")
+
+    development_predictions = _predict_frozen_candidates(
+        development,
+        final_models,
+        final_calibrator,
+        "known_comparison_20260821_20260828",
+    )
+    development_predictions.write_parquet(
+        ledgers / "development-predictions.parquet",
+        compression="zstd",
+        statistics=True,
+    )
+    (
+        known_predictive,
+        known_economic,
+        known_counterfactual,
+        known_trades,
+    ) = _evaluate_candidate_set(
+        development, development_predictions, policies, config
+    )
+    known_trades.write_parquet(
+        ledgers / "development-trades.parquet", compression="zstd", statistics=True
+    )
+
+    prospective_predictions = (
+        _predict_frozen_candidates(
+            prospective,
+            final_models,
+            final_calibrator,
+            "prospective_20260829_20260904",
+        )
+        if not prospective.is_empty()
+        else oof.head(0)
+    )
+    prospective_predictions.write_parquet(
+        ledgers / "sealed-predictions.parquet",
+        compression="zstd",
+        statistics=True,
+    )
+    (
+        sealed_predictive,
+        sealed_economic,
+        sealed_counterfactual,
+        sealed_trades,
+    ) = _evaluate_candidate_set(
+        prospective, prospective_predictions, policies, config
+    )
+    sealed_trades.write_parquet(
+        ledgers / "sealed-trades.parquet", compression="zstd", statistics=True
+    )
+
+    prospective_spec = config.raw["prospective"]
+    observed_days = (
+        prospective["window_start"].dt.date().n_unique()
+        if not prospective.is_empty()
+        else 0
+    )
+    observed_markets = prospective["market_id"].n_unique()
+    last_market = (
+        prospective["window_start"].max() if not prospective.is_empty() else None
+    )
+    prospective_complete = bool(
+        observed_days >= int(prospective_spec["expected_complete_days"])
+        and observed_markets >= int(prospective_spec["expected_markets"])
+        and last_market is not None
+        and last_market >= config.sealed_end - timedelta(minutes=5)
+    )
+
+    producing_commit = _git_revision(config.package_root)
+    artifact_payload = {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "model_family": config.raw["training"]["model_family"],
+        "producing_commit": producing_commit,
+        "run_id": run_id,
+        "fit_end_exclusive": config.fit_end.isoformat(),
+        "entry_seconds": tuple(entry_seconds),
+        "economic_seconds": (
+            int(entry["economic_start_second"]),
+            int(entry["economic_end_second_inclusive"]),
+        ),
+        "candidate_contract": contracts,
+        "base_models": final_models,
+        "ensemble_calibrator": final_calibrator,
+        "selected_policies": policies,
+        "learned_base_model_count": len(BASE_NAMES),
+        "prospective_complete": prospective_complete,
+        "runtime_exported": False,
+        "deployment_status": "not_deployed",
+    }
+    artifact = run_dir / "tournament.joblib"
+    joblib.dump(artifact_payload, artifact, compress=3)
+    _validate_artifact(config, artifact)
+    artifact_sha = file_sha256(artifact)
+    (run_dir / "tournament.sha256").write_text(
+        f"{artifact_sha}  tournament.joblib\n"
+    )
+    economic_ranking = sorted(
+        ALL_NAMES,
+        key=lambda name: (
+            sealed_economic[name]["stress_net_pnl"],
+            sealed_economic[name]["net_pnl"],
+        ),
+        reverse=True,
+    )
+    metrics = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "producing_commit": producing_commit,
+        "candidate_names": list(ALL_NAMES),
+        "candidate_count_trained": len(ALL_NAMES),
+        "learned_base_model_count": len(BASE_NAMES),
+        "derived_ensemble_count": len(ALL_NAMES) - len(BASE_NAMES),
+        "predictive_ranking_preseal": predictive_ranking,
+        "economic_ranking_sealed": economic_ranking,
+        "selection_frozen_at": selection_frozen_at,
+        "oof_predictive": oof_predictive,
+        "selected_policies": policies,
+        "policy_selection_evidence": policy_evidence,
+        "known_comparison_predictive": known_predictive,
+        "known_comparison_economic": known_economic,
+        "known_comparison_counterfactual_economic": known_counterfactual,
+        "sealed_predictive": sealed_predictive,
+        "sealed_economic": sealed_economic,
+        "sealed_counterfactual_economic": sealed_counterfactual,
+        "frozen_comparator_references": _reference_manifests(config),
+        "source_panel": panel_manifest,
+        "split_manifest": split,
+        "artifact_sha256": artifact_sha,
+        "qualification_status": _qualification_status(
+            sealed_economic, prospective_complete=prospective_complete
+        ),
+        "prospective_evidence": {
+            "complete": prospective_complete,
+            "observed_days": observed_days,
+            "observed_markets": observed_markets,
+            "expected_days": int(prospective_spec["expected_complete_days"]),
+            "expected_markets": int(prospective_spec["expected_markets"]),
+            "last_observed_market": last_market.isoformat() if last_market else None,
+            "intended_end_exclusive": config.sealed_end.isoformat(),
+        },
+        "data_observed": _observed_ranges(config),
+        "integrity": {
+            "passed": True,
+            "market_disjoint": True,
+            "known_comparison_opened_after_selection": True,
+            "sealed_opened_after_selection": True,
+            "artifact_round_trip_load": True,
+            "full_history_retained": True,
+            "optional_missingness_preserves_rows": True,
+            "twap_inference_feature": False,
+            "polymarket_execution_features_in_predictors": False,
+            "per_timing_band_abstention": True,
+            "rolling_oof_policy_selection": True,
+            "source_values_remain_distinct": True,
+            "historical_official_label_preserved": True,
+            "kraken_l2_included": False,
+            "database_mutations": False,
+            "new_tables": False,
+            "new_ingesters": False,
+            "new_sources": False,
+            "runtime_exported": False,
+            "deployed": False,
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "polars": pl.__version__,
+            "sklearn": sklearn.__version__,
+        },
+        "limitations": [
+            "August 21-28 is a known comparator and is not epistemically fresh.",
+            "Prospective qualification remains pending until August 29-September 5 is complete.",
+            "Kraken L2 remains excluded because its historical backfill is incomplete.",
+            "Qualified Binance spot L2 is unavailable in later periods and remains missing rather than removing rows.",
+            "Projected PnL assumes recorded ask VWAP was fillable and does not model queue position.",
+        ],
+    }
+    metrics["prior_run_comparison"] = _prior_run_comparison(config, metrics)
+    _write_json(run_dir / "metrics.json", metrics)
+    _write_json(run_dir / "candidate-contract.json", contracts)
+    _write_json(run_dir / "source-manifest.json", panel_manifest)
+    (run_dir / "report.md").write_text(_report(metrics))
+    _write_json(
+        run_dir / "completion.json",
+        {
+            "run_id": run_id,
+            "artifact_sha256": artifact_sha,
+            "metrics_sha256": file_sha256(run_dir / "metrics.json"),
+            "training_completed": True,
+            "prospective_complete": prospective_complete,
+            "completed": prospective_complete,
+        },
+    )
+    return run_dir
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -1255,7 +1803,13 @@ def main() -> None:
     if arguments.command in {"prepare", "all"}:
         _build_tournament_panel(config, force=arguments.force)
     if arguments.command in {"train", "all"}:
-        print(train_tournament(config, force=arguments.force))
+        trainer = (
+            train_signal_attribution_tournament
+            if config.raw["training"]["profile"]
+            == "btc_5m_signal_attribution_early_entry_tournament"
+            else train_tournament
+        )
+        print(trainer(config, force=arguments.force))
     if arguments.command == "finalize":
         if arguments.run_dir is None:
             parser.error("finalize requires --run-dir")
