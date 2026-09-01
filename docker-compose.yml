@@ -1,3 +1,5 @@
+name: polymarket-bot
+
 x-logging: &default-logging
   driver: json-file
   options:
@@ -16,6 +18,35 @@ x-prometheus-env-file: &prometheus-env-file
   path: ./.env.prometheus
   required: true
   format: raw
+x-ingester-environment: &ingester-environment
+  RUST_LOG: "info"
+  POSTGRES_HOST: "pgbouncer"
+  POSTGRES_PORT: "6432"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "polymarket"
+  POSTGRES_SSL_MODE: "disable"
+  MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "4"
+  MARKET_DATA_INGESTER_CONTROL_DB_POOL_CONNECTIONS: "1"
+  MARKET_DATA_INGESTER_DB_ACQUIRE_TIMEOUT_SECS: "10"
+  MARKET_DATA_INGESTER_CONTROL_DB_ACQUIRE_TIMEOUT_SECS: "3"
+  MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
+  MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
+  MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
+x-ingester-runtime: &ingester-runtime
+  init: true
+  mem_limit: 4g
+  cpus: "2.0"
+  pids_limit: 256
+  logging: *default-logging
+  env_file:
+    - *postgres-env-file
+    - path: .env.market-data-ingester
+      required: false
+  read_only: true
+  tmpfs:
+    - /tmp:size=512m,mode=1777
+  stop_grace_period: 120s
+  restart: unless-stopped
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
@@ -121,23 +152,89 @@ services:
       - *postgres-env-file
     environment:
       NODE_ENV: "development"
-      POSTGRES_HOST: "timescaledb-0"
+      POSTGRES_HOST: "${DB_MIGRATE_POSTGRES_HOST:-timescaledb-0}"
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
+      POSTGRES_DB: "${DB_MIGRATE_POSTGRES_DB:-polymarket}"
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
       POSTGRES_SSL_CERT_FILE: ""
       POSTGRES_SSL_KEY_FILE: ""
-      KRAKEN_ARCHIVE_POSTGRES_HOST: "kraken-timescaledb"
-      KRAKEN_ARCHIVE_POSTGRES_PORT: "5432"
-      KRAKEN_ARCHIVE_POSTGRES_DB: "kraken_archive"
+      DB_MIGRATIONS_PATTERN: "${DB_MIGRATIONS_PATTERN:-migrations/*.{ts,js}}"
+    command: ${DB_MIGRATE_COMMAND:-npm run start:dev}
     depends_on:
       timescaledb-0:
         condition: service_healthy
-      kraken-timescaledb:
-        condition: service_healthy
     restart: "no"
+  ingester-master:
+    <<: *ingester-runtime
+    profiles: [data-ingestion]
+    build:
+      context: .
+      dockerfile: packages/market-data-ingester/Dockerfile
+      target: master
+      args:
+        INGESTER_GIT_REVISION: ${INGESTER_GIT_REVISION:-}
+    image: ${INGESTER_MASTER_IMAGE:-capitonic/ingester-master:development}
+    container_name: ingester-master
+    hostname: ingester-master
+    mem_limit: 512m
+    cpus: "1.0"
+    environment:
+      <<: *ingester-environment
+      INGESTER_MODE: "master"
+      INGESTER_INSTANCE: "ingester-master"
+      INGESTER_API_BIND: "0.0.0.0:8098"
+    ports:
+      - "127.0.0.1:8099:8098"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8098/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  ingester-worker:
+    <<: *ingester-runtime
+    profiles: [data-ingestion]
+    build:
+      context: .
+      dockerfile: packages/market-data-ingester/Dockerfile
+      target: worker
+      args:
+        INGESTER_GIT_REVISION: ${INGESTER_GIT_REVISION:-}
+    image: ${INGESTER_WORKER_IMAGE:-capitonic/ingester-worker:development}
+    environment:
+      <<: *ingester-environment
+      INGESTER_MODE: "worker"
+      INGESTER_MASTER_URL: "http://ingester-master:8098"
+      INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-default}"
+      INGESTER_WORKER_MAX_BACKFILLS: "1"
+      INGESTER_IMAGE_DIGEST: "${INGESTER_IMAGE_DIGEST:-development}"
+      INGESTER_GIT_REVISION: "${INGESTER_GIT_REVISION:-development}"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache"
+      GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
+      HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
+      HRRR_DOWNLOAD_ATTEMPTS: "8"
+      HRRR_RETRY_BASE_MS: "1000"
+      HRRR_RETRY_MAX_MS: "30000"
+      HRRR_REQUEST_INTERVAL_MS: "500"
+      HRRR_SOURCE_PRIORITY: "google,aws,nomads"
+      NOAA_DOWNLOAD_ATTEMPTS: "6"
+      NOAA_RETRY_BASE_SECONDS: "2"
+      HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
+    volumes:
+      - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
+    depends_on:
+      ingester-master:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
   polymarket-bot:
     build:
       context: .
@@ -209,80 +306,6 @@ services:
         condition: service_healthy
     stop_grace_period: 60s
     restart: unless-stopped
-  kraken-timescaledb:
-    image: timescale/timescaledb:2.14.2-pg14
-    container_name: kraken-timescaledb
-    hostname: kraken-timescaledb
-    mem_limit: 2g
-    cpus: "1.5"
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "kraken_archive"
-      TS_TUNE_MEMORY: "2GB"
-      TS_TUNE_NUM_CPUS: "2"
-      TS_TUNE_MAX_CONNS: "20"
-      TS_TUNE_MAX_BG_WORKERS: "2"
-    command:
-      - postgres
-      - -c
-      - shared_buffers=512MB
-      - -c
-      - effective_cache_size=1GB
-      - -c
-      - maintenance_work_mem=128MB
-      - -c
-      - work_mem=8MB
-      - -c
-      - max_connections=20
-      - -c
-      - max_parallel_workers=1
-      - -c
-      - max_parallel_workers_per_gather=1
-      - -c
-      - max_worker_processes=4
-      - -c
-      - timescaledb.max_background_workers=2
-    ports:
-      - "127.0.0.1:${KRAKEN_POSTGRES_HOST_PORT:-55434}:5432"
-    volumes:
-      - /Volumes/docker-data/kraken-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d kraken_archive"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    restart: unless-stopped
-  kraken-db-migrate:
-    build:
-      context: .
-      dockerfile: packages/db-migrate/Dockerfile
-    image: polymarket/db-migrate:latest
-    container_name: kraken-db-migrate
-    hostname: kraken-db-migrate
-    mem_limit: 256m
-    cpus: "0.25"
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      NODE_ENV: "development"
-      POSTGRES_HOST: "kraken-timescaledb"
-      POSTGRES_PORT: "5432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "kraken_archive"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POSTGRES_SSL_CERT_FILE: ""
-      POSTGRES_SSL_KEY_FILE: ""
-      DB_MIGRATIONS_PATTERN: "migrations/kraken/*.{ts,js}"
-    depends_on:
-      kraken-timescaledb:
-        condition: service_healthy
-    restart: "no"
   prometheus:
     image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: prometheus

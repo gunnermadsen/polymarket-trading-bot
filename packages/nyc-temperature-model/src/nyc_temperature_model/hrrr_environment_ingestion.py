@@ -12,7 +12,7 @@ import xarray as xr
 
 from . import PROCESS_ID, STATION_ID, STATION_LATITUDE, STATION_LONGITUDE
 from .config import Settings
-from .database import connection, insert_immutable_artifact
+from .database import connection, insert_unified_backfill_artifact
 from .hrrr_ingestion import (
     HRRR_ARCHIVE_START,
     HrrrDownloadExhausted,
@@ -351,8 +351,10 @@ def ingest_hrrr_environment(settings: Settings, job: Job) -> dict[str, Any]:
                     else "complete"
                 )
                 with connection(settings.database_url) as conn, conn.transaction():
-                    artifact_id = insert_immutable_artifact(
+                    artifact_id = insert_unified_backfill_artifact(
                         conn,
+                        job_id=job.job_id,
+                        strategy_key=job.ingester_key,
                         provider="noaa_hrrr_open_data",
                         logical_key=(
                             f"hrrr-environment:{model_run:%Y%m%dT%H}:f{lead_hours:02d}:"

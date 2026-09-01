@@ -21,8 +21,6 @@ fn polymarket_image_has_no_backfill_runtime() {
 fn compose_exposes_only_standard_ingester_roles() {
     let root = repository_root();
     let base = fs::read_to_string(root.join("docker-compose.yml")).unwrap();
-    let ingester =
-        fs::read_to_string(root.join("packages/market-data-ingester/docker-compose.yml")).unwrap();
     for forbidden in [
         "polymarket-backfill-worker:",
         "kraken-backfill-worker-1:",
@@ -34,8 +32,11 @@ fn compose_exposes_only_standard_ingester_roles() {
             "legacy Compose service remains: {forbidden}"
         );
     }
-    assert!(ingester.contains("ingester-master:"));
-    assert!(ingester.contains("ingester-worker:"));
+    assert!(base.contains("ingester-master:"));
+    assert!(base.contains("ingester-worker:"));
+    assert!(!root
+        .join("packages/market-data-ingester/docker-compose.yml")
+        .exists());
 }
 
 fn repository_root() -> &'static Path {

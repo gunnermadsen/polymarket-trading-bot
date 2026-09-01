@@ -13,7 +13,7 @@ import xarray as xr
 
 from . import PROCESS_ID, STATION_ID
 from .config import Settings
-from .database import connection, insert_immutable_artifact
+from .database import connection, insert_unified_backfill_artifact
 from .hrrr_ingestion import NYC, _decision_times
 from .jobs import Job, update_progress
 from .noaa_transport import download_resumable, list_s3_keys
@@ -546,8 +546,10 @@ def ingest_goes(settings: Settings, job: Job) -> dict[str, Any]:
                     artifact_id = None
                     if result.get("source_path"):
                         logical_key = f"{satellite.lower()}:{result['source_uri'].rsplit('/', 1)[-1]}"
-                        artifact_id = insert_immutable_artifact(
+                        artifact_id = insert_unified_backfill_artifact(
                             conn,
+                            job_id=job.job_id,
+                            strategy_key=job.ingester_key,
                             provider="noaa_goes_open_data",
                             logical_key=logical_key,
                             source_uri=result["source_uri"],

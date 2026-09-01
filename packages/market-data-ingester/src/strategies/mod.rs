@@ -11,6 +11,7 @@ pub mod binance;
 pub mod chainlink;
 pub mod polygon;
 pub mod polymarket;
+pub mod weather;
 
 pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
     let factories: Vec<Arc<dyn StrategyFactory>> = vec![
@@ -26,9 +27,19 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
         Arc::new(polymarket::PolymarketBtcFiveMinuteResolutionsFactory),
         Arc::new(polymarket::PolymarketChainlinkBtcusdTwapFactory),
     ];
-    let backfills: Vec<Arc<dyn BackfillWorkerStrategy>> = vec![Arc::new(
-        binance::BinanceSpotAggregateTradesBackfill::new()
-            .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
-    )];
+    let backfills: Vec<Arc<dyn BackfillWorkerStrategy>> = vec![
+        Arc::new(
+            binance::BinanceSpotAggregateTradesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            weather::WeatherEnvironmentBackfill::goes()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            weather::WeatherEnvironmentBackfill::hrrr()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+    ];
     StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
 }

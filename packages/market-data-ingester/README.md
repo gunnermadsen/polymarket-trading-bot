@@ -54,8 +54,6 @@ From the repository root, build and start the opt-in development service with:
 
 ```bash
 docker compose \
-  -f docker-compose.yml \
-  -f packages/market-data-ingester/docker-compose.yml \
   --profile data-ingestion \
   up -d ingester-master ingester-worker
 ```
