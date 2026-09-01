@@ -7,6 +7,7 @@ import json
 import math
 import platform
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,6 +32,10 @@ from .middle_strategy_tournament import (
     predictive_metrics,
 )
 from .runtime_export import reached_leaf_value
+
+_MODEL_MODULE = "btc_directional_model.extended_specialist_strategy_tournament"
+if __name__ == "__main__":
+    sys.modules[_MODEL_MODULE] = sys.modules[__name__]
 
 SCHEMA_VERSION = "btc-extended-specialist-strategy-tournament-v1"
 ARTIFACT_SCHEMA_VERSION = "btc-extended-specialist-strategy-artifact-v1"
@@ -93,7 +98,6 @@ class DualHeadAdmission:
     stress_edge: HistGradientBoostingRegressor
 
 
-_MODEL_MODULE = "btc_directional_model.extended_specialist_strategy_tournament"
 for _model_class in (
     CalibratedClassifier,
     DistilledSpecialist,
@@ -107,6 +111,13 @@ def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+    temporary.replace(path)
+
+
+def _write_joblib(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    joblib.dump(payload, temporary, compress=3)
     temporary.replace(path)
 
 
@@ -542,7 +553,7 @@ def _fit_models(
         else:
             model = _fit_calibrated_classifier(fit, features, raw, seed + 100 * index)
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(model, checkpoint, compress=3)
+        _write_joblib(checkpoint, model)
         output[name] = model
     return output
 
@@ -991,7 +1002,7 @@ def train_tournament(config_path: Path, *, resume_run: str | None = None) -> Pat
         dual_model = joblib.load(dual_model_path)
     else:
         dual_model = _fit_dual_head(oof_opportunities, oof_panel, raw)
-        joblib.dump(dual_model, dual_model_path, compress=3)
+        _write_joblib(dual_model_path, dual_model)
     dual_development = _attach_dual_head(
         _realized_opportunities(
             development_prediction_frame.filter(pl.col("candidate") == DUAL_HEAD), development, raw
@@ -1072,7 +1083,8 @@ def train_tournament(config_path: Path, *, resume_run: str | None = None) -> Pat
     ]
     producing_commit = _git_revision(package_root)
     artifact = run_dir / "tournament.joblib"
-    joblib.dump(
+    _write_joblib(
+        artifact,
         {
             "schema_version": ARTIFACT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -1085,8 +1097,6 @@ def train_tournament(config_path: Path, *, resume_run: str | None = None) -> Pat
             "frozen_specialist_reference": source["frozen_specialist"],
             "deployment_status": "not_deployed",
         },
-        artifact,
-        compress=3,
     )
     loaded = joblib.load(artifact)
     if loaded["run_id"] != run_id or set(loaded["models"]) != set(TRAINED_CANDIDATES):
