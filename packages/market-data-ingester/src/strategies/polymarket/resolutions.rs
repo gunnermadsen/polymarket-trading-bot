@@ -33,7 +33,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, DataGap, IngesterProfile, IngesterStrategy, IngesterStrategyKey,
+        CaptureArtifact, DataGap, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
         StrategyError, StrategyErrorKind,
     },
     persistence::{
@@ -510,7 +510,7 @@ impl StrategyFactory for PolymarketBtcFiveMinuteResolutionsFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         if profile.strategy_key != STRATEGY_KEY {
             return Err(StrategyFactoryError::Construction(format!(
                 "received profile for {}",
@@ -577,7 +577,7 @@ struct ResolutionRunState {
 }
 
 #[async_trait]
-impl IngesterStrategy for PolymarketBtcFiveMinuteResolutionsStrategy {
+impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteResolutionsStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

@@ -34,35 +34,9 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     --mount=type=cache,id=polymarket-bot-dev-release-target,target=/app/target,sharing=locked \
     cargo build --locked --release \
       --bin polymarket-bot \
-      --bin polymarket-backfill-worker \
-      --bin binance-l2-backfill-plan \
-      --bin binance-spot-l2-backfill-plan \
-      --bin binance-spot-l2-huggingface-backfill-plan \
-      --bin pmdata-twap-backfill-plan \
-      --bin pmdata-refprice-backfill-plan \
-      --bin local-orderbook-vwap-backfill-plan \
-      --bin kraken-spot-trade-backfill-plan \
-      --bin kraken-backfill-worker \
-      --bin kraken-backfill-plan \
-      --bin kraken-spot-l2-backfill-worker \
-      --bin financial-data-backfill-worker \
-      --bin financial-data-backfill-plan \
       --bin derive-clob-creds \
     && mkdir -p /opt/polymarket-artifacts \
     && cp /app/target/release/polymarket-bot /opt/polymarket-artifacts/ \
-    && cp /app/target/release/polymarket-backfill-worker /opt/polymarket-artifacts/ \
-    && cp /app/target/release/binance-l2-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/binance-spot-l2-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/binance-spot-l2-huggingface-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/pmdata-twap-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/pmdata-refprice-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/local-orderbook-vwap-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/kraken-spot-trade-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/kraken-backfill-worker /opt/polymarket-artifacts/ \
-    && cp /app/target/release/kraken-backfill-plan /opt/polymarket-artifacts/ \
-    && cp /app/target/release/kraken-spot-l2-backfill-worker /opt/polymarket-artifacts/ \
-    && cp /app/target/release/financial-data-backfill-worker /opt/polymarket-artifacts/ \
-    && cp /app/target/release/financial-data-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/derive-clob-creds /opt/polymarket-artifacts/
 
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
@@ -97,19 +71,6 @@ LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarke
       org.opencontainers.image.revision="$POLYMARKET_GIT_REVISION"
 
 COPY --from=builder /opt/polymarket-artifacts/polymarket-bot /usr/local/bin/polymarket-bot
-COPY --from=builder /opt/polymarket-artifacts/polymarket-backfill-worker /usr/local/bin/polymarket-backfill-worker
-COPY --from=builder /opt/polymarket-artifacts/binance-l2-backfill-plan /usr/local/bin/binance-l2-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-backfill-plan /usr/local/bin/binance-spot-l2-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-huggingface-backfill-plan /usr/local/bin/binance-spot-l2-huggingface-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/pmdata-twap-backfill-plan /usr/local/bin/pmdata-twap-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/pmdata-refprice-backfill-plan /usr/local/bin/pmdata-refprice-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/local-orderbook-vwap-backfill-plan /usr/local/bin/local-orderbook-vwap-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/kraken-spot-trade-backfill-plan /usr/local/bin/kraken-spot-trade-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
-COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
-COPY --from=builder /opt/polymarket-artifacts/kraken-spot-l2-backfill-worker /usr/local/bin/kraken-spot-l2-backfill-worker
-COPY --from=builder /opt/polymarket-artifacts/financial-data-backfill-worker /usr/local/bin/financial-data-backfill-worker
-COPY --from=builder /opt/polymarket-artifacts/financial-data-backfill-plan /usr/local/bin/financial-data-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/derive-clob-creds /usr/local/bin/derive-clob-creds
 COPY --from=builder /opt/polymarket-models /usr/local/share/polymarket-bot/models
 

@@ -38,8 +38,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategy, IngesterStrategyKey, StrategyError,
-        StrategyErrorKind,
+        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+        StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
@@ -341,7 +341,7 @@ impl StrategyFactory for PolymarketBtcFiveMinuteOrderbooksFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         if profile.strategy_key != STRATEGY_KEY {
             return Err(StrategyFactoryError::Construction(format!(
                 "received profile for {}",
@@ -3508,7 +3508,7 @@ fn start_discovery_worker(
 }
 
 #[async_trait]
-impl IngesterStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
+impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

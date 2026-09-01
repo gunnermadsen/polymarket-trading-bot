@@ -6,6 +6,10 @@ description = "Development market-data ingestion service for Capitonic"
 license = "UNLICENSED"
 publish = false
 
+[[bin]]
+name = "ingester"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"

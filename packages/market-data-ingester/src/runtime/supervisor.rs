@@ -704,7 +704,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::{
-        domain::{HealthStatus, IngesterStrategy, ObservedState, StrategyError, StrategyErrorKind},
+        domain::{
+            HealthStatus, ObservedState, RealtimeWorkerStrategy, StrategyError, StrategyErrorKind,
+        },
         runtime::{StrategyFactory, StrategyFactoryError},
     };
 
@@ -884,7 +886,7 @@ mod tests {
             &self,
             _profile: &IngesterProfile,
             _pool: PgPool,
-        ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+        ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
             Ok(Box::new(TestStrategy {
                 starts: Arc::clone(&self.starts),
                 stops: Arc::clone(&self.stops),
@@ -900,7 +902,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl IngesterStrategy for TestStrategy {
+    impl RealtimeWorkerStrategy for TestStrategy {
         fn key(&self) -> IngesterStrategyKey {
             KEY
         }
@@ -945,7 +947,7 @@ mod tests {
             &self,
             _profile: &IngesterProfile,
             _pool: PgPool,
-        ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+        ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
             Ok(Box::new(LeaseLossStrategy {
                 started: Arc::clone(&self.started),
                 exit: Arc::clone(&self.exit),
@@ -959,7 +961,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl IngesterStrategy for LeaseLossStrategy {
+    impl RealtimeWorkerStrategy for LeaseLossStrategy {
         fn key(&self) -> IngesterStrategyKey {
             KEY
         }

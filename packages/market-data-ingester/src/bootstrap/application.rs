@@ -9,10 +9,10 @@ use tracing::{info, warn};
 use crate::{
     control::{ControlApi, ControlReadiness},
     persistence::ProfileRepository,
-    runtime::{StrategyRegistry, StrategySupervisor, SupervisorSettings},
+    runtime::{BackfillWorkerRuntime, StrategyRegistry, StrategySupervisor, SupervisorSettings},
 };
 
-use super::{shutdown_signal, BootstrapSettings};
+use super::{shutdown_signal, BootstrapSettings, IngesterMode};
 
 const COMPONENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -61,8 +61,15 @@ impl Application {
     }
 
     pub async fn run(self) -> Result<()> {
+        match self.settings.mode {
+            IngesterMode::Master => self.run_master().await,
+            IngesterMode::Worker => self.run_worker().await,
+        }
+    }
+
+    async fn run_master(self) -> Result<()> {
         let profiles = ProfileRepository::new(self.control_pool.clone());
-        let (readiness_sender, readiness) = ControlReadiness::channel(false);
+        let (_readiness_sender, readiness) = ControlReadiness::channel(true);
         let shutdown = CancellationToken::new();
         let api = ControlApi::new(
             profiles.clone(),
@@ -70,20 +77,12 @@ impl Application {
             self.settings.admin_token.clone(),
             readiness,
         )?;
-        let supervisor = StrategySupervisor::new(
-            profiles,
-            self.registry,
-            self.strategy_pool.clone(),
-            self.settings.service_instance.clone(),
-            SupervisorSettings::default(),
-        )?;
-
         info!(
             service_instance = %self.settings.service_instance,
             api_bind = %self.settings.api_bind,
             strategy_database_pool_connections = self.settings.database_pool_connections,
             control_database_pool_connections = self.settings.control_database_pool_connections,
-            "market-data ingester starting"
+            "ingester master starting"
         );
 
         let mut components = JoinSet::new();
@@ -97,20 +96,9 @@ impl Application {
                     .context("market-data ingester control API stopped"),
             )
         });
-        let supervisor_shutdown = shutdown.clone();
-        components.spawn(async move {
-            (
-                "strategy supervisor",
-                supervisor
-                    .run(supervisor_shutdown, readiness_sender)
-                    .await
-                    .context("market-data ingester strategy supervisor stopped"),
-            )
-        });
-
         let component_failure = tokio::select! {
             _ = shutdown_signal() => {
-                info!("market-data ingester shutdown requested");
+                info!("ingester master shutdown requested");
                 None
             }
             completed = components.join_next() => Some(unexpected_component_exit(completed)),
@@ -144,7 +132,81 @@ impl Application {
 
         self.strategy_pool.close().await;
         self.control_pool.close().await;
-        info!("market-data ingester shutdown completed");
+        info!("ingester master shutdown completed");
+        match component_failure {
+            Some(error) => Err(error),
+            None => match shutdown_failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            },
+        }
+    }
+
+    async fn run_worker(self) -> Result<()> {
+        let profiles = ProfileRepository::new(self.control_pool.clone());
+        let (readiness_sender, _readiness) = ControlReadiness::channel(false);
+        let supervisor = StrategySupervisor::new(
+            profiles,
+            self.registry.clone(),
+            self.strategy_pool.clone(),
+            self.settings.service_instance.clone(),
+            SupervisorSettings::default(),
+        )?;
+        let backfills =
+            BackfillWorkerRuntime::from_environment(self.registry, self.strategy_pool.clone())?;
+        let shutdown = CancellationToken::new();
+        info!(service_instance=%self.settings.service_instance, "ingester worker starting");
+        let mut components = JoinSet::new();
+        let realtime_shutdown = shutdown.clone();
+        components.spawn(async move {
+            (
+                "realtime strategy supervisor",
+                supervisor
+                    .run(realtime_shutdown, readiness_sender)
+                    .await
+                    .context("ingester realtime supervisor stopped"),
+            )
+        });
+        let backfill_shutdown = shutdown.clone();
+        components.spawn(async move {
+            (
+                "backfill worker",
+                backfills
+                    .run(backfill_shutdown)
+                    .await
+                    .context("ingester backfill worker stopped"),
+            )
+        });
+        let component_failure = tokio::select! {
+            _ = shutdown_signal() => { info!("ingester worker shutdown requested"); None }
+            completed = components.join_next() => Some(unexpected_component_exit(completed)),
+        };
+        shutdown.cancel();
+        let shutdown_failure = match tokio::time::timeout(COMPONENT_SHUTDOWN_TIMEOUT, async {
+            let mut first_failure = None;
+            while let Some(completed) = components.join_next().await {
+                if let Err(error) = component_result(completed) {
+                    if first_failure.is_none() {
+                        first_failure = Some(error);
+                    }
+                }
+            }
+            first_failure
+        })
+        .await
+        {
+            Ok(failure) => failure,
+            Err(_) => {
+                components.abort_all();
+                while components.join_next().await.is_some() {}
+                Some(anyhow!(
+                    "ingester worker components exceeded the shutdown deadline"
+                ))
+            }
+        };
+        self.strategy_pool.close().await;
+        self.control_pool.close().await;
+        info!("ingester worker shutdown completed");
         match component_failure {
             Some(error) => Err(error),
             None => match shutdown_failure {

@@ -12,7 +12,7 @@ discovery.relabel "market_data_ingester" {
 
   rule {
     source_labels = ["__meta_docker_container_name"]
-    regex         = "/market-data-ingester"
+    regex         = "/.*ingester-(master|worker).*"
     action        = "keep"
   }
 
@@ -26,7 +26,7 @@ discovery.relabel "market_data_ingester" {
 loki.source.docker "market_data_ingester" {
   host           = "unix:///var/run/docker.sock"
   targets        = discovery.docker.local.targets
-  labels         = {"service_name" = "market-data-ingester"}
+  labels         = {"service_name" = "ingester"}
   relabel_rules  = discovery.relabel.market_data_ingester.rules
   refresh_interval = "5s"
   forward_to     = [loki.process.market_data_ingester.receiver]

@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry};
+use crate::{
+    domain::BackfillWorkerStrategy,
+    runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry},
+};
 
 pub mod binance;
 pub mod chainlink;
@@ -23,5 +26,9 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
         Arc::new(polymarket::PolymarketBtcFiveMinuteResolutionsFactory),
         Arc::new(polymarket::PolymarketChainlinkBtcusdTwapFactory),
     ];
-    StrategyRegistry::from_factories(factories)
+    let backfills: Vec<Arc<dyn BackfillWorkerStrategy>> = vec![Arc::new(
+        binance::BinanceSpotAggregateTradesBackfill::new()
+            .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+    )];
+    StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
 }

@@ -1,6 +1,6 @@
-# Market Data Ingester
+# Ingester
 
-`market-data-ingester` is a development-oriented service that continuously records causal market-source facts for downstream machine-learning workflows. It does not construct features, labels, datasets, predictions, or trading decisions.
+The ingester continuously records causal source facts and executes historical backfills. It does not construct features, labels, datasets, predictions, or trading decisions.
 
 The service is an independent Cargo package and container. It connects directly to public provider feeds in parallel with the trading bot; neither process depends on the other for live market data.
 
@@ -12,7 +12,9 @@ The service is an independent Cargo package and container. It connects directly 
 - Provider facts use source-native identity and causal timestamps.
 - Gaps are explicit; watermarks never advance over uncommitted data.
 - The package has no dependency on `polymarket-bot`.
-- The service is not included in production Compose configuration.
+- `ingester-master` is the sole backfill API, scheduler, and job-ledger owner.
+- Horizontally scalable `ingester-worker` containers run realtime and backfill strategies.
+- The complete strategy and queue standard is [documented here](docs/strategy-and-backfill-contract.md).
 
 ## Organization
 
@@ -28,7 +30,7 @@ Source-specific configuration, decoding, recovery, and fact SQL stay inside the 
 
 ## Development
 
-The canonical image compiles every registered strategy. Runtime start and stop decisions come from `ingester.profiles`, not Cargo features or provider-specific environment variables.
+The canonical master and worker images compile the same registry. Runtime start and stop decisions come from `ingester.profiles`, not Cargo features or provider-specific environment variables.
 
 ```bash
 cargo fmt --check --manifest-path packages/market-data-ingester/Cargo.toml
@@ -51,12 +53,11 @@ strategies.
 From the repository root, build and start the opt-in development service with:
 
 ```bash
-scripts/build-market-data-ingester-image.sh
 docker compose \
   -f docker-compose.yml \
   -f packages/market-data-ingester/docker-compose.yml \
-  --profile market-data-ingestion \
-  up -d market-data-ingester
+  --profile data-ingestion \
+  up -d ingester-master ingester-worker
 ```
 
 The service joins the existing TimescaleDB network and does not start or depend
@@ -71,6 +72,15 @@ Liveness and readiness are unauthenticated:
 - `GET /health/ready`
 
 Administrative routes require `Authorization: Bearer <token>`:
+
+- `GET /strategy/all`
+- `GET /strategy/{strategy_key}`
+- `GET|POST /backfills`
+- `GET /backfills/{job_id}`
+- `GET /backfills/{job_id}/events`
+- `POST /backfills/{job_id}/cancel`
+- `POST /backfills/{job_id}/retry`
+- `GET /workers`
 
 - `GET /v1/ingesters`
 - `GET /v1/ingesters/{strategy_key}`
@@ -89,7 +99,7 @@ and construct the strategy again without restarting the container.
 
 The package uses the existing TimescaleDB instance through two additive schemas:
 
-- `ingester` owns profiles, leases, health, capture lineage, and explicit gaps.
+- `ingester` owns profiles, leases, health, capture lineage, explicit gaps, the sole backfill job ledger, worker heartbeats, events, and artifacts.
 - `market_data` owns immutable provider facts.
 
 It does not write to, alter, or reference bot-owned `polymarket` tables. Capture

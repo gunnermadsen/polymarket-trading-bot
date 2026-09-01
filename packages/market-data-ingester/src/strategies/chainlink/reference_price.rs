@@ -29,8 +29,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategy, IngesterStrategyKey, StrategyError,
-        StrategyErrorKind,
+        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+        StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, NewCaptureArtifact, ProfileRepository, StrategyProgress,
@@ -220,7 +220,7 @@ impl StrategyFactory for ChainlinkBtcusdReferencePriceFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         if profile.strategy_key != STRATEGY_KEY {
             return Err(StrategyFactoryError::Construction(format!(
                 "received profile for {}",
@@ -320,7 +320,7 @@ struct InsertedReferencePrice {
 }
 
 #[async_trait]
-impl IngesterStrategy for ChainlinkBtcusdReferencePriceStrategy {
+impl RealtimeWorkerStrategy for ChainlinkBtcusdReferencePriceStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

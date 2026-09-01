@@ -15,8 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategy, IngesterStrategyKey, StrategyError,
-        StrategyErrorKind,
+        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+        StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
@@ -163,7 +163,7 @@ impl StrategyFactory for BinanceFuturesOpenInterestFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         let config = decode_config(&profile.config)?;
         if profile.checkpoint_schema_version != CHECKPOINT_SCHEMA_VERSION {
             return Err(StrategyFactoryError::Construction(format!(
@@ -225,7 +225,7 @@ struct BinanceFuturesOpenInterestStrategy {
 }
 
 #[async_trait]
-impl IngesterStrategy for BinanceFuturesOpenInterestStrategy {
+impl RealtimeWorkerStrategy for BinanceFuturesOpenInterestStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

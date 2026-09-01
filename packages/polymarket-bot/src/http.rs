@@ -289,20 +289,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
     let admin_routes = Router::new()
         .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
         .route("/strategy/btc-5m/entry-status", get(btc_entry_status))
-        .route("/backfill/ingesters", get(list_ingesters))
-        .route(
-            "/backfill/jobs",
-            get(list_ingestion_backfills).post(enqueue_ingestion_backfill),
-        )
-        .route("/backfill/jobs/:job_id", get(get_ingestion_backfill))
-        .route(
-            "/backfill/jobs/:job_id/events",
-            get(list_ingestion_backfill_events),
-        )
-        .route(
-            "/backfill/jobs/:job_id/cancel",
-            post(cancel_ingestion_backfill),
-        )
         .route(
             "/backfill/readiness/btc-five-minute-training",
             get(ingestion_training_readiness),
@@ -402,72 +388,6 @@ async fn btc_entry_status(
     Query(request): Query<EntryStatusRequest>,
 ) -> Result<Json<EntryStatusSelection>, HttpError> {
     state.control.btc_entry_status(request).await.map(Json)
-}
-
-async fn enqueue_ingestion_backfill(
-    State(state): State<HttpState>,
-    Json(request): Json<IngestionBackfillRequest>,
-) -> Result<Json<IngestionBackfillEnqueueResponse>, HttpError> {
-    state
-        .control
-        .enqueue_ingestion_backfill(request)
-        .await
-        .map(Json)
-}
-
-async fn list_ingesters() -> Json<IngesterListResponse> {
-    Json(IngesterListResponse {
-        ingesters: IngesterKey::ALL
-            .into_iter()
-            .map(|key| IngesterDescription {
-                key,
-                request_version: key.supported_request_version(),
-                range_alignment_seconds: key.alignment_seconds(),
-                accepts_new_requests: key.accepts_new_requests(),
-            })
-            .collect(),
-    })
-}
-
-async fn list_ingestion_backfills(
-    State(state): State<HttpState>,
-    Query(request): Query<ListIngestionBackfillsRequest>,
-) -> Result<Json<IngestionBackfillJobsResponse>, HttpError> {
-    state
-        .control
-        .list_ingestion_backfills(request)
-        .await
-        .map(Json)
-}
-
-async fn get_ingestion_backfill(
-    State(state): State<HttpState>,
-    Path(job_id): Path<Uuid>,
-) -> Result<Json<IngestionBackfillJobResponse>, HttpError> {
-    state.control.get_ingestion_backfill(job_id).await.map(Json)
-}
-
-async fn list_ingestion_backfill_events(
-    State(state): State<HttpState>,
-    Path(job_id): Path<Uuid>,
-    Query(request): Query<ListIngestionBackfillEventsRequest>,
-) -> Result<Json<IngestionBackfillEventsResponse>, HttpError> {
-    state
-        .control
-        .list_ingestion_backfill_events(job_id, request)
-        .await
-        .map(Json)
-}
-
-async fn cancel_ingestion_backfill(
-    State(state): State<HttpState>,
-    Path(job_id): Path<Uuid>,
-) -> Result<Json<IngestionBackfillCancelResponse>, HttpError> {
-    state
-        .control
-        .cancel_ingestion_backfill(job_id)
-        .await
-        .map(Json)
 }
 
 async fn ingestion_training_readiness(

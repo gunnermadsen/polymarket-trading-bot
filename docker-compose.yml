@@ -3,161 +3,19 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "5"
-
 x-app-env-file: &app-env-file
   path: ./.env
   required: false
-
 x-postgres-env-file: &postgres-env-file
   path: ./.env.postgres
   required: false
-
 x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
-
 x-prometheus-env-file: &prometheus-env-file
   path: ./.env.prometheus
   required: true
   format: raw
-
-x-kraken-worker-env: &kraken-worker-env
-  RUST_LOG: "info,sqlx=error"
-  POSTGRES_HOST: "kraken-timescaledb"
-  POSTGRES_PORT: "5432"
-  POSTGRES_USER: "postgres"
-  POSTGRES_DB: "kraken_archive"
-  POSTGRES_SSL_MODE: "disable"
-  POSTGRES_SSL_CA_FILE: ""
-  KRAKEN_FUTURES_BASE_URL: "https://futures.kraken.com"
-  KRAKEN_DATA_LAKE_ROOT: "/var/lib/kraken-data"
-  KRAKEN_BACKFILL_POLL_INTERVAL_MS: "1000"
-  KRAKEN_BACKFILL_LEASE_DURATION_SECS: "120"
-  KRAKEN_BACKFILL_HEARTBEAT_INTERVAL_SECS: "20"
-  KRAKEN_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
-
-x-kraken-worker: &kraken-worker
-  build:
-    context: .
-    dockerfile: packages/polymarket-bot/Dockerfile
-    args:
-      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-  image: polymarket/kraken-ingestion:latest
-  entrypoint:
-    - /usr/local/bin/kraken-backfill-worker
-  init: true
-  mem_limit: 512m
-  cpus: "0.35"
-  pids_limit: 128
-  logging: *default-logging
-  env_file:
-    - *postgres-env-file
-  volumes:
-    - /Volumes/docker-data/kraken-data:/var/lib/kraken-data
-  depends_on:
-    kraken-db-migrate:
-      condition: service_completed_successfully
-    kraken-timescaledb:
-      condition: service_healthy
-  read_only: true
-  tmpfs:
-    - /tmp:size=16m,mode=1777
-  stop_grace_period: 60s
-  restart: unless-stopped
-
-x-financial-data-env: &financial-data-env
-  RUST_LOG: "info,sqlx=error"
-  POSTGRES_HOST: "kraken-timescaledb"
-  POSTGRES_PORT: "5432"
-  POSTGRES_USER: "postgres"
-  POSTGRES_DB: "kraken_archive"
-  POSTGRES_SSL_MODE: "disable"
-  POSTGRES_SSL_CA_FILE: ""
-  FINANCIAL_DATA_LAKE_ROOT: "/var/lib/global-financial-data"
-  FINANCIAL_DATA_POLL_INTERVAL_MS: "1000"
-  FINANCIAL_DATA_LEASE_DURATION_SECS: "300"
-
-x-financial-data-worker: &financial-data-worker
-  build:
-    context: .
-    dockerfile: packages/polymarket-bot/Dockerfile
-    args:
-      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-  image: polymarket/financial-data-ingestion:latest
-  entrypoint:
-    - /usr/local/bin/financial-data-backfill-worker
-  init: true
-  mem_limit: 512m
-  cpus: "0.35"
-  pids_limit: 128
-  logging: *default-logging
-  env_file:
-    - *app-env-file
-    - *postgres-env-file
-  volumes:
-    - /Volumes/docker-data/global-financial-data:/var/lib/global-financial-data
-  depends_on:
-    kraken-db-migrate:
-      condition: service_completed_successfully
-    kraken-timescaledb:
-      condition: service_healthy
-  read_only: true
-  tmpfs:
-    - /tmp:size=16m,mode=1777
-  stop_grace_period: 60s
-  restart: unless-stopped
-
-x-pmdata-worker-env: &pmdata-worker-env
-  RUST_LOG: "info,sqlx=error"
-  POSTGRES_HOST: "pgbouncer"
-  POSTGRES_PORT: "6432"
-  POSTGRES_USER: "postgres"
-  POSTGRES_DB: "polymarket"
-  POSTGRES_SSL_MODE: "disable"
-  POSTGRES_SSL_CA_FILE: ""
-  POLYMARKET_PMDATA_BASE_URL: "https://api.pmdata.dev"
-  POLYMARKET_PMDATA_API_KEY: "${PM_DATA_API_KEY:-}"
-  POLYMARKET_PMDATA_ARCHIVE_ROOT: "/var/lib/polymarket/backfill-cache/pmdata-archive"
-  POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "pmdata_chainlink_btcusd_twap_30s,pmdata_chainlink_btcusd_twap_60s,pmdata_chainlink_btcusd_refprice"
-  POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-  POLYMARKET_BACKFILL_LEASE_SECS: "120"
-  POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-  POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
-  POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-  POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "4294967296"
-  POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-
-x-pmdata-worker: &pmdata-worker
-  build:
-    context: ${POLYMARKET_PMDATA_BUILD_CONTEXT:-.}
-    dockerfile: packages/polymarket-bot/Dockerfile
-    args:
-      POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-  image: ${POLYMARKET_PMDATA_WORKER_IMAGE:-polymarket/pmdata-backfill-worker:latest}
-  entrypoint:
-    - /usr/local/bin/polymarket-backfill-worker
-  profiles:
-    - pmdata-backfill
-  init: true
-  mem_limit: 768m
-  cpus: "0.50"
-  pids_limit: 128
-  logging: *default-logging
-  env_file:
-    - *postgres-env-file
-  volumes:
-    - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-  depends_on:
-    db-migrate:
-      condition: service_completed_successfully
-    pgbouncer:
-      condition: service_healthy
-  read_only: true
-  tmpfs:
-    - /tmp:size=32m,mode=1777
-  stop_grace_period: 60s
-  restart: unless-stopped
-
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
@@ -212,7 +70,6 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
-
   pgbouncer:
     image: ${PGBOUNCER_IMAGE:-edoburu/pgbouncer:v1.25.2-p0}
     container_name: pgbouncer
@@ -249,7 +106,6 @@ services:
     tmpfs:
       - /tmp:size=8m,mode=1777
     restart: unless-stopped
-
   db-migrate:
     build:
       context: .
@@ -273,11 +129,15 @@ services:
       POSTGRES_SSL_CA_FILE: ""
       POSTGRES_SSL_CERT_FILE: ""
       POSTGRES_SSL_KEY_FILE: ""
+      KRAKEN_ARCHIVE_POSTGRES_HOST: "kraken-timescaledb"
+      KRAKEN_ARCHIVE_POSTGRES_PORT: "5432"
+      KRAKEN_ARCHIVE_POSTGRES_DB: "kraken_archive"
     depends_on:
       timescaledb-0:
         condition: service_healthy
+      kraken-timescaledb:
+        condition: service_healthy
     restart: "no"
-
   polymarket-bot:
     build:
       context: .
@@ -349,505 +209,6 @@ services:
         condition: service_healthy
     stop_grace_period: 60s
     restart: unless-stopped
-
-  polymarket-backfill-worker:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker
-    hostname: polymarket-backfill-worker
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
-      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
-      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
-      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-1"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-1"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "kraken_spot_btcusd_trade_prints_one_second_ohlcv"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "1100"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  polymarket-backfill-worker-2:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker-2
-    hostname: polymarket-backfill-worker-2
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
-      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
-      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
-      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-2"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-2"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  polymarket-backfill-worker-3:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker-3
-    hostname: polymarket-backfill-worker-3
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
-      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
-      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
-      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-3"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-3"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "1"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  polymarket-backfill-worker-4:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker-4
-    hostname: polymarket-backfill-worker-4
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-4"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-4"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  polymarket-backfill-worker-5:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker-5
-    hostname: polymarket-backfill-worker-5
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-5"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-5"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  polymarket-backfill-worker-6:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BACKFILL_WORKER_IMAGE:-polymarket/polymarket-backfill-worker:capacity-45b2619}
-    container_name: polymarket-backfill-worker-6
-    hostname: polymarket-backfill-worker-6
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
-    init: true
-    mem_limit: 1536m
-    cpus: "1.0"
-    pids_limit: 128
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      RUST_LOG: "info"
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/worker-6"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker-6"
-      POLYMARKET_BACKFILL_ALLOWED_INGESTERS: "btc_five_minute_markets,btc_five_minute_resolutions,binance_btcusdt_agg_trades,binance_btcusdt_l2_one_second_features,binance_spot_btcusdt_l2_one_second_features,binance_btcusdt_one_second_klines,polymarket_btc_five_minute_orderbooks,polymarket_btc_five_minute_execution_snapshots,chainlink_btcusd_reference_ticks,chainlink_btcusd_one_minute_candles,binance_btcusdt_five_minute_open_interest,polygon_chainlink_btcusd_oracle_rounds"
-      POLYMARKET_KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
-      POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT: "/var/lib/polymarket/kraken-spot-data"
-      POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS: "250"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "120"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "2"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-      POLYMARKET_BACKFILL_CACHE_MAX_BYTES: "8589934592"
-      POLYMARKET_BACKFILL_CACHE_STALE_SECS: "21600"
-      POLYMARKET_PMXT_PREFETCH_CONCURRENCY: "4"
-      POLYMARKET_PMXT_PREFETCH_ARCHIVES: "8"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
-      - /Volumes/docker-data/kraken-spot-data:/var/lib/polymarket/kraken-spot-data
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  pmdata-backfill-worker-1:
-    <<: *pmdata-worker
-    container_name: pmdata-backfill-worker-1
-    hostname: pmdata-backfill-worker-1
-    environment:
-      <<: *pmdata-worker-env
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/pmdata-worker-1"
-      POLYMARKET_BACKFILL_WORKER_ID: "pmdata-backfill-worker-1"
-
-  pmdata-backfill-worker-2:
-    <<: *pmdata-worker
-    container_name: pmdata-backfill-worker-2
-    hostname: pmdata-backfill-worker-2
-    environment:
-      <<: *pmdata-worker-env
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache/pmdata-worker-2"
-      POLYMARKET_BACKFILL_WORKER_ID: "pmdata-backfill-worker-2"
-
-  pmdata-twap-backfill-plan:
-    build:
-      context: ${POLYMARKET_PMDATA_BUILD_CONTEXT:-.}
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_PMDATA_WORKER_IMAGE:-polymarket/pmdata-backfill-worker:latest}
-    entrypoint:
-      - /usr/local/bin/pmdata-twap-backfill-plan
-    profiles:
-      - pmdata-backfill-plan
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_PMDATA_TWAP_START_DATE: "${POLYMARKET_PMDATA_TWAP_START_DATE:-2026-08-01}"
-      POLYMARKET_PMDATA_TWAP_END_DATE: "${POLYMARKET_PMDATA_TWAP_END_DATE:-2026-08-24}"
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    restart: "no"
-
-  pmdata-refprice-backfill-plan:
-    build:
-      context: ${POLYMARKET_PMDATA_BUILD_CONTEXT:-.}
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_PMDATA_WORKER_IMAGE:-polymarket/pmdata-backfill-worker:latest}
-    entrypoint:
-      - /usr/local/bin/pmdata-refprice-backfill-plan
-    profiles:
-      - pmdata-backfill-plan
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      POSTGRES_HOST: "pgbouncer"
-      POSTGRES_PORT: "6432"
-      POSTGRES_USER: "postgres"
-      POSTGRES_DB: "polymarket"
-      POSTGRES_SSL_MODE: "disable"
-      POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_PMDATA_REFPRICE_START_DATE: "${POLYMARKET_PMDATA_REFPRICE_START_DATE:-2026-06-07}"
-      POLYMARKET_PMDATA_REFPRICE_END_DATE: "${POLYMARKET_PMDATA_REFPRICE_END_DATE:-2026-08-24}"
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      pgbouncer:
-        condition: service_healthy
-    restart: "no"
-
   kraken-timescaledb:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: kraken-timescaledb
@@ -895,7 +256,6 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
-
   kraken-db-migrate:
     build:
       context: .
@@ -923,159 +283,6 @@ services:
       kraken-timescaledb:
         condition: service_healthy
     restart: "no"
-
-  kraken-backfill-plan:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/kraken-ingestion:latest
-    entrypoint:
-      - /usr/local/bin/kraken-backfill-plan
-    profiles:
-      - kraken-plan
-    mem_limit: 256m
-    cpus: "0.25"
-    logging: *default-logging
-    env_file:
-      - *postgres-env-file
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_SYMBOL: "PF_XBTUSD"
-    depends_on:
-      kraken-db-migrate:
-        condition: service_completed_successfully
-      kraken-timescaledb:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    restart: "no"
-
-  kraken-backfill-worker-1:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-1
-    hostname: kraken-backfill-worker-1
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-1"
-
-  kraken-backfill-worker-2:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-2
-    hostname: kraken-backfill-worker-2
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-2"
-
-  kraken-backfill-worker-3:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-3
-    hostname: kraken-backfill-worker-3
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-3"
-
-  kraken-backfill-worker-4:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-4
-    hostname: kraken-backfill-worker-4
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-4"
-
-  kraken-backfill-worker-5:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-5
-    hostname: kraken-backfill-worker-5
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-5"
-
-  kraken-backfill-worker-6:
-    <<: *kraken-worker
-    container_name: kraken-backfill-worker-6
-    hostname: kraken-backfill-worker-6
-    environment:
-      <<: *kraken-worker-env
-      KRAKEN_BACKFILL_WORKER_ID: "kraken-backfill-worker-6"
-
-  kraken-spot-l2-backfill-worker:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/kraken-spot-l2-backfill:latest
-    container_name: kraken-spot-l2-backfill-worker
-    hostname: kraken-spot-l2-backfill-worker
-    entrypoint:
-      - /usr/local/bin/kraken-spot-l2-backfill-worker
-    init: true
-    mem_limit: 768m
-    cpus: "0.75"
-    pids_limit: 128
-    logging: *default-logging
-    environment:
-      RUST_LOG: "info"
-    volumes:
-      - /Volumes/docker-data/kraken-data:/var/lib/kraken-data
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    stop_grace_period: 60s
-    restart: unless-stopped
-
-  financial-data-backfill-plan:
-    build:
-      context: .
-      dockerfile: packages/polymarket-bot/Dockerfile
-      args:
-        POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: polymarket/financial-data-ingestion:latest
-    entrypoint:
-      - /usr/local/bin/financial-data-backfill-plan
-    profiles:
-      - financial-data-plan
-    mem_limit: 256m
-    cpus: "0.25"
-    logging: *default-logging
-    env_file:
-      - *app-env-file
-      - *postgres-env-file
-    environment:
-      <<: *financial-data-env
-      FINANCIAL_DATA_BACKFILL_START: "2022-01-01T00:00:00Z"
-      FINANCIAL_DATA_BACKFILL_END: "2026-07-28T03:00:00Z"
-    depends_on:
-      kraken-db-migrate:
-        condition: service_completed_successfully
-      kraken-timescaledb:
-        condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    restart: "no"
-
-  financial-data-backfill-worker-1:
-    <<: *financial-data-worker
-    container_name: financial-data-backfill-worker-1
-    hostname: financial-data-backfill-worker-1
-    environment:
-      <<: *financial-data-env
-      FRED_API_KEY: "${FRED_API_KEY:-}"
-      FINANCIAL_DATA_WORKER_ID: "financial-data-backfill-worker-1"
-
-  financial-data-backfill-worker-2:
-    <<: *financial-data-worker
-    container_name: financial-data-backfill-worker-2
-    hostname: financial-data-backfill-worker-2
-    environment:
-      <<: *financial-data-env
-      FRED_API_KEY: "${FRED_API_KEY:-}"
-      FINANCIAL_DATA_WORKER_ID: "financial-data-backfill-worker-2"
-
   prometheus:
     image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: prometheus
@@ -1114,7 +321,6 @@ services:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 30s
     restart: unless-stopped
-
   loki:
     image: grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
     container_name: loki
@@ -1134,7 +340,6 @@ services:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 30s
     restart: unless-stopped
-
   alloy:
     image: grafana/alloy:v1.18.0@sha256:491b0578c04983fd54fe99b587b6fab4404dc46d0dc16677bd6b00cc1140b308
     container_name: alloy
@@ -1161,7 +366,6 @@ services:
       - /tmp:size=16m,mode=1777
     stop_grace_period: 30s
     restart: unless-stopped
-
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION:-12.4.2}
     container_name: grafana
@@ -1209,7 +413,6 @@ services:
       loki:
         condition: service_started
     restart: unless-stopped
-
 volumes:
   timescaledb-0-data:
   grafana-data:

@@ -24,7 +24,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_aggregate_trades"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -61,7 +61,7 @@ groups:
         labels:
           strategy: binance_spot_btcusdt_aggregate_trades
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -80,7 +80,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_one_second_ohlcv"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -97,7 +97,7 @@ groups:
         labels:
           strategy: binance_spot_btcusdt_one_second_ohlcv
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -116,7 +116,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) or absent(market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -133,7 +133,7 @@ groups:
         labels:
           strategy: binance_spot_btcusdt_l2_snapshots
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -152,7 +152,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) or absent(market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) or absent(market_data_ingester_strategy_state{strategy="binance_futures_btcusdt_open_interest"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -169,7 +169,7 @@ groups:
         labels:
           strategy: binance_futures_btcusdt_open_interest
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -188,7 +188,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_reference_price"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -205,7 +205,7 @@ groups:
         labels:
           strategy: chainlink_btcusd_reference_price
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -224,7 +224,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) or absent(market_data_ingester_strategy_state{strategy="chainlink_btcusd_one_minute_ohlc"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -241,7 +241,7 @@ groups:
         labels:
           strategy: chainlink_btcusd_one_minute_ohlc
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -260,7 +260,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) or absent(market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) or absent(market_data_ingester_strategy_state{strategy="polygon_chainlink_btcusd_oracle"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -277,7 +277,7 @@ groups:
         labels:
           strategy: polygon_chainlink_btcusd_oracle
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -296,7 +296,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_market_contracts"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -313,7 +313,7 @@ groups:
         labels:
           strategy: polymarket_btc_five_minute_market_contracts
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -332,7 +332,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_orderbooks"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -349,7 +349,7 @@ groups:
         labels:
           strategy: polymarket_btc_five_minute_orderbooks
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -368,7 +368,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_btc_five_minute_resolutions"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -385,7 +385,7 @@ groups:
         labels:
           strategy: polymarket_btc_five_minute_resolutions
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -404,7 +404,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) and on () (max(up{job="market-data-ingester"}) == 1)
+                (max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",observed_state!="running"}) or max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap",desired_state="running",health_status!="healthy"}) or (0 * max by (strategy) (market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) or absent(market_data_ingester_strategy_state{strategy="polymarket_chainlink_btcusd_twap"})) and on () (max(up{job="ingester-master"}) == 1)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -421,7 +421,7 @@ groups:
         labels:
           strategy: polymarket_chainlink_btcusd_twap
           condition: strategy_health_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
@@ -467,7 +467,7 @@ groups:
           strategy: binance_spot_btcusdt_aggregate_trades
           condition: strategy_critical_failure
           failure_condition: binance_aggregate_trades_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -508,7 +508,7 @@ groups:
           strategy: binance_spot_btcusdt_one_second_ohlcv
           condition: strategy_critical_failure
           failure_condition: binance_1_second_ohlcv_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -549,7 +549,7 @@ groups:
           strategy: binance_spot_btcusdt_l2_snapshots
           condition: strategy_critical_failure
           failure_condition: binance_spot_l2_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -590,7 +590,7 @@ groups:
           strategy: binance_futures_btcusdt_open_interest
           condition: strategy_critical_failure
           failure_condition: binance_futures_oi_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -631,7 +631,7 @@ groups:
           strategy: chainlink_btcusd_reference_price
           condition: strategy_critical_failure
           failure_condition: chainlink_reference_price_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -672,7 +672,7 @@ groups:
           strategy: chainlink_btcusd_one_minute_ohlc
           condition: strategy_critical_failure
           failure_condition: chainlink_one_minute_candles_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -713,7 +713,7 @@ groups:
           strategy: polygon_chainlink_btcusd_oracle
           condition: strategy_critical_failure
           failure_condition: polygon_chainlink_oracle_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -754,7 +754,7 @@ groups:
           strategy: polymarket_btc_five_minute_market_contracts
           condition: strategy_critical_failure
           failure_condition: polymarket_contracts_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -795,7 +795,7 @@ groups:
           strategy: polymarket_btc_five_minute_orderbooks
           condition: strategy_critical_failure
           failure_condition: polymarket_orderbooks_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -836,7 +836,7 @@ groups:
           strategy: polymarket_btc_five_minute_resolutions
           condition: strategy_critical_failure
           failure_condition: polymarket_resolutions_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -877,7 +877,7 @@ groups:
           strategy: polymarket_chainlink_btcusd_twap
           condition: strategy_critical_failure
           failure_condition: polymarket_chainlink_twap_critical_failure
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
@@ -896,7 +896,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                absent(up{job="market-data-ingester"}) or (max(up{job="market-data-ingester"}) < 1) or absent(up{job="alloy"}) or (max(up{job="alloy"}) < 1) or absent(up{job="loki"}) or (max(up{job="loki"}) < 1) or absent(market_data_ingester_liveness) or (max(market_data_ingester_liveness) < 1) or absent(market_data_ingester_readiness) or (max(market_data_ingester_readiness) < 1) or (sum(increase(loki_process_dropped_lines_total{component_id="loki.process.market_data_ingester"}[5m])) > 0) or vector(0)
+                absent(up{job="ingester-master"}) or (max(up{job="ingester-master"}) < 1) or absent(up{job="alloy"}) or (max(up{job="alloy"}) < 1) or absent(up{job="loki"}) or (max(up{job="loki"}) < 1) or absent(market_data_ingester_liveness) or (max(market_data_ingester_liveness) < 1) or absent(market_data_ingester_readiness) or (max(market_data_ingester_readiness) < 1) or (sum(increase(loki_process_dropped_lines_total{component_id="loki.process.market_data_ingester"}[5m])) > 0) or vector(0)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -912,7 +912,7 @@ groups:
           evaluation_window: '5m'
         labels:
           condition: market_data_observability_path_impaired
-          service: market-data-ingester
+          service: ingester
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
