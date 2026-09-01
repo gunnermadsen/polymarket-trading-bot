@@ -1,0 +1,32 @@
+[training]
+profile = "btc_5m_refprice_context_source"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+runtime_exported = false
+database_mutations = false
+twap_inference_allowed = false
+
+[windows]
+data_start = "2026-06-07T00:00:00Z"
+data_end = "2026-08-29T00:00:00Z"
+official_twap_start = "2026-08-14T00:00:00Z"
+l2_feature_end = "2026-08-02T00:00:00Z"
+
+[availability]
+open_interest_start = "2026-07-03T00:00:00Z"
+open_interest_full_day_start = "2026-07-04T00:00:00Z"
+aggregate_trades_start = "2026-07-22T00:00:00Z"
+
+[observations]
+seconds = [60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180]
+
+[labels]
+reconstruction_time_column = "source_timestamp"
+reconstruction_calibration_mae_bps = 0.07436813247104421
+reconstruction_calibration_p99_bps = 0.46302091288729064
+reconstruction_error_band_bps = 0.5259799005569118
+reconstruction_source_run = "btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z"
+
+[paths]
+data = "data/btc-refprice-context-source-20260607-20260829"

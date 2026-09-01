@@ -33,6 +33,7 @@ use super::{
         BackfillEventLevel, BackfillFailureKind, BackfillJobSummary, ClaimedJob, IngesterKey,
         WorkerControl,
     },
+    kraken_spot_trades::KrakenSpotTradeConfig,
     pmdata_twap::{PmdataTwapConfig, DEFAULT_PMDATA_BASE_URL},
     pmxt_archive::DEFAULT_PMXT_ARCHIVE_URL,
     polygon_chainlink_oracle::{
@@ -209,6 +210,20 @@ impl BackfillWorker {
                 cryptohft_binance_l2: cryptohft_binance_l2_config_from_env(&config)?,
                 cryptohft_binance_spot_l2,
                 huggingface_binance_spot_l2,
+                kraken_spot: KrakenSpotTradeConfig {
+                    base_url: env_string(
+                        "POLYMARKET_KRAKEN_SPOT_BASE_URL",
+                        "https://api.kraken.com",
+                    ),
+                    lake_root: PathBuf::from(env_string(
+                        "POLYMARKET_KRAKEN_SPOT_DATA_LAKE_ROOT",
+                        "/var/lib/polymarket/kraken-spot-data",
+                    )),
+                    request_delay: Duration::from_millis(env_u64(
+                        "POLYMARKET_KRAKEN_SPOT_REQUEST_DELAY_MS",
+                        250,
+                    )?),
+                },
                 polygon_chainlink: PolygonChainlinkOracleConfig {
                     rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", DEFAULT_POLYGON_RPC_URL),
                     archive_log_rpc_url: env_string(

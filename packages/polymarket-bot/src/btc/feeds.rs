@@ -1121,10 +1121,12 @@ impl BookRegistry {
                     && book.outcome == outcome
                     && book.bootstrapped
                     && book.integrity_status == FeedIntegrityStatus::Ok
+                    && book.source_timestamp.is_some_and(|timestamp| {
+                        timestamp - now <= max_age && now - timestamp <= max_age
+                    })
                     && book
-                        .source_timestamp
-                        .is_some_and(|timestamp| timestamp - now <= max_age)
-                    && book.received_at.is_some_and(|timestamp| timestamp <= now)
+                        .received_at
+                        .is_some_and(|timestamp| timestamp <= now && now - timestamp <= max_age)
                     && book.source_timestamp.zip(book.received_at).is_some_and(
                         |(source_timestamp, received_at)| received_at - source_timestamp <= max_age,
                     )
@@ -1314,8 +1316,22 @@ impl RealtimeState {
                 {
                     reasons.push(format!("future_book_timestamp:{token_id}"))
                 }
+                Some(book)
+                    if book
+                        .source_timestamp
+                        .is_none_or(|timestamp| now - timestamp > max_book_age) =>
+                {
+                    reasons.push(format!("stale_book_timestamp:{token_id}"))
+                }
                 Some(book) if book.received_at.is_none_or(|timestamp| timestamp > now) => {
                     reasons.push(format!("future_book_timestamp:{token_id}"))
+                }
+                Some(book)
+                    if book
+                        .received_at
+                        .is_some_and(|timestamp| now - timestamp > max_book_age) =>
+                {
+                    reasons.push(format!("stale_book_receipt:{token_id}"))
                 }
                 Some(_) => {}
             }
@@ -2337,7 +2353,7 @@ mod tests {
         seed_book(&mut registry, &market.down_token_id, source_millis);
         assert!(registry.market_books_structurally_ready(&market));
         assert!(registry.market_books_ready(&market, ready_at, max_age));
-        assert!(registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
+        assert!(!registry.market_books_ready(&market, ts(source_millis + 21), max_age,));
         assert!(!registry.market_books_ready(&market, ts(source_millis - 21), max_age,));
         assert!(registry.market_books_structurally_ready(&market));
 
@@ -2892,7 +2908,11 @@ mod tests {
         up_book.source_timestamp = Some(now - Duration::milliseconds(2_500));
         up_book.received_at = Some(now - Duration::milliseconds(1));
         let unchanged_book = state.readiness(now, Duration::seconds(2), Duration::seconds(2));
-        assert!(unchanged_book.ready);
+        assert!(!unchanged_book.ready);
+        assert!(unchanged_book
+            .reasons
+            .iter()
+            .any(|reason| reason == "stale_book_timestamp:up"));
     }
 
     #[test]

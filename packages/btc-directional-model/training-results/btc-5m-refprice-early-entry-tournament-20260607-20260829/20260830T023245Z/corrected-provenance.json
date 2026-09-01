@@ -1,0 +1,17 @@
+{
+  "artifact_path": "packages/btc-directional-model/training-results/btc-5m-refprice-early-entry-tournament-20260607-20260829/20260830T023245Z/refprice-early-entry-tournament.joblib",
+  "artifact_sha256": "4d334d343217d52727d511bc3fa9ff312bba78720186674852b34e240250f901",
+  "deployment_status": "not_deployed",
+  "evaluation_correction_revision": "eb3cb4a76c24b3e9ab0bbae72e926ba253dc8d9b",
+  "execution_manifest_sha256": "a93655ffd2d119cc225d178e1fa78abfbf3da4970c2d6db7ac5543f93ef9f014",
+  "oof_predictions_path": "packages/btc-directional-model/training-results/btc-5m-refprice-early-entry-tournament-20260607-20260829/20260830T023245Z/oof-predictions.parquet",
+  "oof_predictions_sha256": "572c44986a811788bb69abbaef36260efea2059739a3ae4ed289b15bdde7f1a1",
+  "producing_revision": "b2179e1fee40621b271ba173eafe17dc6b445e2d",
+  "qualification_status": "disqualified_negative_sealed_stressed_expectancy",
+  "retrained_after_completion": false,
+  "run_id": "refprice-early-entry-20260829",
+  "source_manifest_sha256": "4245191f10a419a1c6e940881b129a631b0bfe17ba8cb0d08cbce6e183ecbd24",
+  "sealed_profit_factor": 0.995939916116917,
+  "sealed_stressed_expectancy_per_trade": -0.004743940775578649,
+  "sealed_stressed_pnl": -0.16129398636967407
+}

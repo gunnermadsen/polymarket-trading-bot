@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM rust:1.91-bookworm AS builder-base
 
 WORKDIR /app
@@ -43,8 +41,12 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
       --bin pmdata-twap-backfill-plan \
       --bin pmdata-refprice-backfill-plan \
       --bin local-orderbook-vwap-backfill-plan \
+      --bin kraken-spot-trade-backfill-plan \
       --bin kraken-backfill-worker \
       --bin kraken-backfill-plan \
+      --bin kraken-spot-l2-backfill-worker \
+      --bin financial-data-backfill-worker \
+      --bin financial-data-backfill-plan \
       --bin derive-clob-creds \
     && mkdir -p /opt/polymarket-artifacts \
     && cp /app/target/release/polymarket-bot /opt/polymarket-artifacts/ \
@@ -55,8 +57,12 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     && cp /app/target/release/pmdata-twap-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/pmdata-refprice-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/local-orderbook-vwap-backfill-plan /opt/polymarket-artifacts/ \
+    && cp /app/target/release/kraken-spot-trade-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-worker /opt/polymarket-artifacts/ \
     && cp /app/target/release/kraken-backfill-plan /opt/polymarket-artifacts/ \
+    && cp /app/target/release/kraken-spot-l2-backfill-worker /opt/polymarket-artifacts/ \
+    && cp /app/target/release/financial-data-backfill-worker /opt/polymarket-artifacts/ \
+    && cp /app/target/release/financial-data-backfill-plan /opt/polymarket-artifacts/ \
     && cp /app/target/release/derive-clob-creds /opt/polymarket-artifacts/
 
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
@@ -69,8 +75,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin polymarket \
-    && mkdir -p /var/lib/polymarket/backfill-cache /var/lib/kraken-data \
-    && chown -R polymarket:polymarket /var/lib/polymarket /var/lib/kraken-data
+    && mkdir -p /var/lib/polymarket/backfill-cache /var/lib/kraken-data /var/lib/global-financial-data \
+    && chown -R polymarket:polymarket /var/lib/polymarket /var/lib/kraken-data /var/lib/global-financial-data
 
 ARG POLYMARKET_GIT_REVISION
 RUN case "$POLYMARKET_GIT_REVISION" in \
@@ -98,8 +104,12 @@ COPY --from=builder /opt/polymarket-artifacts/binance-spot-l2-huggingface-backfi
 COPY --from=builder /opt/polymarket-artifacts/pmdata-twap-backfill-plan /usr/local/bin/pmdata-twap-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/pmdata-refprice-backfill-plan /usr/local/bin/pmdata-refprice-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/local-orderbook-vwap-backfill-plan /usr/local/bin/local-orderbook-vwap-backfill-plan
+COPY --from=builder /opt/polymarket-artifacts/kraken-spot-trade-backfill-plan /usr/local/bin/kraken-spot-trade-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-worker /usr/local/bin/kraken-backfill-worker
 COPY --from=builder /opt/polymarket-artifacts/kraken-backfill-plan /usr/local/bin/kraken-backfill-plan
+COPY --from=builder /opt/polymarket-artifacts/kraken-spot-l2-backfill-worker /usr/local/bin/kraken-spot-l2-backfill-worker
+COPY --from=builder /opt/polymarket-artifacts/financial-data-backfill-worker /usr/local/bin/financial-data-backfill-worker
+COPY --from=builder /opt/polymarket-artifacts/financial-data-backfill-plan /usr/local/bin/financial-data-backfill-plan
 COPY --from=builder /opt/polymarket-artifacts/derive-clob-creds /usr/local/bin/derive-clob-creds
 COPY --from=builder /opt/polymarket-models /usr/local/share/polymarket-bot/models
 

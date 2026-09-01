@@ -616,11 +616,14 @@ impl BtcReferenceExecutionGuard {
                 return Err(BtcReferenceExecutionRejectReason::FutureEvidence);
             }
             let source_to_receive_lag = book.received_at - book.source_timestamp;
-            if source_to_receive_lag > max_reference_age {
-                return Err(BtcReferenceExecutionRejectReason::StaleEvidence);
-            }
             let source_age = checked_at - book.source_timestamp;
             let receive_age = checked_at - book.received_at;
+            if source_age > max_reference_age
+                || receive_age > max_reference_age
+                || source_to_receive_lag > max_reference_age
+            {
+                return Err(BtcReferenceExecutionRejectReason::StaleEvidence);
+            }
             (
                 Some(source_age.num_milliseconds()),
                 Some(receive_age.num_milliseconds()),
@@ -1385,6 +1388,26 @@ mod tests {
         assert_eq!(assessment.selected_book_receive_age_ms, Some(60));
         assert_eq!(assessment.selected_book_source_to_receive_lag_ms, Some(10));
 
+        let mut stale_book = guard.clone();
+        stale_book.selected_book.as_mut().unwrap().source_timestamp =
+            checked_at - Duration::milliseconds(2_001);
+        stale_book.selected_book.as_mut().unwrap().received_at =
+            checked_at - Duration::milliseconds(10);
+        stale_book.evidence_sha256 = stale_book.calculate_evidence_sha256().unwrap();
+        let stale_book_request = directional_model_request(&stale_book);
+        assert_eq!(
+            stale_book
+                .validate_for_request(
+                    &stale_book_request,
+                    checked_at,
+                    stale_book.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
+
         let mut wrong_identity = guarded_request.clone();
         wrong_identity.metadata["profile_id"] = "another-model".into();
         assert_eq!(
@@ -1546,16 +1569,18 @@ mod tests {
             checked_at - Duration::milliseconds(2_001);
         unchanged_book.reseal_for_test();
         let unchanged_book_request = directional_model_request(&unchanged_book);
-        let assessment = unchanged_book
-            .validate_for_request(
-                &unchanged_book_request,
-                checked_at,
-                unchanged_book.process_id,
-                Duration::seconds(2),
-                Some(Duration::seconds(5)),
-            )
-            .unwrap();
-        assert_eq!(assessment.selected_book_receive_age_ms, Some(2_001));
+        assert_eq!(
+            unchanged_book
+                .validate_for_request(
+                    &unchanged_book_request,
+                    checked_at,
+                    unchanged_book.process_id,
+                    Duration::seconds(2),
+                    Some(Duration::seconds(5)),
+                )
+                .unwrap_err(),
+            BtcReferenceExecutionRejectReason::StaleEvidence
+        );
 
         let mut delayed_book = sealed_directional_model_guard(checked_at);
         let book = delayed_book.selected_book.as_mut().unwrap();

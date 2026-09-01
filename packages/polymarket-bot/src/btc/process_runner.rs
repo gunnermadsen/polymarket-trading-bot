@@ -3355,7 +3355,7 @@ fn book_features(
     outcome: BtcOutcome,
     token_id: &str,
     checkpoint: Option<&OrderbookCheckpoint>,
-    _observed_at: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
     target_size: Decimal,
 ) -> BtcOutcomeBookFeatures {
     let Some(checkpoint) = checkpoint else {
@@ -3412,10 +3412,11 @@ fn book_features(
         imbalance,
         source_timestamp: Some(checkpoint.source_timestamp),
         received_at: Some(checkpoint.received_at),
-        // This field is the causal delivery age used by the existing book-quality threshold.
-        // Checkpoint construction time is local and always near zero, so it cannot expose the
-        // delayed evidence rejected by CLOB readiness and the execution guard.
-        age_ms: Some((checkpoint.received_at - checkpoint.source_timestamp).num_milliseconds()),
+        age_ms: Some(
+            (observed_at - checkpoint.source_timestamp)
+                .max(observed_at - checkpoint.received_at)
+                .num_milliseconds(),
+        ),
         integrity_status: checkpoint.integrity_status,
         connection_id: Some(checkpoint.connection_id),
     }
