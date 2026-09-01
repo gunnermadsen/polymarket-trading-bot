@@ -48,9 +48,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin polymarket \
-    && mkdir -p /var/lib/polymarket/backfill-cache /var/lib/kraken-data /var/lib/global-financial-data \
-    && chown -R polymarket:polymarket /var/lib/polymarket /var/lib/kraken-data /var/lib/global-financial-data
+    && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin polymarket
 
 ARG POLYMARKET_GIT_REVISION
 RUN case "$POLYMARKET_GIT_REVISION" in \

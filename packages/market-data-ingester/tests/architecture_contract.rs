@@ -32,19 +32,31 @@ fn polymarket_image_has_no_backfill_runtime() {
 fn compose_exposes_only_standard_ingester_roles() {
     let root = repository_root();
     let base = fs::read_to_string(root.join("docker-compose.yml")).unwrap();
+    let production = fs::read_to_string(root.join("docker-compose.production.yml")).unwrap();
     for forbidden in [
         "polymarket-backfill-worker:",
         "kraken-backfill-worker-1:",
         "financial-data-backfill-worker-1:",
         "pmdata-backfill-worker-1:",
     ] {
-        assert!(
-            !base.contains(forbidden),
-            "legacy Compose service remains: {forbidden}"
-        );
+        for compose in [&base, &production] {
+            assert!(
+                !compose.contains(forbidden),
+                "legacy Compose service remains: {forbidden}"
+            );
+        }
     }
-    assert!(base.contains("ingester-master:"));
-    assert!(base.contains("ingester-worker:"));
+    for compose in [&base, &production] {
+        assert!(compose.contains("ingester-master:"));
+        assert!(compose.contains("ingester-worker:"));
+    }
+    let compose_files = fs::read_dir(root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("docker-compose") && name.ends_with(".yml"))
+        .collect::<Vec<_>>();
+    assert_eq!(compose_files.len(), 2, "unexpected Compose files: {compose_files:?}");
     assert!(!root
         .join("packages/market-data-ingester/docker-compose.yml")
         .exists());

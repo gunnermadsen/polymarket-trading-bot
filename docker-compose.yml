@@ -442,6 +442,3 @@ volumes:
   prometheus-data:
   loki-data:
   alloy-data:
-  polymarket-backfill-cache:
-    external: true
-    name: polymarket-backfill-cache

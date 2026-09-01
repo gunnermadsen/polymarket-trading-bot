@@ -195,20 +195,21 @@ services:
     stop_grace_period: 60s
     restart: unless-stopped
 
-  polymarket-backfill-worker:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/polymarket-bot:production
-    container_name: polymarket-backfill-worker
-    hostname: polymarket-backfill-worker
-    entrypoint:
-      - /usr/local/bin/polymarket-backfill-worker
+  ingester-master:
+    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/ingester-master:production
+    container_name: ingester-master
+    hostname: ingester-master
     init: true
     mem_limit: 512m
-    cpus: "0.50"
+    cpus: "1.0"
     pids_limit: 128
     labels: *watchtower-labels
     logging: *default-logging
     env_file:
+      - *app-env-file
       - *postgres-env-file
+      - path: ./.env.market-data-ingester
+        required: true
     environment:
       RUST_LOG: "info"
       POSTGRES_HOST: "pgbouncer"
@@ -217,41 +218,71 @@ services:
       POSTGRES_DB: "polymarket"
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
-      POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_PMXT_ARCHIVE_BASE_URL: "https://r2v2.pmxt.dev"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL: "https://api.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_PAGE_LIMIT: "100"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET: "${POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET:-}"
-      POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY: "${POLYMARKET_CHAINLINK_DATA_STREAMS_CANDLESTICK_API_KEY:-}"
-      POLYMARKET_CHAINLINK_CANDLESTICK_BASE_URL: "https://priceapi.dataengine.chain.link"
-      POLYMARKET_CHAINLINK_CANDLESTICK_SYMBOL: "BTCUSD"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
-      POLYMARKET_BINANCE_OPEN_INTEREST_SYMBOL: "BTCUSDT"
-      POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
-      POLYMARKET_POLYGON_RPC_FALLBACK_URL: "${POLYMARKET_POLYGON_RPC_FALLBACK_URL:-https://polygon.drpc.org}"
-      POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
-      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
-      POLYMARKET_POLYGON_RPC_MAX_BLOCK_RANGE: "30000"
-      POLYMARKET_BACKFILL_CACHE_DIR: "/var/lib/polymarket/backfill-cache"
-      POLYMARKET_BACKFILL_WORKER_ID: "polymarket-backfill-worker"
-      POLYMARKET_BACKFILL_POLL_INTERVAL_MS: "1000"
-      POLYMARKET_BACKFILL_LEASE_SECS: "60"
-      POLYMARKET_BACKFILL_HEARTBEAT_SECS: "15"
-      POLYMARKET_BACKFILL_DB_POOL_MAX_CONNECTIONS: "4"
-      POLYMARKET_BACKFILL_BATCH_ROWS: "4000"
-    volumes:
-      - polymarket-backfill-cache:/var/lib/polymarket/backfill-cache
+      INGESTER_MODE: "master"
+      INGESTER_INSTANCE: "ingester-master"
+      INGESTER_API_BIND: "0.0.0.0:8098"
+    ports:
+      - "127.0.0.1:8099:8098"
     depends_on:
       db-migrate:
         condition: service_completed_successfully
       pgbouncer:
         condition: service_healthy
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8098/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  ingester-worker:
+    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/ingester-worker:production
+    init: true
+    mem_limit: 4g
+    cpus: "2.0"
+    pids_limit: 256
+    labels: *watchtower-labels
+    logging: *default-logging
+    env_file:
+      - *app-env-file
+      - *postgres-env-file
+      - path: ./.env.market-data-ingester
+        required: true
+    environment:
+      RUST_LOG: "info"
+      POSTGRES_HOST: "pgbouncer"
+      POSTGRES_PORT: "6432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_DB: "polymarket"
+      POSTGRES_SSL_MODE: "disable"
+      POSTGRES_SSL_CA_FILE: ""
+      INGESTER_MODE: "worker"
+      INGESTER_MASTER_URL: "http://ingester-master:8098"
+      INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-production}"
+      INGESTER_WORKER_MAX_BACKFILLS: "1"
+      INGESTER_IMAGE_DIGEST: "${INGESTER_IMAGE_DIGEST:?INGESTER_IMAGE_DIGEST is required}"
+      INGESTER_GIT_REVISION: "${INGESTER_GIT_REVISION:?INGESTER_GIT_REVISION is required}"
+      WEATHER_CACHE_DIR: "/var/lib/weather/cache"
+      GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
+      HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
+      HRRR_DOWNLOAD_ATTEMPTS: "8"
+      HRRR_RETRY_BASE_MS: "1000"
+      HRRR_RETRY_MAX_MS: "30000"
+      HRRR_REQUEST_INTERVAL_MS: "500"
+      HRRR_SOURCE_PRIORITY: "google,aws,nomads"
+      NOAA_DOWNLOAD_ATTEMPTS: "6"
+      NOAA_RETRY_BASE_SECONDS: "2"
+      HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
+    volumes:
+      - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
+    depends_on:
+      ingester-master:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
     stop_grace_period: 60s
     restart: unless-stopped
 
@@ -414,4 +445,3 @@ volumes:
   prometheus-data:
   loki-data:
   alloy-data:
-  polymarket-backfill-cache:
