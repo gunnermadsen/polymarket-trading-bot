@@ -1,0 +1,162 @@
+{
+  "schema_version": "btc_5m_frozen_champion_collection_v1",
+  "collection_key": "btc-5m-frozen-champion-collection-20260902",
+  "frozen_at": "2026-09-02T00:00:00Z",
+  "status": "frozen_not_deployed",
+  "trade_size_shares": 5,
+  "selection_rule": "User-selected collection after replacing two exact duplicate control aliases with temporal-consensus and high-precision-loss-veto challengers.",
+  "replaced_entries": [
+    {
+      "removed": "official_specialist_control_60_89",
+      "retained_equivalent": "extended_specialist_official",
+      "replacement": "official_temporal_consensus",
+      "reason": "The removed entry replayed the retained model, policy, and trades exactly."
+    },
+    {
+      "removed": "bridge_aware_control_60_89",
+      "retained_equivalent": "bridge_aware_specialist",
+      "replacement": "official_high_precision_loss_veto",
+      "reason": "The removed entry replayed the retained model, policy, and trades exactly."
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_path": "training-results/btc-5m-full-august-vwap-admission-20260321-20260901/20260901T163321Z/tournament.joblib",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "recording_commit": "d46e1906205cbf53af9d05faaf3f2aef16798d3b",
+      "model_tag": "model/btc-5m-full-august-vwap-admission-20260321-20260831-run-20260901T163321Z-full-month-positive-post-cutover-negative-not-deployed"
+    },
+    {
+      "artifact_path": "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/tournament.joblib",
+      "artifact_sha256": "5f34a841fcef2ae50fac193eb429a89fafd5173755d6cc15423674a198ffb6fe",
+      "recording_commit": "017a1721a3c7bfc7522cddda55252de71f9e1925",
+      "model_tag": "model/btc-5m-extended-specialist-strategy-20260321-20260826-run-20260901T231526Z"
+    },
+    {
+      "artifact_path": "training-results/btc-5m-champion-admission-tournament-20260321-20260901/20260902T025934Z/tournament.joblib",
+      "artifact_sha256": "a17631979c86a51067c4e31a4796fb83f4c4a66143e788d3601f62baed48135a",
+      "recording_commit": "56e57775692e251f504b7bd0b359ad24cfff9dd0",
+      "model_tag": "model/btc-5m-champion-admission-20260321-20260901-run-20260902T025934Z"
+    },
+    {
+      "artifact_path": "training-results/btc-5m-early-entry-robustness-20260321-20260901/20260902T191207Z/tournament.joblib",
+      "artifact_sha256": "f70332bbf05090fa9582e3986d2aa164def7136254b04476efb490bedc022b9b",
+      "recording_commit": "2606cd5ed39697f95b3fea0ce9aa2cfd7327163e",
+      "model_tag": "model/btc-5m-early-entry-robustness-20260321-20260901-run-20260902T191207Z"
+    }
+  ],
+  "champions": [
+    {
+      "ordinal": 1,
+      "candidate": "middle_specialist_refit",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "admission": "hybrid_full_vwap_no_l2",
+      "best_entry_bucket": "150_180",
+      "economic_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "predictive_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 58.475698041540014, "stress_net_pnl": 19.475698041539985, "profit_factor": 1.193293217016994, "expectancy_per_trade": 0.07496884364300002, "coverage": 0.08736559139784947, "trades": 780, "wins": 712, "losses": 68, "win_rate": 0.9128205128205128, "loss_recovery_wins": 8.774530924988074, "average_entry_second": 176.25641025641025, "average_share_cost": 0.8858809487179486, "maximum_drawdown": 52.7031344000002, "brier_score": 0.17184163845465714}
+    },
+    {
+      "ordinal": 2,
+      "candidate": "middle_q5_admission",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "admission": "hybrid_full_vwap_dual_l2",
+      "best_entry_bucket": "150_180",
+      "economic_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "predictive_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 31.88675797970001, "stress_net_pnl": 19.7367579797, "profit_factor": 1.2731351401616866, "expectancy_per_trade": 0.1312212262539095, "coverage": 0.02721774193548387, "trades": 243, "wins": 216, "losses": 27, "win_rate": 0.8888888888888888, "loss_recovery_wins": 6.2837005653492595, "average_entry_second": 175.7201646090535, "average_share_cost": 0.8487209053497942, "maximum_drawdown": 16.72010103073999, "brier_score": 0.17215367289427044}
+    },
+    {
+      "ordinal": 3,
+      "candidate": "crossvenue_middle_specialist",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "admission": "hybrid_full_vwap_dual_l2",
+      "best_entry_bucket": "150_180",
+      "economic_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "predictive_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 18.72532776770001, "stress_net_pnl": 3.1253277677000035, "profit_factor": 1.112043983369322, "expectancy_per_trade": 0.06001707617852567, "coverage": 0.03494623655913978, "trades": 312, "wins": 273, "losses": 39, "win_rate": 0.875, "loss_recovery_wins": 6.294715051459635, "average_entry_second": 168.41346153846155, "average_share_cost": 0.8491042948717947, "maximum_drawdown": 40.87134825415992, "brier_score": 0.1738202382896452}
+    },
+    {
+      "ordinal": 4,
+      "candidate": "middle_agreement_ensemble",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "admission": "hybrid_full_vwap_dual_l2",
+      "best_entry_bucket": "150_180",
+      "economic_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "predictive_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 10.986521283940007, "stress_net_pnl": -9.763478716060003, "profit_factor": 1.055371715872432, "expectancy_per_trade": 0.026473545262506042, "coverage": 0.04648297491039426, "trades": 415, "wins": 370, "losses": 45, "win_rate": 0.891566265060241, "loss_recovery_wins": 7.790830565726553, "average_entry_second": 175.57831325301206, "average_share_cost": 0.8736786987951806, "maximum_drawdown": 43.10070955001992, "brier_score": 0.17241012347347692}
+    },
+    {
+      "ordinal": 5,
+      "candidate": "price_time_calibrated_middle_ensemble",
+      "artifact_sha256": "3d2a66916a1fd18f219f55c202acca921428e50ed198f0dd79c29fe84b8543c9",
+      "admission": "hybrid_full_vwap_no_l2",
+      "best_entry_bucket": "150_180",
+      "economic_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "predictive_window": "[2026-08-01T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 78.96911999826, "stress_net_pnl": 34.46911999826, "profit_factor": 1.2380638479662118, "expectancy_per_trade": 0.08872934831265168, "coverage": 0.09968637992831542, "trades": 890, "wins": 815, "losses": 75, "win_rate": 0.9157303370786517, "loss_recovery_wins": 8.777145608861385, "average_entry_second": 172.6685393258427, "average_share_cost": 0.8860380898876405, "maximum_drawdown": 39.81912634600003, "brier_score": 0.17224472201556335}
+    },
+    {
+      "ordinal": 6,
+      "candidate": "extended_specialist_official",
+      "artifact_sha256": "5f34a841fcef2ae50fac193eb429a89fafd5173755d6cc15423674a198ffb6fe",
+      "admission": "programmatic",
+      "best_entry_bucket": "60_89",
+      "economic_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "predictive_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "metrics": {"net_pnl": 39.8805895875, "stress_net_pnl": 35.13058958749998, "profit_factor": 1.5001795299557825, "expectancy_per_trade": 0.41979567986842103, "coverage": 0.05497685185185185, "trades": 95, "wins": 70, "losses": 25, "win_rate": 0.7368421052631579, "loss_recovery_wins": 1.8664432783471785, "average_entry_second": 68.6842105263158, "average_share_cost": 0.6319421052631575, "maximum_drawdown": 15.298425412499988, "brier_score": 0.1512625307465688}
+    },
+    {
+      "ordinal": 7,
+      "candidate": "bridge_aware_specialist",
+      "artifact_sha256": "5f34a841fcef2ae50fac193eb429a89fafd5173755d6cc15423674a198ffb6fe",
+      "admission": "programmatic",
+      "best_entry_bucket": "60_89",
+      "economic_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "predictive_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "metrics": {"net_pnl": 37.52833744438, "stress_net_pnl": 18.77833744437998, "profit_factor": 1.1543749473876292, "expectancy_per_trade": 0.10007556651834666, "coverage": 0.2170138888888889, "trades": 375, "wins": 314, "losses": 61, "win_rate": 0.8373333333333334, "loss_recovery_wins": 4.459158608089627, "average_entry_second": 69.16, "average_share_cost": 0.8015145066666667, "maximum_drawdown": 31.672217555619998, "brier_score": 0.1512210780143603}
+    },
+    {
+      "ordinal": 8,
+      "candidate": "official_vwap_admission",
+      "artifact_sha256": "a17631979c86a51067c4e31a4796fb83f4c4a66143e788d3601f62baed48135a",
+      "admission": "learned_vwap_admission",
+      "best_entry_bucket": "60_89",
+      "economic_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "predictive_window": "[2026-08-20T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 49.868085347539974, "stress_net_pnl": 9.318085347539945, "profit_factor": 1.0832967641027145, "expectancy_per_trade": 0.06148962434961772, "coverage": 0.2392330383480826, "trades": 811, "wins": 655, "losses": 156, "win_rate": 0.8076448828606658, "loss_recovery_wins": 3.875870479679417, "average_entry_second": 66.55980271270037, "average_share_cost": 0.7788152157829838, "maximum_drawdown": 50.093154980379985, "brier_score": 0.15176912484454133}
+    },
+    {
+      "ordinal": 9,
+      "candidate": "official_temporal_consensus",
+      "artifact_sha256": "f70332bbf05090fa9582e3986d2aa164def7136254b04476efb490bedc022b9b",
+      "admission": "temporal_consensus_veto",
+      "best_entry_bucket": "60_89",
+      "economic_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "predictive_window": "[2026-08-20T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 24.80612666646, "stress_net_pnl": 20.906126666460004, "profit_factor": 1.3486658010172952, "expectancy_per_trade": 0.31802726495461536, "coverage": 0.023008849557522124, "trades": 78, "wins": 56, "losses": 22, "win_rate": 0.717948717948718, "loss_recovery_wins": 1.8873871818611514, "average_entry_second": 67.6923076923077, "average_share_cost": 0.6334530769230765, "maximum_drawdown": 15.531680412499998, "brier_score": 0.15176912484454133}
+    },
+    {
+      "ordinal": 10,
+      "candidate": "official_high_precision_loss_veto",
+      "artifact_sha256": "f70332bbf05090fa9582e3986d2aa164def7136254b04476efb490bedc022b9b",
+      "admission": "ml_loss_veto",
+      "best_entry_bucket": "60_89",
+      "economic_window": "[2026-08-20T00:00:00Z,2026-08-26T00:00:00Z)",
+      "predictive_window": "[2026-08-20T00:00:00Z,2026-09-01T00:00:00Z)",
+      "metrics": {"net_pnl": 18.391071666459993, "stress_net_pnl": 15.991071666459995, "profit_factor": 1.401036255272999, "expectancy_per_trade": 0.3831473263845832, "coverage": 0.01415929203539823, "trades": 48, "wins": 33, "losses": 15, "win_rate": 0.6875, "loss_recovery_wins": 1.5702662880564209, "average_entry_second": 68.95833333333333, "average_share_cost": 0.5891529166666669, "maximum_drawdown": 11.783025412499999, "brier_score": 0.15176912484454133}
+    }
+  ],
+  "required_reproducibility_caches": [
+    "data/btc-full-august-vwap-admission-20260321-20260901",
+    "data/btc-full-august-vwap-admission-tail-20260827-20260901",
+    "data/btc-hybrid-payoff-admission-20260321-20260827",
+    "data/btc-early-entry-robustness-20260321-20260901"
+  ],
+  "notes": [
+    "The collection creates no new model artifact and therefore does not create or move any model tag.",
+    "Artifact and result histories remain immutable and are not deployed by this collection freeze.",
+    "Coverage values retain each source tournament's original denominator and must not be summed across rows.",
+    "Economic results use the best isolated entry bucket and are not combined-window results."
+  ]
+}
