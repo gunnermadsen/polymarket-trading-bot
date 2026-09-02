@@ -1,11 +1,10 @@
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     env, fmt,
-    time::{Duration as StdDuration, SystemTime, UNIX_EPOCH},
+    time::Duration as StdDuration,
 };
 
 use anyhow::{bail, Context, Result};
-use chainlink_data_streams_report::report::Report;
 use chrono::{DateTime, TimeZone, Utc};
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -23,20 +22,13 @@ use crate::ingestion::{
         BinanceOpenInterestConfig, DEFAULT_BINANCE_FUTURES_DATA_BASE_URL,
         DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,
     },
-    chainlink_archive::{
-        decode_report, sign_request, ChainlinkCredentials, DEFAULT_CHAINLINK_BTCUSD_FEED_ID,
-        DEFAULT_CHAINLINK_REST_URL,
-    },
     polygon_chainlink_oracle::{DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY, DEFAULT_POLYGON_RPC_URL},
 };
 
 use super::directional_features::BTC_DIRECTIONAL_ORACLE_MAX_AGE_SECONDS;
 use super::types::{RealtimeState, ReferencePriceSource, ReferencePriceTick};
 
-const REFPRICE_HISTORY_SECONDS: i64 = 70;
 const ORACLE_HISTORY_SECONDS: i64 = 600;
-const REFPRICE_PAGE_LIMIT: usize = 100;
-const REFPRICE_CAPACITY: usize = 256;
 const RTDS_MID_CAPACITY: usize = 4_096;
 const ORACLE_CAPACITY: usize = 512;
 const OPEN_INTEREST_CAPACITY: usize = 32;
@@ -50,14 +42,10 @@ const POLYGON_CHAIN_ID: u128 = 137;
 #[derive(Clone)]
 pub struct DirectionalExternalRuntimeConfig {
     pub enabled: bool,
-    pub chainlink_rest_url: String,
-    pub chainlink_feed_id: String,
-    pub chainlink_credentials: Option<ChainlinkCredentials>,
     pub polygon_rpc_url: String,
     pub polygon_rpc_fallback_url: Option<String>,
     pub polygon_proxy_address: String,
     pub binance_futures_base_url: String,
-    pub refprice_poll_interval: StdDuration,
     pub oracle_poll_interval: StdDuration,
     pub open_interest_poll_interval: StdDuration,
 }
@@ -67,12 +55,6 @@ impl fmt::Debug for DirectionalExternalRuntimeConfig {
         formatter
             .debug_struct("DirectionalExternalRuntimeConfig")
             .field("enabled", &self.enabled)
-            .field("chainlink_rest_url", &self.chainlink_rest_url)
-            .field("chainlink_feed_id", &self.chainlink_feed_id)
-            .field(
-                "chainlink_credentials",
-                &self.chainlink_credentials.as_ref().map(|_| "[redacted]"),
-            )
             .field("polygon_rpc_url", &self.polygon_rpc_url)
             .field(
                 "polygon_rpc_fallback_url",
@@ -83,7 +65,6 @@ impl fmt::Debug for DirectionalExternalRuntimeConfig {
             )
             .field("polygon_proxy_address", &self.polygon_proxy_address)
             .field("binance_futures_base_url", &self.binance_futures_base_url)
-            .field("refprice_poll_interval", &self.refprice_poll_interval)
             .field("oracle_poll_interval", &self.oracle_poll_interval)
             .field(
                 "open_interest_poll_interval",
@@ -97,14 +78,10 @@ impl Default for DirectionalExternalRuntimeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            chainlink_rest_url: DEFAULT_CHAINLINK_REST_URL.to_string(),
-            chainlink_feed_id: DEFAULT_CHAINLINK_BTCUSD_FEED_ID.to_string(),
-            chainlink_credentials: None,
             polygon_rpc_url: DEFAULT_POLYGON_RPC_URL.to_string(),
             polygon_rpc_fallback_url: None,
             polygon_proxy_address: DEFAULT_POLYGON_CHAINLINK_BTCUSD_PROXY.to_string(),
             binance_futures_base_url: DEFAULT_BINANCE_FUTURES_DATA_BASE_URL.to_string(),
-            refprice_poll_interval: StdDuration::from_secs(2),
             oracle_poll_interval: StdDuration::from_secs(2),
             open_interest_poll_interval: StdDuration::from_secs(60),
         }
@@ -114,31 +91,9 @@ impl Default for DirectionalExternalRuntimeConfig {
 impl DirectionalExternalRuntimeConfig {
     pub fn from_env() -> Result<Self> {
         let enabled = env_bool("POLYMARKET_BTC_DIRECTIONAL_EXTERNAL_ENABLED", false)?;
-        let api_key = nonempty_env("POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY");
-        let api_secret = nonempty_env("POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET");
-        let chainlink_credentials = match (api_key, api_secret) {
-            (Some(api_key), Some(api_secret)) => Some(ChainlinkCredentials {
-                api_key,
-                api_secret,
-            }),
-            (None, None) => None,
-            _ => bail!(
-                "POLYMARKET_CHAINLINK_DATA_STREAMS_API_KEY and POLYMARKET_CHAINLINK_DATA_STREAMS_API_SECRET must be configured together"
-            ),
-        };
         let defaults = Self::default();
         let config = Self {
             enabled,
-            chainlink_rest_url: env_string(
-                "POLYMARKET_CHAINLINK_DATA_STREAMS_REST_URL",
-                &defaults.chainlink_rest_url,
-            ),
-            chainlink_feed_id: env_string(
-                "POLYMARKET_CHAINLINK_DATA_STREAMS_FEED_ID",
-                &defaults.chainlink_feed_id,
-            )
-            .to_ascii_lowercase(),
-            chainlink_credentials,
             polygon_rpc_url: env_string("POLYMARKET_POLYGON_RPC_URL", &defaults.polygon_rpc_url),
             polygon_rpc_fallback_url: nonempty_env("POLYMARKET_POLYGON_RPC_FALLBACK_URL"),
             polygon_proxy_address: env_string(
@@ -150,12 +105,6 @@ impl DirectionalExternalRuntimeConfig {
                 "POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL",
                 &defaults.binance_futures_base_url,
             ),
-            refprice_poll_interval: env_duration_millis(
-                "POLYMARKET_BTC_CHAINLINK_REFPRICE_POLL_MS",
-                defaults.refprice_poll_interval,
-                500,
-                5_000,
-            )?,
             oracle_poll_interval: env_duration_millis(
                 "POLYMARKET_BTC_POLYGON_ORACLE_POLL_MS",
                 defaults.oracle_poll_interval,
@@ -177,12 +126,6 @@ impl DirectionalExternalRuntimeConfig {
         if !self.enabled {
             return Ok(());
         }
-        if self.chainlink_credentials.is_none() {
-            bail!("directional external runtime requires Chainlink Data Streams credentials");
-        }
-        if !self.chainlink_rest_url.starts_with("https://") {
-            bail!("directional external Chainlink endpoint must use HTTPS");
-        }
         if !self.polygon_rpc_url.starts_with("https://") {
             bail!("directional external Polygon endpoint must use HTTPS");
         }
@@ -199,7 +142,6 @@ impl DirectionalExternalRuntimeConfig {
         if !self.binance_futures_base_url.starts_with("https://") {
             bail!("directional external Binance endpoint must use HTTPS");
         }
-        validate_hex(&self.chainlink_feed_id, 32, "Chainlink feed ID")?;
         validate_hex(&self.polygon_proxy_address, 20, "Polygon proxy address")?;
         Ok(())
     }
@@ -312,15 +254,6 @@ impl DirectionalExternalState {
         Ok(())
     }
 
-    fn merge_refprice(&mut self, points: Vec<ChainlinkRefPricePoint>, at: DateTime<Utc>) {
-        for point in points {
-            insert_bounded_first_seen(&mut self.refprice, point, REFPRICE_CAPACITY, |point| {
-                point.source_timestamp
-            });
-        }
-        self.record_success("refprice", at);
-    }
-
     fn merge_oracle(&mut self, points: Vec<PolygonOraclePoint>, at: DateTime<Utc>) {
         for point in points {
             let identity = (point.phase_id, point.round_id);
@@ -397,20 +330,14 @@ pub(crate) async fn run_directional_external_supervisor(
             return;
         }
     };
-    let mut refprice = RefPricePoller::new(&config);
     let mut oracle = PolygonOraclePoller::new(&config);
     let open_interest = BinanceOpenInterestConfig {
         base_url: config.binance_futures_base_url.clone(),
         symbol: DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL.to_string(),
     };
-    let mut refprice_tick = interval(config.refprice_poll_interval);
     let mut oracle_tick = interval(config.oracle_poll_interval);
     let mut open_interest_tick = interval(config.open_interest_poll_interval);
-    for ticker in [
-        &mut refprice_tick,
-        &mut oracle_tick,
-        &mut open_interest_tick,
-    ] {
+    for ticker in [&mut oracle_tick, &mut open_interest_tick] {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     }
 
@@ -419,16 +346,6 @@ pub(crate) async fn run_directional_external_supervisor(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     break;
-                }
-            }
-            _ = refprice_tick.tick() => {
-                let at = Utc::now();
-                match refprice.poll(&client, at).await {
-                    Ok(points) => state.write().await.directional_external.merge_refprice(points, at),
-                    Err(error) => {
-                        warn!(error = %error, "directional RefPrice refresh failed closed");
-                        state.write().await.directional_external.record_error("refprice", at, &error);
-                    }
                 }
             }
             _ = oracle_tick.tick() => {
@@ -467,92 +384,6 @@ pub(crate) async fn run_directional_external_supervisor(
             }
         }
     }
-}
-
-struct RefPricePoller {
-    rest_url: String,
-    feed_id: String,
-    credentials: ChainlinkCredentials,
-    next_timestamp: Option<i64>,
-}
-
-impl RefPricePoller {
-    fn new(config: &DirectionalExternalRuntimeConfig) -> Self {
-        Self {
-            rest_url: config.chainlink_rest_url.clone(),
-            feed_id: config.chainlink_feed_id.clone(),
-            credentials: config
-                .chainlink_credentials
-                .clone()
-                .expect("enabled external runtime validated Chainlink credentials"),
-            next_timestamp: None,
-        }
-    }
-
-    async fn poll(
-        &mut self,
-        client: &Client,
-        at: DateTime<Utc>,
-    ) -> Result<Vec<ChainlinkRefPricePoint>> {
-        let start = self
-            .next_timestamp
-            .unwrap_or_else(|| at.timestamp().saturating_sub(REFPRICE_HISTORY_SECONDS));
-        let path = refprice_reports_page_path(&self.feed_id, start);
-        let timestamp_ms = current_timestamp_millis()?;
-        let signature = sign_request(&self.credentials, "GET", &path, timestamp_ms)?;
-        let response = client
-            .get(format!("{}{}", self.rest_url.trim_end_matches('/'), path))
-            .header("Authorization", self.credentials.api_key.trim())
-            .header("X-Authorization-Timestamp", timestamp_ms.to_string())
-            .header("X-Authorization-Signature-SHA256", signature)
-            .send()
-            .await
-            .context("failed to request current Chainlink reports")?
-            .error_for_status()
-            .context("current Chainlink reports request was rejected")?;
-        let page = response
-            .json::<ReportsPage>()
-            .await
-            .context("invalid current Chainlink reports JSON")?;
-        let mut points = Vec::with_capacity(page.reports.len());
-        let mut latest = None;
-        for report in page.reports {
-            let record = decode_report(&report, &self.feed_id)?;
-            if record.source_timestamp > at {
-                continue;
-            }
-            let price = record.price;
-            let bid = record.bid;
-            let ask = record.ask;
-            if bid <= Decimal::ZERO || bid > price || price > ask {
-                bail!("current Chainlink report contained invalid prices");
-            }
-            latest = Some(record.source_timestamp.timestamp());
-            points.push(ChainlinkRefPricePoint {
-                source_timestamp: record.source_timestamp,
-                valid_from_timestamp: record.valid_from_timestamp,
-                available_at: at,
-                price,
-                bid,
-                ask,
-            });
-        }
-        if let Some(latest) = latest {
-            self.next_timestamp = Some(latest.saturating_add(1));
-        }
-        Ok(points)
-    }
-}
-
-fn refprice_reports_page_path(feed_id: &str, start_timestamp: i64) -> String {
-    format!(
-        "/api/v1/reports/page?feedID={feed_id}&startTimestamp={start_timestamp}&limit={REFPRICE_PAGE_LIMIT}"
-    )
-}
-
-#[derive(Debug, Deserialize)]
-struct ReportsPage {
-    reports: Vec<Report>,
 }
 
 struct PolygonOraclePoller {
@@ -920,18 +751,17 @@ fn validate_hex(value: &str, bytes: usize, role: &str) -> Result<()> {
     Ok(())
 }
 
-fn current_timestamp_millis() -> Result<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system time predates Unix epoch")?
-        .as_millis()
-        .try_into()
-        .context("system timestamp overflow")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabled_runtime_validates_without_chainlink_data_streams_credentials() {
+        let mut config = DirectionalExternalRuntimeConfig::default();
+        config.enabled = true;
+
+        config.validate().unwrap();
+    }
 
     #[test]
     fn directional_health_reports_complete_candle_window_and_fresh_oracle() {
@@ -983,15 +813,6 @@ mod tests {
 
         assert_eq!(state.chainlink_candle_complete_minutes(at), 1);
         assert!(!state.polygon_oracle_ready(at));
-    }
-
-    #[test]
-    fn refprice_page_request_respects_chainlink_limit() {
-        assert_eq!(
-            refprice_reports_page_path("feed", 1_700_000_000),
-            "/api/v1/reports/page?feedID=feed&startTimestamp=1700000000&limit=100"
-        );
-        assert!(REFPRICE_PAGE_LIMIT <= REFPRICE_CAPACITY);
     }
 
     #[test]
