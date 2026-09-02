@@ -207,12 +207,34 @@ def _source_manifest(root: Path, raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tail_manifest(paths: dict[str, Path], raw: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
-    return build_kraken_l2_features(
-        raw_root=paths["kraken_l2_raw_root"],
-        cache=paths["kraken_l2_tail_cache"],
-        start=datetime.fromisoformat(raw["windows"]["kraken_l2_tail_start"]),
-        end=datetime.fromisoformat(raw["windows"]["kraken_l2_tail_end"]),
-    )
+    start = datetime.fromisoformat(raw["windows"]["kraken_l2_tail_start"])
+    end = datetime.fromisoformat(raw["windows"]["kraken_l2_tail_end"])
+    try:
+        return build_kraken_l2_features(
+            raw_root=paths["kraken_l2_raw_root"],
+            cache=paths["kraken_l2_tail_cache"],
+            start=start,
+            end=end,
+        )
+    except RuntimeError as error:
+        if str(error) != "Kraken L2 archive contains no files in the configured interval":
+            raise
+        manifest = {
+            "schema_version": "btc-kraken-l2-update-flow-v1",
+            "range_start": start.isoformat(),
+            "range_end_exclusive": end.isoformat(),
+            "days_present": 0,
+            "partitions": [],
+            "read_only_source": True,
+            "database_mutations": False,
+            "status": "no_usable_parquet_partitions",
+            "unavailable_markers": len(
+                list(paths["kraken_l2_raw_root"].glob("????-??-??/??/*.unavailable.json"))
+            ),
+        }
+        destination = paths["kraken_l2_tail_cache"] / "kraken-l2-manifest.json"
+        _write_json(destination, manifest)
+        return destination, manifest
 
 
 def _panel_columns(schema: pl.Schema, model_features: tuple[str, ...]) -> tuple[str, ...]:

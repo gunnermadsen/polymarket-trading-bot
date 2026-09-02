@@ -12,6 +12,7 @@ from btc_directional_model.early_entry_robustness_tournament import (
     _attach_l2_confirmation,
     _bands,
     _load_config,
+    _tail_manifest,
 )
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -65,3 +66,26 @@ def test_l2_availability_uses_numeric_evidence_not_boolean_flags() -> None:
 
 def test_residual_artifact_type_is_importable() -> None:
     assert L2ResidualModel.__module__ == ("btc_directional_model.early_entry_robustness_tournament")
+
+
+def test_missing_l2_tail_is_recorded_without_dropping_the_holdout(tmp_path: Path) -> None:
+    raw_root = tmp_path / "raw"
+    marker = raw_root / "2026-08-20" / "00" / "BTC_USD_orderbook.parquet.unavailable.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}\n")
+    destination, manifest = _tail_manifest(
+        {
+            "kraken_l2_raw_root": raw_root,
+            "kraken_l2_tail_cache": tmp_path / "cache",
+        },
+        {
+            "windows": {
+                "kraken_l2_tail_start": "2026-08-20T00:00:00Z",
+                "kraken_l2_tail_end": "2026-09-01T00:00:00Z",
+            }
+        },
+    )
+    assert destination.is_file()
+    assert manifest["partitions"] == []
+    assert manifest["days_present"] == 0
+    assert manifest["unavailable_markers"] == 1
