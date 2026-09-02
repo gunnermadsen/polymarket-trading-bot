@@ -40,6 +40,22 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
             weather::WeatherEnvironmentBackfill::hrrr()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
+        Arc::new(
+            polymarket::PolymarketBtcBackfill::market_contracts()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            polymarket::PolymarketBtcBackfill::resolutions()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            polymarket::PolymarketBtcBackfill::orderbook_events()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            polymarket::PolymarketBtcBackfill::execution_snapshots()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
     ];
     StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
 }

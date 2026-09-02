@@ -19,6 +19,8 @@ chainlink-data-streams-report = "1.2.2"
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
+md-5 = "0.10"
+parquet = { version = "56.2", default-features = false, features = ["arrow", "snap", "zstd"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 prometheus-client = "0.23"
 serde = { version = "1.0", features = ["derive"] }
@@ -39,6 +41,7 @@ rust_decimal = { version = "1.37", features = ["serde-with-str"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [lints.rust]
