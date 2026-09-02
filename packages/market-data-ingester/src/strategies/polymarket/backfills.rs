@@ -189,7 +189,7 @@ async fn completed_source_outcome(
     durable_target: &str,
 ) -> Result<Option<BackfillOutcome>, BackfillExecutionError> {
     let row = sqlx::query(
-        "SELECT record_count,minimum_source_timestamp,maximum_source_timestamp,metadata,strategy_key FROM ingester.backfill_artifacts WHERE provider=$1 AND logical_key=$2 AND durable_target=$3 AND status='completed' ORDER BY completed_at DESC NULLS LAST LIMIT 1",
+        "SELECT record_count,minimum_source_timestamp,maximum_source_timestamp,metadata,strategy_key FROM ingester.backfill_artifacts WHERE provider=$1 AND logical_key=$2 AND (durable_target=$3 OR durable_target IS NULL) AND status='completed' ORDER BY completed_at DESC NULLS LAST LIMIT 1",
     )
     .bind(provider)
     .bind(logical_key)
@@ -474,11 +474,9 @@ async fn persist_reference_fact(
         let stored_value: Decimal = row.try_get("value").map_err(database_error)?;
         let stored_at: DateTime<Utc> =
             row.try_get("source_effective_at").map_err(database_error)?;
-        let stored_hash: String = row.try_get("payload_sha256").map_err(database_error)?;
-        if stored_value != fact.value
-            || stored_at != fact.source_effective_at
-            || stored_hash != fact.payload_sha256
-        {
+        let _stored_hash: String = row.try_get("payload_sha256").map_err(database_error)?;
+        // Gamma's surrounding response can change after this immutable fact is recorded.
+        if stored_value != fact.value || stored_at != fact.source_effective_at {
             return Err(integrity(
                 "market_reference_conflict",
                 format!(
