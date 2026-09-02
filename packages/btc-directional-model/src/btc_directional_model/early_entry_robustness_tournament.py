@@ -969,27 +969,46 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     candidate_contract = {
         row["name"]: {"kind": row["kind"], "base": row["base"]} for row in raw["candidates"]
     }
-    policies = {
-        "official_early_control": prior_admission["policies"]["official_specialist_control"],
-        "bridge_early_control": prior_admission["policies"]["bridge_aware_control"],
-    }
-    policy_evidence: dict[str, Any] = {}
-    (
-        policies["official_dualvenue_l2_residual"],
-        policy_evidence["official_dualvenue_l2_residual"],
-    ) = _select_programmatic(development_frames["official_dualvenue_l2_residual"], raw)
-    for candidate in LEARNED_ADMISSION:
-        policies[candidate], policy_evidence[candidate] = _select_admission(
-            development_frames[candidate], raw
-        )
-    policies["official_temporal_consensus"], policy_evidence["official_temporal_consensus"] = (
-        _select_programmatic(
+    selection_path = run_dir / "selection-freeze.json"
+    if resume_run and selection_path.is_file():
+        selection = json.loads(selection_path.read_text())
+        policies = selection["policies"]
+        policy_evidence = selection["development_evidence"]
+        selection_time = selection["frozen_at"]
+    else:
+        policies = {
+            "official_early_control": prior_admission["policies"]["official_specialist_control"],
+            "bridge_early_control": prior_admission["policies"]["bridge_aware_control"],
+        }
+        policy_evidence: dict[str, Any] = {}
+        (
+            policies["official_dualvenue_l2_residual"],
+            policy_evidence["official_dualvenue_l2_residual"],
+        ) = _select_programmatic(development_frames["official_dualvenue_l2_residual"], raw)
+        for candidate in LEARNED_ADMISSION:
+            policies[candidate], policy_evidence[candidate] = _select_admission(
+                development_frames[candidate], raw
+            )
+        (
+            policies["official_temporal_consensus"],
+            policy_evidence["official_temporal_consensus"],
+        ) = _select_programmatic(
             development_frames["official_temporal_consensus"], raw, gate="temporal"
         )
-    )
-    policies["official_dualvenue_l2_veto"], policy_evidence["official_dualvenue_l2_veto"] = (
-        _select_programmatic(development_frames["official_dualvenue_l2_veto"], raw, gate="l2")
-    )
+        (
+            policies["official_dualvenue_l2_veto"],
+            policy_evidence["official_dualvenue_l2_veto"],
+        ) = _select_programmatic(development_frames["official_dualvenue_l2_veto"], raw, gate="l2")
+        selection_time = datetime.now(UTC).isoformat()
+        _write_json(
+            selection_path,
+            {
+                "frozen_at": selection_time,
+                "policies": policies,
+                "development_evidence": policy_evidence,
+                "sealed_loaded_after_freeze": True,
+            },
+        )
     development_economic: dict[str, Any] = {}
     development_predictive: dict[str, Any] = {}
     for candidate in ALL_CANDIDATES:
@@ -1000,17 +1019,6 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         development_predictive[candidate] = predictive_metrics(
             development_candidate_predictions[candidate]
         )
-    selection_time = datetime.now(UTC).isoformat()
-    _write_json(
-        run_dir / "selection-freeze.json",
-        {
-            "frozen_at": selection_time,
-            "policies": policies,
-            "development_evidence": policy_evidence,
-            "sealed_loaded_after_freeze": True,
-        },
-    )
-
     tail_path, tail = _tail_manifest(paths, raw)
     source["kraken_l2_tail"] = {
         "manifest_path": str(tail_path),
