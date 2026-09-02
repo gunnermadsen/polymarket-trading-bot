@@ -277,6 +277,7 @@ services:
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
       INGESTER_KRAKEN_DATA_ROOT: "/var/lib/kraken-data"
       INGESTER_FINANCIAL_DATA_ROOT: "/var/lib/financial-data"
+      FRED_API_KEY: "${FRED_API_KEY:-}"
       INGESTER_WEATHER_RAW_ROOT: "/var/lib/weather/raw"
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather

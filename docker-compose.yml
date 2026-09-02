@@ -233,6 +233,7 @@ services:
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
       INGESTER_KRAKEN_DATA_ROOT: "/var/lib/kraken-data"
       INGESTER_FINANCIAL_DATA_ROOT: "/var/lib/financial-data"
+      FRED_API_KEY: "${FRED_API_KEY:-}"
       INGESTER_WEATHER_RAW_ROOT: "/var/lib/weather/raw"
       INGESTER_WEATHER_CURATED_ROOT: "/var/lib/weather/curated"
     volumes:
