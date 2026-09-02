@@ -142,6 +142,44 @@ fn raw_weather_backfills_are_native_and_one_strategy_per_file() {
     }
 }
 
+#[test]
+fn economic_backfills_use_one_unified_strategy_per_file() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "src/strategies/economic/fred_economic_series_backfill.rs",
+        "src/strategies/economic/new_york_fed_reference_rates_backfill.rs",
+        "src/strategies/economic/new_york_fed_soma_holdings_backfill.rs",
+        "src/strategies/economic/cftc_legacy_futures_backfill.rs",
+        "src/strategies/economic/cftc_traders_financial_futures_backfill.rs",
+        "src/strategies/treasury/us_treasury_auctions_backfill.rs",
+        "src/strategies/treasury/us_treasury_debt_to_penny_backfill.rs",
+        "src/strategies/treasury/us_treasury_deposits_withdrawals_backfill.rs",
+        "src/strategies/treasury/us_treasury_operating_cash_balance_backfill.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert_eq!(
+            source.matches("define_economic_strategy!").count()
+                + source.matches("define_treasury_strategy!").count(),
+            1,
+            "{relative} must define exactly one strategy"
+        );
+        assert!(!source.contains("RealtimeWorkerStrategy"), "{relative}");
+    }
+
+    let support =
+        fs::read_to_string(root.join("src/strategies/economic/backfill_support.rs")).unwrap();
+    for forbidden in [
+        "financial_data.backfill_jobs",
+        "financial_data.worker_status",
+        "financial_data.backfill_job_events",
+    ] {
+        assert!(
+            !support.contains(forbidden),
+            "economic strategies reference legacy queue state: {forbidden}"
+        );
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

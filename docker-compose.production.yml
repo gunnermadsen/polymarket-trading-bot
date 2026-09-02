@@ -276,11 +276,13 @@ services:
       KRAKEN_FUTURES_BASE_URL: "https://futures.kraken.com"
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
       INGESTER_KRAKEN_DATA_ROOT: "/var/lib/kraken-data"
+      INGESTER_FINANCIAL_DATA_ROOT: "/var/lib/financial-data"
       INGESTER_WEATHER_RAW_ROOT: "/var/lib/weather/raw"
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
       - ${BINANCE_L2_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-l2}:/var/lib/binance-l2
       - ${KRAKEN_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/kraken-data}:/var/lib/kraken-data
+      - ${FINANCIAL_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/global-financial-data}:/var/lib/financial-data
     depends_on:
       ingester-master:
         condition: service_healthy

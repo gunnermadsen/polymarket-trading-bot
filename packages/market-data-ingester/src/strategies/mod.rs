@@ -10,12 +10,14 @@ use crate::{
 mod backfill_support;
 pub mod binance;
 pub mod chainlink;
+pub mod economic;
 pub mod kraken;
 pub mod pmdata;
 pub mod polygon;
 pub mod polymarket;
 mod raw_archive;
 pub mod temperature;
+pub mod treasury;
 pub mod weather;
 
 pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
@@ -174,6 +176,42 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
+            economic::FredEconomicSeriesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            economic::NewYorkFedReferenceRatesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            economic::NewYorkFedSomaHoldingsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            economic::CftcLegacyFuturesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            economic::CftcTradersFinancialFuturesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            treasury::UsTreasuryAuctionsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            treasury::UsTreasuryDebtToPennyBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            treasury::UsTreasuryDepositsWithdrawalsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            treasury::UsTreasuryOperatingCashBalanceBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
             polymarket::PolymarketBtcMarketContractsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
@@ -239,6 +277,15 @@ mod tests {
             "kraken_slippage_backfill",
             "kraken_funding_rates_backfill",
             "kraken_spot_btcusd_trade_prints_one_second_ohlcv_backfill",
+            "fred_economic_series_backfill",
+            "new_york_fed_reference_rates_backfill",
+            "new_york_fed_soma_holdings_backfill",
+            "cftc_legacy_futures_backfill",
+            "cftc_traders_financial_futures_backfill",
+            "us_treasury_auctions_backfill",
+            "us_treasury_debt_to_penny_backfill",
+            "us_treasury_deposits_withdrawals_backfill",
+            "us_treasury_operating_cash_balance_backfill",
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
         }
