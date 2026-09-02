@@ -418,12 +418,17 @@ struct ReferenceFact<'a> {
     evidence: &'a Value,
 }
 
+pub(super) fn normalize_reference_value(value: Decimal) -> Decimal {
+    value.round_dp(10)
+}
+
 async fn persist_reference_fact(
     context: &BackfillContext,
     fact: ReferenceFact<'_>,
 ) -> Result<(), BackfillExecutionError> {
     let mut tx = context.pool.begin().await.map_err(database_error)?;
     require_lease(&mut tx, context).await?;
+    let value = normalize_reference_value(fact.value);
     let inserted = sqlx::query(
         r#"
         INSERT INTO polymarket.btc_market_reference_facts (
@@ -436,7 +441,7 @@ async fn persist_reference_fact(
     .bind(fact.market_id)
     .bind(fact.artifact_id)
     .bind(fact.fact_type)
-    .bind(fact.value)
+    .bind(value)
     .bind(fact.source_effective_at)
     .bind(fact.payload_sha256)
     .bind(fact.evidence)
@@ -458,7 +463,7 @@ async fn persist_reference_fact(
             row.try_get("source_effective_at").map_err(database_error)?;
         let _stored_hash: String = row.try_get("payload_sha256").map_err(database_error)?;
         // Gamma's surrounding response can change after this immutable fact is recorded.
-        if stored_value != fact.value || stored_at != fact.source_effective_at {
+        if stored_value != value || stored_at != fact.source_effective_at {
             return Err(integrity(
                 "market_reference_conflict",
                 format!(
@@ -1224,7 +1229,6 @@ impl BackfillSupport {
         }
         Ok(shards)
     }
-
 }
 
 fn env_url(name: &str, default: &'static str) -> Arc<str> {

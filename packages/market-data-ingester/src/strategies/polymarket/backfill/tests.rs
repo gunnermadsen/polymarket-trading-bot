@@ -7,12 +7,14 @@ use crate::domain::{BackfillRequest, BackfillWorkerStrategy, StrategyCapability}
 
 use super::{
     support::{
-        parse_gamma_btc_interval_event, EXECUTION_SNAPSHOTS_BACKFILL_KEY,
-        MARKET_CONTRACTS_BACKFILL_KEY, ORDERBOOK_EVENTS_BACKFILL_KEY, RESOLUTIONS_BACKFILL_KEY,
+        normalize_reference_value, parse_gamma_btc_interval_event,
+        EXECUTION_SNAPSHOTS_BACKFILL_KEY, MARKET_CONTRACTS_BACKFILL_KEY,
+        ORDERBOOK_EVENTS_BACKFILL_KEY, RESOLUTIONS_BACKFILL_KEY,
     },
     PolymarketBtcExecutionSnapshotsBackfill, PolymarketBtcMarketContractsBackfill,
     PolymarketBtcOrderbookEventsBackfill, PolymarketBtcResolutionsBackfill,
 };
+use rust_decimal::Decimal;
 
 fn request(key: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> BackfillRequest {
     serde_json::from_value(json!({
@@ -99,4 +101,12 @@ fn original_gamma_contract_fixture_parses_without_contract_drift() {
     assert_eq!(market.window_start, start);
     assert_eq!(market.window_end, start + Duration::minutes(5));
     assert_ne!(market.up_token_id, market.down_token_id);
+}
+
+#[test]
+fn gamma_reference_values_match_the_durable_numeric_scale() {
+    assert_eq!(
+        normalize_reference_value("66134.39593420082".parse::<Decimal>().unwrap()),
+        "66134.3959342008".parse::<Decimal>().unwrap()
+    );
 }
