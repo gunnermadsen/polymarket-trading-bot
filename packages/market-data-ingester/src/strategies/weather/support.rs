@@ -1,40 +1,19 @@
 use std::{process::Stdio, sync::Arc};
 
-use async_trait::async_trait;
 use chrono::{Datelike, TimeZone, Utc};
 use tokio::{io::AsyncReadExt, process::Command};
 
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRequest,
-    BackfillShard, BackfillWorkerStrategy, StrategyCapability, StrategyDescriptor,
-    ValidatedBackfillRequest,
+    BackfillShard, StrategyCapability, StrategyDescriptor, ValidatedBackfillRequest,
 };
 
-const GOES_KEY: &str = "goes_abi_klga_features";
-const HRRR_KEY: &str = "hrrr_environment_features";
-
-pub struct WeatherEnvironmentBackfill {
+pub(super) struct WeatherBackfillSupport {
     descriptor: StrategyDescriptor,
 }
 
-impl WeatherEnvironmentBackfill {
-    pub fn goes() -> Result<Self, BackfillExecutionError> {
-        Self::new(
-            GOES_KEY,
-            "GOES ABI KLGA environmental features",
-            "Collects historical GOES ABI satellite features for KLGA",
-        )
-    }
-
-    pub fn hrrr() -> Result<Self, BackfillExecutionError> {
-        Self::new(
-            HRRR_KEY,
-            "HRRR KLGA environmental features",
-            "Collects historical HRRR environmental features for KLGA",
-        )
-    }
-
-    fn new(
+impl WeatherBackfillSupport {
+    pub(super) fn new(
         key: &'static str,
         name: &'static str,
         description: &'static str,
@@ -52,15 +31,12 @@ impl WeatherEnvironmentBackfill {
         descriptor.validate()?;
         Ok(Self { descriptor })
     }
-}
 
-#[async_trait]
-impl BackfillWorkerStrategy for WeatherEnvironmentBackfill {
-    fn descriptor(&self) -> &StrategyDescriptor {
+    pub(super) fn descriptor(&self) -> &StrategyDescriptor {
         &self.descriptor
     }
 
-    fn validate_request(
+    pub(super) fn validate_request(
         &self,
         request: &BackfillRequest,
     ) -> Result<ValidatedBackfillRequest, BackfillExecutionError> {
@@ -94,7 +70,7 @@ impl BackfillWorkerStrategy for WeatherEnvironmentBackfill {
         })
     }
 
-    fn plan_shards(
+    pub(super) fn plan_shards(
         &self,
         request: &ValidatedBackfillRequest,
     ) -> Result<Vec<BackfillShard>, BackfillExecutionError> {
@@ -133,7 +109,7 @@ impl BackfillWorkerStrategy for WeatherEnvironmentBackfill {
         Ok(shards)
     }
 
-    async fn execute_backfill(
+    pub(super) async fn execute_backfill(
         &self,
         context: BackfillContext,
         shard: BackfillShard,
@@ -216,33 +192,4 @@ impl BackfillWorkerStrategy for WeatherEnvironmentBackfill {
 
 fn execution_error(code: &'static str, message: impl Into<String>) -> BackfillExecutionError {
     BackfillExecutionError::new(BackfillFailureKind::TransientSource, code, message)
-}
-
-#[cfg(test)]
-mod tests {
-    use chrono::{TimeZone, Utc};
-    use serde_json::json;
-
-    use super::*;
-    #[test]
-    fn weather_backfills_plan_monthly_shards() {
-        let strategy = WeatherEnvironmentBackfill::goes().unwrap();
-        let request: BackfillRequest = serde_json::from_value(json!({
-            "strategy_key": GOES_KEY,
-            "range": {
-                "start": "2020-01-15T00:00:00Z",
-                "end": "2020-03-02T00:00:00Z"
-            },
-            "parameters": {"feature_schema_version":"goes-klga-v2"}
-        }))
-        .unwrap();
-        let validated = strategy.validate_request(&request).unwrap();
-        let shards = strategy.plan_shards(&validated).unwrap();
-        assert_eq!(shards.len(), 3);
-        assert_eq!(
-            shards[0].range_end,
-            Utc.with_ymd_and_hms(2020, 2, 1, 0, 0, 0).unwrap()
-        );
-        assert_eq!(shards[2].range_end, request.range.end);
-    }
 }

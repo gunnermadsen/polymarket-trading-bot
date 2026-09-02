@@ -49,11 +49,11 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            weather::WeatherEnvironmentBackfill::goes()
+            weather::GoesAbiKlgaFeaturesBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            weather::WeatherEnvironmentBackfill::hrrr()
+            weather::HrrrEnvironmentFeaturesBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
