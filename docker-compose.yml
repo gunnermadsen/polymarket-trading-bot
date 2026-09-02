@@ -185,6 +185,7 @@ services:
       INGESTER_MODE: "master"
       INGESTER_INSTANCE: "ingester-master"
       INGESTER_API_BIND: "0.0.0.0:8098"
+      MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "1"
     ports:
       - "127.0.0.1:8099:8098"
     depends_on:
