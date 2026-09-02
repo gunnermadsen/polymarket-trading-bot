@@ -42,6 +42,12 @@ impl StrategyDescriptor {
                 "strategy contract version must be positive",
             ));
         }
+        if self.capabilities != [StrategyCapability::Backfill] {
+            return Err(BackfillExecutionError::invalid(
+                "strategy_capability_invalid",
+                "a backfill strategy descriptor must declare only the backfill capability",
+            ));
+        }
         if self.capabilities.contains(&StrategyCapability::Backfill)
             && (self.request_schema_version.is_none() || self.maximum_shards == 0)
         {

@@ -33,6 +33,22 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
+            binance::BinanceFuturesFiveMinuteOpenInterestBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            binance::BinanceFuturesL2OneSecondFeaturesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            binance::BinanceSpotL2OneSecondFeaturesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            binance::BinanceSpotOneSecondOhlcvBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
             weather::WeatherEnvironmentBackfill::goes()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
@@ -58,4 +74,33 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
         ),
     ];
     StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn realtime_and_backfill_strategy_identities_are_disjoint() {
+        let registry = registry().unwrap();
+        let realtime = registry
+            .keys()
+            .map(|key| key.as_str().to_owned())
+            .collect::<BTreeSet<_>>();
+        let backfills = registry
+            .backfills()
+            .map(|strategy| strategy.descriptor().strategy_key.to_string())
+            .collect::<BTreeSet<_>>();
+        assert!(realtime.is_disjoint(&backfills));
+        for expected in [
+            "binance_spot_btcusdt_aggregate_trades_backfill",
+            "binance_futures_btcusdt_five_minute_open_interest_backfill",
+            "binance_futures_btcusdt_l2_one_second_features_backfill",
+            "binance_spot_btcusdt_l2_one_second_features_backfill",
+            "binance_spot_btcusdt_one_second_ohlcv_backfill",
+        ] {
+            assert!(backfills.contains(expected), "missing {expected}");
+        }
+    }
 }

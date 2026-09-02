@@ -15,7 +15,8 @@ use crate::domain::{
     ValidatedBackfillRequest,
 };
 
-const STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades";
+pub const STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades_backfill";
+const REALTIME_STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades";
 const SYMBOL: &str = "BTCUSDT";
 const SOURCE: &str = "binance_spot";
 const REST_URL: &str = "https://data-api.binance.vision/api/v3/aggTrades";
@@ -33,7 +34,7 @@ impl BinanceSpotAggregateTradesBackfill {
             strategy_key: Arc::from(STRATEGY_KEY),
             name: Arc::from("Binance Spot BTCUSDT aggregate trades"),
             description: Arc::from("Collects historical Binance BTCUSDT aggregate trades"),
-            capabilities: vec![StrategyCapability::Realtime, StrategyCapability::Backfill],
+            capabilities: vec![StrategyCapability::Backfill],
             strategy_contract_version: 1,
             request_schema_version: Some(1),
             shardable: true,
@@ -402,7 +403,7 @@ async fn persist(
     })
     .bind(record_count)
     .bind(&content_sha256)
-    .bind(STRATEGY_KEY)
+    .bind(REALTIME_STRATEGY_KEY)
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
@@ -424,7 +425,7 @@ async fn persist(
                 .push_bind(trade.buyer_maker)
                 .push_bind(trade.best_match)
                 .push_bind(&trade.payload_sha256)
-                .push_bind(STRATEGY_KEY)
+                .push_bind(REALTIME_STRATEGY_KEY)
                 .push_bind(capture_artifact_id);
         });
         builder.push(" ON CONFLICT (symbol,trade_timestamp,aggregate_trade_id) DO NOTHING");
@@ -535,6 +536,11 @@ mod tests {
     #[test]
     fn shard_plan_is_deterministic_and_minute_bounded() {
         let strategy = BinanceSpotAggregateTradesBackfill::new().unwrap();
+        assert_eq!(
+            strategy.descriptor().capabilities,
+            vec![StrategyCapability::Backfill]
+        );
+        assert_ne!(STRATEGY_KEY, REALTIME_STRATEGY_KEY);
         let start = "2026-08-01T00:15:00Z".parse().unwrap();
         let request = ValidatedBackfillRequest {
             strategy_key: Arc::from(STRATEGY_KEY),

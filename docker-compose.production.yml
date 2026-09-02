@@ -263,6 +263,12 @@ services:
       INGESTER_WORKER_MAX_BACKFILLS: "1"
       INGESTER_IMAGE_DIGEST: "${INGESTER_IMAGE_DIGEST:?INGESTER_IMAGE_DIGEST is required}"
       INGESTER_GIT_REVISION: "${INGESTER_GIT_REVISION:?INGESTER_GIT_REVISION is required}"
+      BINANCE_ARCHIVE_BASE_URL: "https://data.binance.vision"
+      BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
+      CRYPTOHFT_BASE_URL: "https://api.cryptohftdata.com"
+      INGESTER_BINANCE_CACHE_DIRECTORY: "/var/lib/binance-l2/binance-public"
+      INGESTER_CRYPTOHFT_ARCHIVE_ROOT: "/var/lib/binance-l2"
+      INGESTER_CRYPTOHFT_TEMPORARY_DIRECTORY: "/var/lib/binance-l2/tmp"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache"
       GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
       HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
@@ -276,6 +282,7 @@ services:
       HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
+      - ${BINANCE_L2_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-l2}:/var/lib/binance-l2
     depends_on:
       ingester-master:
         condition: service_healthy

@@ -56,7 +56,11 @@ fn compose_exposes_only_standard_ingester_roles() {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| name.starts_with("docker-compose") && name.ends_with(".yml"))
         .collect::<Vec<_>>();
-    assert_eq!(compose_files.len(), 2, "unexpected Compose files: {compose_files:?}");
+    assert_eq!(
+        compose_files.len(),
+        2,
+        "unexpected Compose files: {compose_files:?}"
+    );
     assert!(!root
         .join("packages/market-data-ingester/docker-compose.yml")
         .exists());

@@ -10,8 +10,8 @@ mod watermark;
 
 pub use artifact::{ArtifactStatus, CaptureArtifact};
 pub use backfill::{
-    BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRequest,
-    BackfillShard, BackfillWorkerStrategy, ExecutionSelector, StrategyCapability,
+    BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRange,
+    BackfillRequest, BackfillShard, BackfillWorkerStrategy, ExecutionSelector, StrategyCapability,
     StrategyDescriptor, ValidatedBackfillRequest,
 };
 pub use gap::{DataGap, GapStatus};
