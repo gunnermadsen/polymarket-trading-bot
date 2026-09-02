@@ -607,6 +607,7 @@ def _capacity_metrics(trades: pl.DataFrame, raw: dict[str, Any]) -> dict[str, An
 
 
 def _report(metrics: dict[str, Any]) -> str:
+    fmt = lambda value, digits=3: "—" if value is None else f"{value:.{digits}f}"
     lines = [
         "# Champion Admission Tournament",
         "",
@@ -621,10 +622,67 @@ def _report(metrics: dict[str, Any]) -> str:
     for candidate in ALL_CANDIDATES:
         row = metrics["sealed_economic"][candidate]["combined_60_180"]
         pred = metrics["sealed_predictive"][candidate]
-        fmt = lambda value, digits=3: "—" if value is None else f"{value:.{digits}f}"
         lines.append(
             f"| {candidate} | {metrics['candidate_contract'][candidate]['admission']} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['market_coverage']:.2%} | {row['winning_trades']}/{row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(pred['brier_score'], 4)} |"
         )
+    lines.extend(
+        [
+            "",
+            "## Results by entry-time bucket",
+            "",
+            "| Candidate | Bucket | PnL | Stress PnL | PF | Expectancy | Coverage | Trades | W/L | Win rate | Recovery wins/loss | Avg entry | Avg cost | Max drawdown |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for candidate in ALL_CANDIDATES:
+        for bucket, _, _ in _bands_from_metrics():
+            row = metrics["sealed_economic"][candidate][bucket]
+            lines.append(
+                f"| {candidate} | {bucket.replace('_', '–')} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['market_coverage']:.2%} | {row['trades']} | {row['winning_trades']}/{row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(row['maximum_drawdown'])} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Predictive metrics",
+            "",
+            "| Candidate | Rows | Markets | Brier | Log loss | Accuracy | ECE-15 |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for candidate in ALL_CANDIDATES:
+        row = metrics["sealed_predictive"][candidate]
+        lines.append(
+            f"| {candidate} | {row['rows']} | {row['markets']} | {fmt(row['brier_score'], 4)} | {fmt(row['log_loss'], 4)} | {fmt(row['accuracy'], 4)} | {fmt(row['ece_15'], 4)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Sealed subperiods",
+            "",
+            "| Candidate | Subperiod | PnL | Stress PnL | PF | Expectancy | Coverage | Trades | W/L |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for candidate in ALL_CANDIDATES:
+        for subperiod, row in metrics["sealed_economic"][candidate]["subperiods"].items():
+            lines.append(
+                f"| {candidate} | {subperiod.replace('_', '–')} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['market_coverage']:.2%} | {row['trades']} | {row['winning_trades']}/{row['losing_trades']} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## VWAP capacity curve",
+            "",
+            "| Candidate | Quantity | Trades | PnL | Stress PnL | PF | Expectancy |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for candidate in ALL_CANDIDATES:
+        for quantity in VWAP_QUANTITIES:
+            row = metrics["sealed_economic"][candidate]["capacity_curve"][str(quantity)]
+            lines.append(
+                f"| {candidate} | {quantity} | {row['trades']} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} |"
+            )
     lines.extend(
         [
             "",
@@ -639,6 +697,15 @@ def _report(metrics: dict[str, Any]) -> str:
     for limitation in metrics["limitations"]:
         lines.append(f"- Limitation: {limitation}")
     return "\n".join(lines) + "\n"
+
+
+def _bands_from_metrics() -> tuple[tuple[str, int, int], ...]:
+    return (
+        ("60_89", 60, 89),
+        ("90_119", 90, 119),
+        ("120_149", 120, 149),
+        ("150_180", 150, 180),
+    )
 
 
 def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:

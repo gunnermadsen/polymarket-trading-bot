@@ -1,0 +1,11 @@
+{
+  "authentic_only_filter": false,
+  "development_end_exclusive": "2026-08-20 00:00:00+00:00",
+  "development_start": "2026-08-14 00:00:00+00:00",
+  "fit_end_exclusive": "2026-08-14 00:00:00+00:00",
+  "heldout_excluded_from_admission_fit_and_policy_selection": true,
+  "market_disjoint": true,
+  "sealed_end_exclusive": "2026-09-01 00:00:00+00:00",
+  "sealed_start": "2026-08-20 00:00:00+00:00",
+  "source_start": "2026-03-21 00:00:00+00:00"
+}
