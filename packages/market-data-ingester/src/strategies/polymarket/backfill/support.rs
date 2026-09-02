@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{bail, Context as _, Result as AnyResult};
-use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Timelike, Utc};
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -12,22 +11,21 @@ use uuid::Uuid;
 
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRequest,
-    BackfillShard, BackfillWorkerStrategy, StrategyCapability, StrategyDescriptor,
-    ValidatedBackfillRequest,
+    BackfillShard, StrategyCapability, StrategyDescriptor, ValidatedBackfillRequest,
 };
 
 use super::{
-    backfill_types::{
-        ArchiveCancellation, ArchiveDownloadLimits, BtcExecutionSnapshot, BtcIntervalMarket,
-        BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
+    pmxt::{
+        download_archive, spawn_execution_parser, spawn_parser, PmxtArchiveSpec,
+        DEFAULT_PMXT_ARCHIVE_URL, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
     },
-    execution_snapshots::{
+    reconstruction::{
         ExecutionSnapshotReconstructor, EXECUTION_SNAPSHOTS_PER_MARKET,
         EXECUTION_SNAPSHOT_SCHEMA_VERSION,
     },
-    pmxt_archive::{
-        download_archive, spawn_execution_parser, spawn_parser, PmxtArchiveSpec,
-        DEFAULT_PMXT_ARCHIVE_URL, PMXT_ARCHIVE_PROVIDER, PMXT_COVERAGE_START_EPOCH,
+    types::{
+        ArchiveCancellation, ArchiveDownloadLimits, BtcExecutionSnapshot, BtcIntervalMarket,
+        BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
     },
 };
 
@@ -46,14 +44,14 @@ const MAX_SHARDS: usize = 10_080;
 const DATABASE_BATCH_ROWS: usize = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     MarketContracts,
     Resolutions,
     OrderbookEvents,
     ExecutionSnapshots,
 }
 
-pub struct PolymarketBtcBackfill {
+pub(super) struct BackfillSupport {
     kind: Kind,
     descriptor: StrategyDescriptor,
     client: Client,
@@ -63,24 +61,8 @@ pub struct PolymarketBtcBackfill {
     cache_directory: PathBuf,
 }
 
-impl PolymarketBtcBackfill {
-    pub fn market_contracts() -> Result<Self, BackfillExecutionError> {
-        Self::new(Kind::MarketContracts)
-    }
-
-    pub fn resolutions() -> Result<Self, BackfillExecutionError> {
-        Self::new(Kind::Resolutions)
-    }
-
-    pub fn orderbook_events() -> Result<Self, BackfillExecutionError> {
-        Self::new(Kind::OrderbookEvents)
-    }
-
-    pub fn execution_snapshots() -> Result<Self, BackfillExecutionError> {
-        Self::new(Kind::ExecutionSnapshots)
-    }
-
-    fn new(kind: Kind) -> Result<Self, BackfillExecutionError> {
+impl BackfillSupport {
+    pub(super) fn new(kind: Kind) -> Result<Self, BackfillExecutionError> {
         let (strategy_key, name, description) = match kind {
             Kind::MarketContracts => (
                 MARKET_CONTRACTS_BACKFILL_KEY,
@@ -1148,13 +1130,12 @@ fn decimal_at_paths(value: &Value, paths: &[&[&str]]) -> Option<Decimal> {
     })
 }
 
-#[async_trait]
-impl BackfillWorkerStrategy for PolymarketBtcBackfill {
-    fn descriptor(&self) -> &StrategyDescriptor {
+impl BackfillSupport {
+    pub(super) fn descriptor(&self) -> &StrategyDescriptor {
         &self.descriptor
     }
 
-    fn validate_request(
+    pub(super) fn validate_request(
         &self,
         request: &BackfillRequest,
     ) -> Result<ValidatedBackfillRequest, BackfillExecutionError> {
@@ -1216,7 +1197,7 @@ impl BackfillWorkerStrategy for PolymarketBtcBackfill {
         })
     }
 
-    fn plan_shards(
+    pub(super) fn plan_shards(
         &self,
         request: &ValidatedBackfillRequest,
     ) -> Result<Vec<BackfillShard>, BackfillExecutionError> {
@@ -1244,18 +1225,6 @@ impl BackfillWorkerStrategy for PolymarketBtcBackfill {
         Ok(shards)
     }
 
-    async fn execute_backfill(
-        &self,
-        context: BackfillContext,
-        shard: BackfillShard,
-    ) -> Result<BackfillOutcome, BackfillExecutionError> {
-        match self.kind {
-            Kind::MarketContracts => self.execute_market_contracts(&context, &shard).await,
-            Kind::Resolutions => self.execute_resolutions(&context, &shard).await,
-            Kind::OrderbookEvents => self.execute_orderbook_events(&context, &shard).await,
-            Kind::ExecutionSnapshots => self.execute_execution_snapshots(&context, &shard).await,
-        }
-    }
 }
 
 fn env_url(name: &str, default: &'static str) -> Arc<str> {
@@ -1271,8 +1240,8 @@ fn hour_aligned(value: DateTime<Utc>) -> bool {
     value.minute() == 0 && value.second() == 0 && value.timestamp_subsec_nanos() == 0
 }
 
-impl PolymarketBtcBackfill {
-    async fn execute_market_contracts(
+impl BackfillSupport {
+    pub(super) async fn execute_market_contracts(
         &self,
         context: &BackfillContext,
         shard: &BackfillShard,
@@ -1363,7 +1332,7 @@ impl PolymarketBtcBackfill {
         ))
     }
 
-    async fn execute_resolutions(
+    pub(super) async fn execute_resolutions(
         &self,
         context: &BackfillContext,
         shard: &BackfillShard,
@@ -1429,7 +1398,7 @@ impl PolymarketBtcBackfill {
         ))
     }
 
-    async fn execute_orderbook_events(
+    pub(super) async fn execute_orderbook_events(
         &self,
         context: &BackfillContext,
         shard: &BackfillShard,
@@ -1512,7 +1481,7 @@ impl PolymarketBtcBackfill {
         ))
     }
 
-    async fn execute_execution_snapshots(
+    pub(super) async fn execute_execution_snapshots(
         &self,
         context: &BackfillContext,
         shard: &BackfillShard,
@@ -1573,6 +1542,7 @@ impl PolymarketBtcBackfill {
                 )
             })?;
             checksum.update(archive.sha256.as_bytes());
+            let archive_path = archive.path.clone();
             let (mut receiver, parser) = spawn_execution_parser(
                 archive.path,
                 scope.clone(),
@@ -1595,6 +1565,16 @@ impl PolymarketBtcBackfill {
                 .map_err(|error| integrity("pmxt_parser_join", error.to_string()))?
                 .map_err(|error| integrity("pmxt_execution_parse", error.to_string()))?;
             source_records = source_records.saturating_add(parsed.records);
+            match tokio::fs::remove_file(&archive_path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(invalid_source(
+                        "pmxt_archive_cache_cleanup",
+                        format!("failed to remove parsed PMXT cache file: {error}"),
+                    ));
+                }
+            }
         }
         let mut snapshots = Vec::with_capacity(scope.len() * EXECUTION_SNAPSHOTS_PER_MARKET);
         reconstructor.finish_before(shard.range_end, &mut snapshots);

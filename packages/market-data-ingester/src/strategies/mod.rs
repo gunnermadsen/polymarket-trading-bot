@@ -41,19 +41,19 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            polymarket::PolymarketBtcBackfill::market_contracts()
+            polymarket::PolymarketBtcMarketContractsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            polymarket::PolymarketBtcBackfill::resolutions()
+            polymarket::PolymarketBtcResolutionsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            polymarket::PolymarketBtcBackfill::orderbook_events()
+            polymarket::PolymarketBtcOrderbookEventsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            polymarket::PolymarketBtcBackfill::execution_snapshots()
+            polymarket::PolymarketBtcExecutionSnapshotsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
     ];

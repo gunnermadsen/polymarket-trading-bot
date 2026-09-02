@@ -5,9 +5,13 @@ use serde_json::{json, Value};
 
 use crate::domain::{BackfillRequest, BackfillWorkerStrategy, StrategyCapability};
 
-use super::backfills::{
-    parse_gamma_btc_interval_event, PolymarketBtcBackfill, EXECUTION_SNAPSHOTS_BACKFILL_KEY,
-    MARKET_CONTRACTS_BACKFILL_KEY, ORDERBOOK_EVENTS_BACKFILL_KEY, RESOLUTIONS_BACKFILL_KEY,
+use super::{
+    support::{
+        parse_gamma_btc_interval_event, EXECUTION_SNAPSHOTS_BACKFILL_KEY,
+        MARKET_CONTRACTS_BACKFILL_KEY, ORDERBOOK_EVENTS_BACKFILL_KEY, RESOLUTIONS_BACKFILL_KEY,
+    },
+    PolymarketBtcExecutionSnapshotsBackfill, PolymarketBtcMarketContractsBackfill,
+    PolymarketBtcOrderbookEventsBackfill, PolymarketBtcResolutionsBackfill,
 };
 
 fn request(key: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> BackfillRequest {
@@ -22,11 +26,11 @@ fn request(key: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> BackfillReque
 
 #[test]
 fn four_strategies_have_unique_backfill_only_contracts() {
-    let strategies = [
-        PolymarketBtcBackfill::market_contracts().unwrap(),
-        PolymarketBtcBackfill::resolutions().unwrap(),
-        PolymarketBtcBackfill::orderbook_events().unwrap(),
-        PolymarketBtcBackfill::execution_snapshots().unwrap(),
+    let strategies: Vec<Box<dyn BackfillWorkerStrategy>> = vec![
+        Box::new(PolymarketBtcMarketContractsBackfill::new().unwrap()),
+        Box::new(PolymarketBtcResolutionsBackfill::new().unwrap()),
+        Box::new(PolymarketBtcOrderbookEventsBackfill::new().unwrap()),
+        Box::new(PolymarketBtcExecutionSnapshotsBackfill::new().unwrap()),
     ];
     let keys = strategies
         .iter()
@@ -51,10 +55,11 @@ fn four_strategies_have_unique_backfill_only_contracts() {
 fn one_hour_requests_produce_exactly_one_deterministic_shard() {
     let start: DateTime<Utc> = "2026-07-22T00:00:00Z".parse().unwrap();
     for strategy in [
-        PolymarketBtcBackfill::market_contracts().unwrap(),
-        PolymarketBtcBackfill::resolutions().unwrap(),
-        PolymarketBtcBackfill::orderbook_events().unwrap(),
-        PolymarketBtcBackfill::execution_snapshots().unwrap(),
+        Box::new(PolymarketBtcMarketContractsBackfill::new().unwrap())
+            as Box<dyn BackfillWorkerStrategy>,
+        Box::new(PolymarketBtcResolutionsBackfill::new().unwrap()),
+        Box::new(PolymarketBtcOrderbookEventsBackfill::new().unwrap()),
+        Box::new(PolymarketBtcExecutionSnapshotsBackfill::new().unwrap()),
     ] {
         let key = strategy.descriptor().strategy_key.as_ref();
         let validated = strategy
@@ -72,7 +77,7 @@ fn one_hour_requests_produce_exactly_one_deterministic_shard() {
 #[test]
 fn pmxt_rejects_partial_hour_ranges() {
     let start: DateTime<Utc> = "2026-07-22T00:05:00Z".parse().unwrap();
-    let strategy = PolymarketBtcBackfill::orderbook_events().unwrap();
+    let strategy = PolymarketBtcOrderbookEventsBackfill::new().unwrap();
     let error = strategy
         .validate_request(&request(
             ORDERBOOK_EVENTS_BACKFILL_KEY,
@@ -86,7 +91,7 @@ fn pmxt_rejects_partial_hour_ranges() {
 #[test]
 fn original_gamma_contract_fixture_parses_without_contract_drift() {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/polymarket/gamma_btc_five_minute_event_v1.json"
+        "../../../../tests/fixtures/polymarket/gamma_btc_five_minute_event_v1.json"
     ))
     .unwrap();
     let start: DateTime<Utc> = "2026-07-13T00:30:00Z".parse().unwrap();

@@ -26,7 +26,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::backfill_types::{
+use super::types::{
     ArchiveCancellation, ArchiveDownloadLimits, ArchiveParseSummary, BtcOrderbookArchiveEvent,
     BtcOrderbookMarketScope, DownloadedArchive,
 };

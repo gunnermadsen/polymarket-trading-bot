@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 
-use super::backfill_types::{
+use super::types::{
     BtcExecutionSnapshot, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
 };
 
