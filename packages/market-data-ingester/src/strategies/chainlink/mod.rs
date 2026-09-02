@@ -1,5 +1,12 @@
+mod backfill_types;
+mod one_minute_candles_backfill;
+mod one_minute_candles_support;
 mod one_minute_ohlc;
 mod reference_price;
+mod reference_ticks_backfill;
+mod reference_ticks_support;
 
+pub use one_minute_candles_backfill::ChainlinkBtcusdOneMinuteCandlesBackfill;
 pub use one_minute_ohlc::ChainlinkBtcusdOneMinuteOhlcFactory;
 pub use reference_price::ChainlinkBtcusdReferencePriceFactory;
+pub use reference_ticks_backfill::ChainlinkBtcusdReferenceTicksBackfill;

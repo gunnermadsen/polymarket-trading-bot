@@ -7,8 +7,10 @@ use crate::{
     runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry},
 };
 
+mod backfill_support;
 pub mod binance;
 pub mod chainlink;
+pub mod pmdata;
 pub mod polygon;
 pub mod polymarket;
 pub mod weather;
@@ -57,6 +59,30 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
+            chainlink::ChainlinkBtcusdReferenceTicksBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            chainlink::ChainlinkBtcusdOneMinuteCandlesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            polygon::PolygonChainlinkBtcusdOracleRoundsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            pmdata::PmdataChainlinkBtcusdRefpriceBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            pmdata::PmdataChainlinkBtcusdTwap30sBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            pmdata::PmdataChainlinkBtcusdTwap60sBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
             polymarket::PolymarketBtcMarketContractsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
@@ -99,6 +125,12 @@ mod tests {
             "binance_futures_btcusdt_l2_one_second_features_backfill",
             "binance_spot_btcusdt_l2_one_second_features_backfill",
             "binance_spot_btcusdt_one_second_ohlcv_backfill",
+            "chainlink_btcusd_reference_ticks_backfill",
+            "chainlink_btcusd_one_minute_candles_backfill",
+            "polygon_chainlink_btcusd_oracle_rounds_backfill",
+            "pmdata_chainlink_btcusd_refprice_backfill",
+            "pmdata_chainlink_btcusd_twap_30s_backfill",
+            "pmdata_chainlink_btcusd_twap_60s_backfill",
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
         }

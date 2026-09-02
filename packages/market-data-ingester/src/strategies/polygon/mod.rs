@@ -1,3 +1,7 @@
+mod backfill_types;
 mod chainlink_btcusd_oracle;
+mod chainlink_btcusd_oracle_rounds_backfill;
+mod oracle_rounds_support;
 
 pub use chainlink_btcusd_oracle::PolygonChainlinkBtcusdOracleFactory;
+pub use chainlink_btcusd_oracle_rounds_backfill::PolygonChainlinkBtcusdOracleRoundsBackfill;
