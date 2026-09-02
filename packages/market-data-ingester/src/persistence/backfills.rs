@@ -528,7 +528,13 @@ impl BackfillRepository {
                 AND ($2::jsonb ->> job.strategy_key)::integer = job.strategy_contract_version
                 AND (job.required_worker_id IS NULL OR job.required_worker_id=$1)
                 AND (job.required_deployment IS NULL OR job.required_deployment=$3)
-              ORDER BY job.requested_at,job.job_id
+              ORDER BY
+                CASE
+                  WHEN job.required_worker_id=$1 THEN 0
+                  WHEN job.required_deployment=$3 THEN 1
+                  ELSE 2
+                END,
+                job.requested_at,job.job_id
               FOR UPDATE SKIP LOCKED LIMIT 1
             )
             UPDATE ingester.backfill_jobs job SET
