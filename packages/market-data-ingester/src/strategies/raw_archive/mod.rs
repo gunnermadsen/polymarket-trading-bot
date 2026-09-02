@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use reqwest::Client;
+use reqwest::{header::RANGE, Client, StatusCode};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -22,6 +22,7 @@ use crate::{
 };
 
 const DEFAULT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_SOURCE_RECONNECTS: usize = 5;
 
 #[derive(Clone, Debug)]
 pub struct RawObject {
@@ -150,32 +151,56 @@ async fn download(
     object: &RawObject,
     path: &Path,
 ) -> Result<(String, u64), BackfillExecutionError> {
-    let mut response = client
-        .get(&object.source_uri)
-        .send()
-        .await
-        .map_err(source_error)?
-        .error_for_status()
-        .map_err(source_error)?;
-    if response
-        .content_length()
-        .is_some_and(|v| v > DEFAULT_MAX_BYTES)
-    {
-        return Err(source_error("raw artifact exceeded four GiB limit"));
-    }
     let mut file = fs::File::create(path).await.map_err(io_error)?;
     let mut hash = Sha256::new();
     let mut bytes = 0u64;
-    loop {
-        tokio::select! {
-            _ = context.shutdown.cancelled() => return Err(BackfillExecutionError::new(BackfillFailureKind::LeaseLost,"raw_download_cancelled","raw artifact download was cancelled")),
-            result = timeout(Duration::from_secs(60), response.chunk()) => {
-                let chunk = result.map_err(|_| source_error("raw artifact download stalled"))?.map_err(source_error)?;
-                let Some(chunk) = chunk else { break };
-                bytes = bytes.checked_add(chunk.len() as u64).ok_or_else(|| source_error("raw artifact size overflow"))?;
-                if bytes > DEFAULT_MAX_BYTES { return Err(source_error("raw artifact exceeded four GiB limit")); }
-                file.write_all(&chunk).await.map_err(io_error)?;
-                hash.update(&chunk);
+    let mut reconnects = 0usize;
+    'request: loop {
+        let mut request = client.get(&object.source_uri);
+        if bytes > 0 {
+            request = request.header(RANGE, format!("bytes={bytes}-"));
+        }
+        let mut response = request
+            .send()
+            .await
+            .map_err(source_error)?
+            .error_for_status()
+            .map_err(source_error)?;
+        if bytes > 0 && response.status() != StatusCode::PARTIAL_CONTENT {
+            return Err(source_error(
+                "raw source did not honor the requested resume offset",
+            ));
+        }
+        if response
+            .content_length()
+            .and_then(|remaining| bytes.checked_add(remaining))
+            .is_some_and(|total| total > DEFAULT_MAX_BYTES)
+        {
+            return Err(source_error("raw artifact exceeded four GiB limit"));
+        }
+        loop {
+            let next = tokio::select! {
+                _ = context.shutdown.cancelled() => return Err(BackfillExecutionError::new(BackfillFailureKind::LeaseLost,"raw_download_cancelled","raw artifact download was cancelled")),
+                result = timeout(Duration::from_secs(60), response.chunk()) => result,
+            };
+            match next {
+                Ok(Ok(Some(chunk))) => {
+                    bytes = bytes
+                        .checked_add(chunk.len() as u64)
+                        .ok_or_else(|| source_error("raw artifact size overflow"))?;
+                    if bytes > DEFAULT_MAX_BYTES {
+                        return Err(source_error("raw artifact exceeded four GiB limit"));
+                    }
+                    file.write_all(&chunk).await.map_err(io_error)?;
+                    hash.update(&chunk);
+                }
+                Ok(Ok(None)) => break 'request,
+                Ok(Err(_)) | Err(_) if reconnects < MAX_SOURCE_RECONNECTS => {
+                    reconnects += 1;
+                    continue 'request;
+                }
+                Ok(Err(error)) => return Err(source_error(error)),
+                Err(_) => return Err(source_error("raw artifact download stalled")),
             }
         }
     }
