@@ -1025,6 +1025,8 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
             runtime.remove("rtds_heartbeat_interval");
             runtime.remove("binance_heartbeat_interval");
             runtime.remove("binance_ws_url");
+            runtime.remove("binance_spot_l2_enabled");
+            runtime.remove("binance_spot_l2_ws_url");
             runtime.remove("binance_rest_base_url");
         }
         if raw
@@ -5977,6 +5979,8 @@ mod lifecycle_tests {
                 "rtds_heartbeat_interval",
                 "binance_heartbeat_interval",
                 "binance_ws_url",
+                "binance_spot_l2_enabled",
+                "binance_spot_l2_ws_url",
                 "binance_rest_base_url",
             ] {
                 durable["raw"]["runtime"][field] = historical_value.clone();
