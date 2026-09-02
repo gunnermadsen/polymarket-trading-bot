@@ -10,6 +10,7 @@ use crate::{
 mod backfill_support;
 pub mod binance;
 pub mod chainlink;
+mod datasets;
 pub mod economic;
 pub mod kraken;
 pub mod pmdata;
@@ -19,6 +20,8 @@ mod raw_archive;
 pub mod temperature;
 pub mod treasury;
 pub mod weather;
+
+pub use datasets::{dataset_for_strategy, StrategyDatasetBinding, STRATEGY_DATASETS};
 
 pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
     let factories: Vec<Arc<dyn StrategyFactory>> = vec![
@@ -288,6 +291,26 @@ mod tests {
             "us_treasury_operating_cash_balance_backfill",
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn every_dataset_binding_names_a_registered_strategy() {
+        let registry = registry().unwrap();
+        let realtime = registry
+            .keys()
+            .map(|key| key.as_str().to_owned())
+            .collect::<BTreeSet<_>>();
+        let backfills = registry
+            .backfills()
+            .map(|strategy| strategy.descriptor().strategy_key.to_string())
+            .collect::<BTreeSet<_>>();
+        for binding in STRATEGY_DATASETS {
+            assert!(
+                realtime.contains(binding.strategy_key) || backfills.contains(binding.strategy_key),
+                "dataset binding names an unregistered strategy: {}",
+                binding.strategy_key
+            );
         }
     }
 }

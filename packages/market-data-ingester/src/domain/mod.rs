@@ -2,6 +2,7 @@
 
 mod artifact;
 mod backfill;
+mod dataset;
 mod gap;
 mod profile;
 mod strategy;
@@ -14,6 +15,7 @@ pub use backfill::{
     BackfillRequest, BackfillShard, BackfillWorkerStrategy, ExecutionSelector, StrategyCapability,
     StrategyDescriptor, ValidatedBackfillRequest,
 };
+pub use dataset::*;
 pub use gap::{DataGap, GapStatus};
 pub use profile::{DesiredState, HealthStatus, IngesterProfile, ObservedState};
 pub use strategy::{IngesterStrategyKey, RealtimeWorkerStrategy, StrategyError, StrategyErrorKind};

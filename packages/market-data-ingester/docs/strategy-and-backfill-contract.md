@@ -19,6 +19,21 @@ Both images are built from this package and run the same `ingester` binary with 
 8. Strategy deployment is additive: deploy a new `ingester-worker` image under a deployment identifier, wait for registration, optionally target that deployment through the API, then retire old workers after their leases drain.
 9. Historical legacy tables remain read-only until every row and lineage record has been reconciled in the canonical ledger. They are not scheduling inputs and must not be deleted as part of strategy work.
 
+## Canonical dataset contract
+
+A strategy identifies how data is collected; it does not define the data model. Every strategy is bound to exactly one `DatasetKey` in `strategies/datasets.rs`. Compatible realtime and backfill strategies bind to the same dataset. A strategy must not define an alternative dataset identity because its transport, provider endpoint, or execution mode differs.
+
+The authoritative dataset definitions live in `domain/dataset.rs`. Each definition fixes:
+
+- the stable dataset key and contract version;
+- the canonical `market_data` table;
+- the observation's natural identity; and
+- the complete persisted field vocabulary.
+
+Source-specific parsers may use private wire types, but normalized records shared by strategies live in the domain contract. Persistence projections may temporarily target a legacy table while a dataset is being reconciled, but that table is not another contract and must not change the canonical model. Changing a canonical field, natural key, or meaning requires an intentional contract-version change and compatibility review.
+
+Realtime and backfill remain separate strategy implementations. They must normalize equivalent source observations to the same dataset contract. `strategy_key` is lineage, not record identity, so records collected through different modes can converge and deduplicate on the dataset natural key.
+
 ## API
 
 All control endpoints except health and metrics require the administrative bearer token.

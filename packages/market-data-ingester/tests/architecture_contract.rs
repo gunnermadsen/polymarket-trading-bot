@@ -180,6 +180,84 @@ fn economic_backfills_use_one_unified_strategy_per_file() {
     }
 }
 
+#[test]
+fn market_data_contracts_have_one_authoritative_definition() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let domain = fs::read_to_string(root.join("src/domain/dataset.rs")).unwrap();
+    let bindings = fs::read_to_string(root.join("src/strategies/datasets.rs")).unwrap();
+    let strategy_root = root.join("src/strategies");
+
+    for table in [
+        "market_data.binance_spot_btcusdt_aggregate_trades",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
+        "market_data.binance_futures_btcusdt_open_interest",
+        "market_data.chainlink_btcusd_reference_prices",
+        "market_data.chainlink_btcusd_one_minute_candles",
+        "market_data.polygon_chainlink_btcusd_oracle_rounds",
+        "market_data.pmdata_chainlink_btcusd_twap",
+    ] {
+        assert!(domain.contains(table), "canonical contract omits {table}");
+    }
+
+    for pair in [
+        [
+            "binance_spot_btcusdt_aggregate_trades",
+            "binance_spot_btcusdt_aggregate_trades_backfill",
+        ],
+        [
+            "binance_spot_btcusdt_one_second_ohlcv",
+            "binance_spot_btcusdt_one_second_ohlcv_backfill",
+        ],
+        [
+            "binance_futures_btcusdt_open_interest",
+            "binance_futures_btcusdt_five_minute_open_interest_backfill",
+        ],
+        [
+            "chainlink_btcusd_reference_price",
+            "chainlink_btcusd_reference_ticks_backfill",
+        ],
+        [
+            "chainlink_btcusd_one_minute_ohlc",
+            "chainlink_btcusd_one_minute_candles_backfill",
+        ],
+        [
+            "polygon_chainlink_btcusd_oracle",
+            "polygon_chainlink_btcusd_oracle_rounds_backfill",
+        ],
+    ] {
+        for strategy in pair {
+            assert!(
+                bindings.contains(strategy),
+                "dataset binding omits {strategy}"
+            );
+        }
+    }
+
+    for relative in [
+        "binance/types.rs",
+        "chainlink/backfill_types.rs",
+        "polygon/backfill_types.rs",
+        "pmdata/types.rs",
+    ] {
+        let source = fs::read_to_string(strategy_root.join(relative)).unwrap();
+        for canonical in [
+            "BinanceAggregateTradeRecord",
+            "BinanceOneSecondKlineRecord",
+            "BinanceBtcusdtOpenInterestRecord",
+            "ChainlinkBtcusdArchiveTick",
+            "ChainlinkBtcusdOneMinuteCandle",
+            "PolygonChainlinkBtcusdOracleRound",
+            "PmdataChainlinkBtcusdTwapRecord",
+            "PmdataChainlinkBtcusdRefpriceRecord",
+        ] {
+            assert!(
+                !source.contains(&format!("struct {canonical}")),
+                "{relative} redefines canonical record {canonical}"
+            );
+        }
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
