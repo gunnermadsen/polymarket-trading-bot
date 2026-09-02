@@ -182,6 +182,45 @@ async fn completed_outcome(
     }))
 }
 
+async fn completed_source_outcome(
+    context: &BackfillContext,
+    provider: &str,
+    logical_key: &str,
+    durable_target: &str,
+) -> Result<Option<BackfillOutcome>, BackfillExecutionError> {
+    let row = sqlx::query(
+        "SELECT record_count,minimum_source_timestamp,maximum_source_timestamp,metadata,strategy_key FROM ingester.backfill_artifacts WHERE provider=$1 AND logical_key=$2 AND durable_target=$3 AND status='completed' ORDER BY completed_at DESC NULLS LAST LIMIT 1",
+    )
+    .bind(provider)
+    .bind(logical_key)
+    .bind(durable_target)
+    .fetch_optional(&context.pool)
+    .await
+    .map_err(database_error)?;
+    Ok(row.map(|row| {
+        let records = row
+            .try_get::<Option<i64>, _>("record_count")
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        BackfillOutcome {
+            records_verified: records,
+            verified_coverage: json!({
+                "minimum_source_timestamp": row.try_get::<Option<DateTime<Utc>>, _>("minimum_source_timestamp").ok().flatten(),
+                "maximum_source_timestamp": row.try_get::<Option<DateTime<Utc>>, _>("maximum_source_timestamp").ok().flatten(),
+                "records_verified": records,
+                "reused_artifact": true,
+            }),
+            summary: json!({
+                "provider": provider,
+                "reused_artifact": true,
+                "source_strategy_key": row.try_get::<String, _>("strategy_key").ok(),
+                "source_metadata": row.try_get::<Value, _>("metadata").unwrap_or_else(|_| json!({})),
+            }),
+        }
+    }))
+}
+
 async fn create_artifact(
     context: &BackfillContext,
     strategy_key: &str,
@@ -1401,6 +1440,16 @@ impl PolymarketBtcBackfill {
         let spec = PmxtArchiveSpec::new(&self.pmxt_url, hour)
             .map_err(|error| invalid_source("pmxt_archive_spec", error.to_string()))?;
         if let Some(outcome) = completed_outcome(context, self.key(), &spec.logical_key).await? {
+            return Ok(outcome);
+        }
+        if let Some(outcome) = completed_source_outcome(
+            context,
+            PMXT_ARCHIVE_PROVIDER,
+            &spec.logical_key,
+            "polymarket.btc_orderbook_archive_events",
+        )
+        .await?
+        {
             return Ok(outcome);
         }
         let scope = load_scope(context, hour, shard.range_end, true).await?;
