@@ -47,7 +47,7 @@ impl BackfillWorkerStrategy for PolymarketTemperaturePriceArchivesBackfill {
         c: BackfillContext,
         s: BackfillShard,
     ) -> Result<BackfillOutcome, BackfillExecutionError> {
-        let objects = raw_support::price_objects(&c, &s).await?;
+        let objects = raw_support::price_objects(&self.support.client, &s).await?;
         let mut v = vec![];
         for o in objects {
             v.push(raw_archive::store(&c, STRATEGY_KEY, &self.support.client, &o).await?);
