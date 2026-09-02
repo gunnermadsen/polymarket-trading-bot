@@ -806,14 +806,14 @@ def _report(metrics: dict[str, Any]) -> str:
         "",
         "## Primary 60–89-second results",
         "",
-        "| Candidate | PnL | Stress PnL | PF | Expectancy | Coverage | W/L | Win rate | Recovery | Avg entry | Avg cost | Brier |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Candidate | Status | PnL | Stress PnL | PF | Expectancy | Coverage | W/L | Win rate | Recovery | Avg entry | Avg cost | Brier |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for candidate in ALL_CANDIDATES:
         row = metrics["sealed_economic"][candidate]["60_89"]
         predictive = metrics["sealed_predictive"][candidate]
         lines.append(
-            f"| {candidate} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['market_coverage']:.2%} | {row['winning_trades']}/{row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(predictive['brier_score'], 4)} |"
+            f"| {candidate} | {metrics['candidate_qualification'][candidate]} | {row['net_pnl']:.2f} | {row['stress_net_pnl']:.2f} | {fmt(row['profit_factor'])} | {fmt(row['expectancy_per_trade'])} | {row['market_coverage']:.2%} | {row['winning_trades']}/{row['losing_trades']} | {fmt(row['win_rate'], 2)} | {fmt(row['loss_recovery_wins'])} | {fmt(row['average_entry_second'], 1)} | {fmt(row['average_share_cost'])} | {fmt(predictive['brier_score'], 4)} |"
         )
     lines.extend(
         [
@@ -841,8 +841,19 @@ def _report(metrics: dict[str, Any]) -> str:
     for candidate in ALL_CANDIDATES:
         side = metrics["sealed_economic"][candidate]["60_89"]["by_side"]
         lines.append(
-            f"| {candidate} | {side['up']['trades']} ({fmt(side['up']['selection_share'], 1)}) | {side['down']['trades']} ({fmt(side['down']['selection_share'], 1)}) | {side['up']['net_pnl']:.2f} | {side['down']['net_pnl']:.2f} | {side['up']['stress_net_pnl']:.2f} | {side['down']['stress_net_pnl']:.2f} |"
+            f"| {candidate} | {side['up']['trades']} ({fmt(None if side['up']['selection_share'] is None else 100 * side['up']['selection_share'], 1)}%) | {side['down']['trades']} ({fmt(None if side['down']['selection_share'] is None else 100 * side['down']['selection_share'], 1)}%) | {side['up']['net_pnl']:.2f} | {side['down']['net_pnl']:.2f} | {side['up']['stress_net_pnl']:.2f} | {side['down']['stress_net_pnl']:.2f} |"
         )
+    lines.extend(
+        [
+            "",
+            "## Settlement-regime probability quality",
+            "",
+            "| Predictor | Pre-cutover OOF Brier | Sealed post-cutover Brier |",
+            "|---|---:|---:|",
+            f"| official | {metrics['pre_cutover_oof_predictive']['official']['brier_score']:.4f} | {metrics['sealed_predictive']['official_early_control']['brier_score']:.4f} |",
+            f"| bridge | {metrics['pre_cutover_oof_predictive']['bridge']['brier_score']:.4f} | {metrics['sealed_predictive']['bridge_early_control']['brier_score']:.4f} |",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -864,7 +875,7 @@ def _report(metrics: dict[str, Any]) -> str:
             "## Integrity",
             "",
             "- Frozen controls and the existing champion collection were not modified.",
-            "- All learned components used chronological OOF inputs ending before development and holdout markets.",
+            "- Learned admission and residual models used chronological OOF inputs ending before development and holdout markets; temporal snapshots fit only pre-development rows.",
             "- Policies were frozen before the sealed panel and Kraken L2 tail were loaded.",
             "- Settlement sources remained distinct; TWAP and future settlement values were not inference features.",
             "- No database write, table, schema, ingester, source, deployment, or image build occurred.",
@@ -969,6 +980,36 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     candidate_contract = {
         row["name"]: {"kind": row["kind"], "base": row["base"]} for row in raw["candidates"]
     }
+    for candidate, contract in candidate_contract.items():
+        contract["prediction_features"] = list(
+            bridge_model.features
+            if candidate == "bridge_early_control"
+            else official_model.features
+        )
+        contract["execution_features"] = [
+            *(f"up_ask_vwap_{quantity}" for quantity in VWAP_QUANTITIES),
+            *(f"down_ask_vwap_{quantity}" for quantity in VWAP_QUANTITIES),
+        ]
+        contract["settlement_inference_features"] = []
+    candidate_contract["official_dualvenue_l2_residual"]["residual_features"] = list(
+        residual.features
+    )
+    for candidate, admission in admissions.items():
+        candidate_contract[candidate]["admission_features"] = list(admission.features)
+    candidate_contract["official_temporal_consensus"]["gate_features"] = [
+        "temporal_probability_std",
+        "temporal_probability_range",
+        "temporal_direction_agreement",
+    ]
+    candidate_contract["official_temporal_consensus"]["snapshot_fit_ends"] = list(
+        raw["windows"]["temporal_fit_ends"]
+    )
+    candidate_contract["official_dualvenue_l2_veto"]["gate_features"] = [
+        "spot_l2_imbalance_20",
+        "kraken_l2_update_imbalance_30s",
+        "kraken_l2_quantity_imbalance_30s",
+        "kraken_l2_cancel_imbalance_30s",
+    ]
     selection_path = run_dir / "selection-freeze.json"
     if resume_run and selection_path.is_file():
         selection = json.loads(selection_path.read_text())
@@ -1027,6 +1068,7 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         "range_start": tail["range_start"],
         "range_end_exclusive": tail["range_end_exclusive"],
         "read_only_source": tail["read_only_source"],
+        "status": tail.get("status", "available"),
     }
     _write_json(run_dir / "source-manifest.json", source)
     sealed_panel = _load_panel(paths, sealed_start, sealed_end, model_features, tail)
@@ -1093,12 +1135,15 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
             "admission_models": admissions,
             "temporal_models": temporal,
             "policies": policies,
+            "candidate_contract": candidate_contract,
             "deployment_status": "not_deployed",
         },
     )
     loaded = joblib.load(artifact_path)
     if set(loaded["admission_models"]) != set(LEARNED_ADMISSION):
         raise RuntimeError("artifact round-trip failed")
+    if set(loaded["candidate_contract"]) != set(ALL_CANDIDATES):
+        raise RuntimeError("artifact candidate contract round-trip failed")
     artifact_sha = file_sha256(artifact_path)
     (run_dir / "tournament.sha256").write_text(f"{artifact_sha}  tournament.joblib\n")
     profitable = [
@@ -1107,6 +1152,11 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         if sealed_economic[candidate]["60_89"]["net_pnl"] > 0
         and sealed_economic[candidate]["60_89"]["stress_net_pnl"] > 0
     ]
+    candidate_qualification = {candidate: "evaluated_not_deployed" for candidate in ALL_CANDIDATES}
+    candidate_qualification["official_dualvenue_l2_residual"] = (
+        "inconclusive_l2_value_official_probability_fallback"
+    )
+    candidate_qualification["official_dualvenue_l2_veto"] = "not_evaluable_no_sealed_l2_evidence"
     metrics = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
@@ -1114,8 +1164,14 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         "producing_commit": producing_commit,
         "candidate_names": list(ALL_CANDIDATES),
         "candidate_contract": candidate_contract,
+        "candidate_qualification": candidate_qualification,
         "positive_primary_candidates": profitable,
-        "qualification_status": "trained_evaluated_not_deployed",
+        "qualified_positive_primary_candidates": [
+            candidate
+            for candidate in profitable
+            if candidate_qualification[candidate] == "evaluated_not_deployed"
+        ],
+        "qualification_status": "trained_evaluated_not_deployed_l2_challengers_inconclusive",
         "sealed_economic": sealed_economic,
         "sealed_predictive": sealed_predictive,
         "sealed_capacity": sealed_capacity,
@@ -1174,7 +1230,8 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         },
         "limitations": [
             "Executable VWAP evidence ends after August 25; August 26-31 contributes predictive metrics but no economic fills.",
-            "Binance spot L2 ends after August 1; the sealed L2 evaluation therefore uses Kraken L2 while preserving Binance L2 missingness.",
+            "Binance spot L2 ends after August 1 and Kraken L2 ends after August 19; neither venue has L2 evidence in the sealed window.",
+            "The L2 residual used the official probability fallback in the sealed window, while the L2 confirmation veto abstained; neither result qualifies L2 predictive value.",
             "The August holdout has been observed in prior research and is chronological rather than epistemically fresh.",
             "September 1 data is not present in the current immutable panel and is reported as unavailable rather than fabricated.",
             "Projected PnL assumes recorded ask VWAP was fillable and does not model queue position.",
