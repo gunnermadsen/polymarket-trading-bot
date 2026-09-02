@@ -276,18 +276,7 @@ services:
       KRAKEN_FUTURES_BASE_URL: "https://futures.kraken.com"
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
       INGESTER_KRAKEN_DATA_ROOT: "/var/lib/kraken-data"
-      WEATHER_CACHE_DIR: "/var/lib/weather/cache"
       INGESTER_WEATHER_RAW_ROOT: "/var/lib/weather/raw"
-      GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
-      HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
-      HRRR_DOWNLOAD_ATTEMPTS: "8"
-      HRRR_RETRY_BASE_MS: "1000"
-      HRRR_RETRY_MAX_MS: "30000"
-      HRRR_REQUEST_INTERVAL_MS: "500"
-      HRRR_SOURCE_PRIORITY: "google,aws,nomads"
-      NOAA_DOWNLOAD_ATTEMPTS: "6"
-      NOAA_RETRY_BASE_SECONDS: "2"
-      HERBIE_CONFIG_PATH: "/tmp/herbie-config.toml"
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
       - ${BINANCE_L2_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-l2}:/var/lib/binance-l2
