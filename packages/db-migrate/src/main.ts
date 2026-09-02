@@ -9,7 +9,7 @@ async function main(): Promise<void> {
     const hasPendingMigrations = await AppDataSource.showMigrations();
     console.log(`[db-migrate] Pending migrations: ${hasPendingMigrations ? 'yes' : 'no'}`);
 
-    const appliedMigrations = await AppDataSource.runMigrations();
+    const appliedMigrations = await AppDataSource.runMigrations({ transaction: 'each' });
     console.log(`[db-migrate] Applied ${appliedMigrations.length} migration(s)`);
   } finally {
     await AppDataSource.destroy();
@@ -23,4 +23,3 @@ main().catch((error) => {
   console.error(message);
   process.exitCode = 1;
 });
-

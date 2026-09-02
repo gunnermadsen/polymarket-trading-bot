@@ -506,7 +506,7 @@ fn parse_aggregate_trade_archive(
             continue;
         }
         require_columns(&record, 8, "aggregate trade", ordinal)?;
-        let row = BinanceAggregateTradeRecord {
+        let mut row = BinanceAggregateTradeRecord {
             symbol: BINANCE_SYMBOL.to_string(),
             aggregate_trade_id: parse_i64(&record, 0, "aggregate_trade_id")?,
             price: parse_decimal(&record, 1, "price")?,
@@ -516,7 +516,9 @@ fn parse_aggregate_trade_archive(
             trade_timestamp: parse_epoch(field(&record, 5, "trade_timestamp")?)?,
             buyer_maker: parse_bool(&record, 6, "buyer_maker")?,
             best_match: parse_bool(&record, 7, "best_match")?,
+            payload_sha256: String::new(),
         };
+        row.payload_sha256 = row.canonical_payload_sha256();
         if row.price <= Decimal::ZERO || row.quantity <= Decimal::ZERO {
             bail!("aggregate trade price and quantity must be positive");
         }

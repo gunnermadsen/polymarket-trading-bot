@@ -225,7 +225,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "polymarket.binance_btcusdt_five_minute_open_interest": (
             "not included in the approved asymmetric-value candidate matrix"
         ),
-        "polymarket.binance_aggregate_trades": (
+        "market_data.binance_spot_btcusdt_aggregate_trades": (
             "insufficient history; one-second Core already includes taker flow"
         ),
         "polymarket.binance_btcusdt_l2_training_features": (

@@ -1,23 +1,4 @@
-WITH legacy AS (
-  SELECT
-    trade.aggregate_trade_id,
-    trade.trade_timestamp,
-    trade.trade_timestamp AS source_available_at,
-    trade.price,
-    trade.quantity,
-    trade.buyer_maker,
-    'polymarket.binance_aggregate_trades'::text AS source_relation,
-    trade.artifact_id::text AS source_artifact_id,
-    1 AS source_priority
-  FROM polymarket.binance_aggregate_trades trade
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = trade.artifact_id
-   AND artifact.status = 'completed'
-  WHERE trade.symbol = 'BTCUSDT'
-    AND trade.trade_timestamp >= %(batch_start)s - interval '65 seconds'
-    AND trade.trade_timestamp < %(batch_end)s
-),
-canonical AS (
+WITH trades AS MATERIALIZED (
   SELECT
     trade.aggregate_trade_id,
     trade.trade_timestamp,
@@ -26,8 +7,7 @@ canonical AS (
     trade.quantity,
     trade.buyer_maker,
     'market_data.binance_spot_btcusdt_aggregate_trades'::text AS source_relation,
-    trade.capture_artifact_id::text AS source_artifact_id,
-    2 AS source_priority
+    trade.capture_artifact_id::text AS source_artifact_id
   FROM market_data.binance_spot_btcusdt_aggregate_trades trade
   WHERE trade.source = 'binance_spot'
     AND trade.symbol = 'BTCUSDT'
@@ -37,23 +17,6 @@ canonical AS (
     AND trade.trade_timestamp <= greatest(
       trade.received_at, trade.provider_available_at
     )
-),
-trades AS MATERIALIZED (
-  SELECT DISTINCT ON (aggregate_trade_id)
-    aggregate_trade_id,
-    trade_timestamp,
-    source_available_at,
-    price,
-    quantity,
-    buyer_maker,
-    source_relation,
-    source_artifact_id
-  FROM (
-    SELECT * FROM legacy
-    UNION ALL
-    SELECT * FROM canonical
-  ) source
-  ORDER BY aggregate_trade_id, source_priority DESC
 )
 SELECT
   date_trunc('second', trade_timestamp) AS second_start,

@@ -12,11 +12,13 @@ SELECT
   (
     sum(trade.price * trade.quantity) / nullif(sum(trade.quantity), 0)
   )::double precision AS trade_vwap
-FROM polymarket.binance_aggregate_trades trade
-JOIN polymarket.backfill_artifacts artifact
-  ON artifact.artifact_id = trade.artifact_id
+FROM market_data.binance_spot_btcusdt_aggregate_trades trade
+JOIN ingester.capture_artifacts artifact
+  ON artifact.strategy_key = trade.strategy_key
+ AND artifact.artifact_id = trade.capture_artifact_id
  AND artifact.status = 'completed'
-WHERE trade.symbol = 'BTCUSDT'
+WHERE trade.source = 'binance_spot'
+  AND trade.symbol = 'BTCUSDT'
   AND trade.trade_timestamp >= %(batch_start)s
   AND trade.trade_timestamp < %(batch_end)s
 GROUP BY date_trunc('second', trade.trade_timestamp)

@@ -258,6 +258,36 @@ fn market_data_contracts_have_one_authoritative_definition() {
     }
 }
 
+#[test]
+fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() {
+    let root = repository_root();
+    let repository = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/persistence/aggregate_trades.rs"),
+    )
+    .unwrap();
+    assert!(repository.contains("market_data.binance_spot_btcusdt_aggregate_trades"));
+
+    for relative in [
+        "packages/market-data-ingester/src/strategies/binance/aggregate_trades.rs",
+        "packages/market-data-ingester/src/strategies/binance/aggregate_trades_backfill.rs",
+        "packages/polymarket-bot/src/ingestion/repository.rs",
+        "packages/btc-directional-model/sql/btc-binance-trade-print-source.sql",
+        "packages/btc-directional-model/sql/btc-refprice-context-trade-print-source.sql",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(
+            !source.contains("polymarket.binance_aggregate_trades"),
+            "legacy aggregate-trade relation remains in {relative}"
+        );
+        if relative.contains("strategies/binance/aggregate_trades") {
+            assert!(
+                !source.contains("INSERT INTO market_data.binance_spot_btcusdt_aggregate_trades"),
+                "strategy bypasses the canonical aggregate-trade repository: {relative}"
+            );
+        }
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
