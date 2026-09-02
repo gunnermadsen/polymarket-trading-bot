@@ -391,6 +391,9 @@ async fn fetch_fred(
     let mut rows = Vec::new();
     for value in observations {
         let event = parse_date_field(value, &["date"])?;
+        if !contains_timestamp(shard, event) {
+            continue;
+        }
         let vintage = string_field(value, &["realtime_start"])
             .unwrap_or_else(|| event.format("%Y-%m-%d").to_string());
         let release = parse_date(&vintage)? + ChronoDuration::days(1);
@@ -860,6 +863,10 @@ fn parse_date_field(
     Err(integrity_error(format!("invalid event date {text}")))
 }
 
+fn contains_timestamp(shard: &BackfillShard, timestamp: DateTime<Utc>) -> bool {
+    timestamp >= shard.range_start && timestamp < shard.range_end
+}
+
 fn string_field(value: &Value, names: &[&str]) -> Option<String> {
     let object = value.as_object()?;
     for name in names {
@@ -1056,5 +1063,22 @@ mod tests {
         assert!(redacted.contains("series_id=DGS10"));
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("api_key"));
+    }
+
+    #[test]
+    fn shard_ranges_are_start_inclusive_and_end_exclusive() {
+        let start = Utc.with_ymd_and_hms(2025, 8, 1, 0, 0, 0).unwrap();
+        let shard = BackfillShard {
+            shard_key: "boundary".to_owned(),
+            range_start: start,
+            range_end: start + ChronoDuration::days(1),
+            parameters: json!({}),
+        };
+        assert!(contains_timestamp(&shard, shard.range_start));
+        assert!(contains_timestamp(
+            &shard,
+            shard.range_end - ChronoDuration::milliseconds(1)
+        ));
+        assert!(!contains_timestamp(&shard, shard.range_end));
     }
 }
