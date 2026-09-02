@@ -52,10 +52,10 @@ USER ingester
 ENV RUST_LOG=info
 ENTRYPOINT ["/usr/local/bin/ingester"]
 
-FROM python:3.12-slim AS worker
+FROM debian:bookworm-slim AS worker
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libeccodes0 \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10003 --create-home --shell /usr/sbin/nologin ingester
 
@@ -68,12 +68,8 @@ RUN case "$INGESTER_GIT_REVISION" in \
 LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarket-trading-bot" \
       org.opencontainers.image.revision="$INGESTER_GIT_REVISION"
 
-WORKDIR /opt/weather
-COPY packages/nyc-temperature-model/pyproject.toml ./
-COPY packages/nyc-temperature-model/src ./src
-RUN --mount=type=cache,target=/root/.cache/pip pip install .
 COPY --from=builder /usr/local/bin/ingester /usr/local/bin/ingester
 
 USER ingester
-ENV RUST_LOG=info PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV RUST_LOG=info
 ENTRYPOINT ["/usr/local/bin/ingester"]

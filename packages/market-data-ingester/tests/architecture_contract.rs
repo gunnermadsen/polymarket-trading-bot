@@ -102,6 +102,46 @@ fn kraken_backfills_are_one_strategy_per_file() {
     }
 }
 
+#[test]
+fn raw_weather_backfills_are_native_and_one_strategy_per_file() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "src/strategies/weather/backfill/goes_abi_source_archives.rs",
+        "src/strategies/weather/backfill/hrrr_surface_archives.rs",
+        "src/strategies/weather/backfill/asos_one_minute_archives.rs",
+        "src/strategies/weather/backfill/asos_metar_archives.rs",
+        "src/strategies/temperature/backfill/polymarket_market_archives.rs",
+        "src/strategies/temperature/backfill/polymarket_price_archives.rs",
+        "src/strategies/temperature/backfill/pmxt_orderbook_archives.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert_eq!(
+            source.matches("impl BackfillWorkerStrategy for").count(),
+            1,
+            "{relative}"
+        );
+        assert!(!source.contains("RealtimeWorkerStrategy"), "{relative}");
+    }
+    let strategies = fs::read_to_string(root.join("src/strategies/mod.rs")).unwrap();
+    for forbidden in ["nyc-temperature-model", "Command::new", "python"] {
+        assert!(
+            !strategies.contains(forbidden),
+            "strategy registry contains {forbidden}"
+        );
+    }
+    let dockerfile = fs::read_to_string(root.join("Dockerfile")).unwrap();
+    for forbidden in [
+        "FROM python:",
+        "pip install",
+        "packages/nyc-temperature-model",
+    ] {
+        assert!(
+            !dockerfile.contains(forbidden),
+            "ingester image contains {forbidden}"
+        );
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

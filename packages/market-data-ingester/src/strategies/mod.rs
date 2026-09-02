@@ -14,6 +14,8 @@ pub mod kraken;
 pub mod pmdata;
 pub mod polygon;
 pub mod polymarket;
+mod raw_archive;
+pub mod temperature;
 pub mod weather;
 
 pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
@@ -52,11 +54,31 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            weather::GoesAbiKlgaFeaturesBackfill::new()
+            weather::GoesAbiSourceArchivesBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
-            weather::HrrrEnvironmentFeaturesBackfill::new()
+            weather::HrrrSurfaceArchivesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            weather::AsosOneMinuteArchivesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            weather::AsosMetarArchivesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            temperature::PolymarketTemperatureMarketArchivesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            temperature::PolymarketTemperaturePriceArchivesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            temperature::PmxtPolymarketOrderbookArchivesBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(

@@ -277,6 +277,7 @@ services:
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
       INGESTER_KRAKEN_DATA_ROOT: "/var/lib/kraken-data"
       WEATHER_CACHE_DIR: "/var/lib/weather/cache"
+      INGESTER_WEATHER_RAW_ROOT: "/var/lib/weather/raw"
       GOES_PATCH_DIR: "/var/lib/weather/satellite/goes"
       HRRR_ENVIRONMENT_DIR: "/var/lib/weather/hrrr-environment"
       HRRR_DOWNLOAD_ATTEMPTS: "8"
