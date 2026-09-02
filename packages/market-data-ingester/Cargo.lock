@@ -1387,6 +1387,7 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "async-trait",
  "axum",
  "chainlink-data-streams-report",

@@ -145,7 +145,7 @@ pub async fn store(
     })
 }
 
-async fn download(
+pub(crate) async fn download(
     context: &BackfillContext,
     client: &Client,
     object: &RawObject,

@@ -8,7 +8,7 @@ use crate::{
 use chrono::{Datelike, Utc};
 use reqwest::Client;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 pub struct Support {
     descriptor: StrategyDescriptor,
     pub client: Client,
@@ -303,6 +303,116 @@ pub fn pmxt_objects(s: &BackfillShard) -> Vec<RawObject> {
         minimum: s.range_start,
         maximum: s.range_end,
     }]
+}
+
+pub struct PmxtMarketScope {
+    pub condition_ids: HashSet<String>,
+    pub token_ids: HashSet<String>,
+    pub market_ids: Vec<String>,
+    pub gamma_uris: Vec<String>,
+}
+
+pub async fn pmxt_market_scope(
+    client: &Client,
+    shard: &BackfillShard,
+) -> Result<PmxtMarketScope, BackfillExecutionError> {
+    let base = std::env::var("POLYMARKET_GAMMA_BASE_URL")
+        .unwrap_or_else(|_| "https://gamma-api.polymarket.com".into());
+    let day = shard.range_start.date_naive();
+    let day_start = day
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| invalid("invalid UTC day"))?
+        .and_utc();
+    let day_end = day_start + chrono::Duration::days(1);
+    let mut condition_ids = HashSet::new();
+    let mut token_ids = HashSet::new();
+    let mut market_ids = Vec::new();
+    let mut gamma_uris = Vec::new();
+    for closed in [true, false] {
+        let response = client
+            .get(format!("{}/events", base.trim_end_matches('/')))
+            .query(&[
+                ("closed", closed.to_string()),
+                ("limit", "100".to_owned()),
+                ("offset", "0".to_owned()),
+                ("series_id", "10005".to_owned()),
+                ("end_date_min", day_start.to_rfc3339()),
+                ("end_date_max", day_end.to_rfc3339()),
+            ])
+            .send()
+            .await
+            .map_err(source)?
+            .error_for_status()
+            .map_err(source)?;
+        gamma_uris.push(response.url().to_string());
+        let events: Value = response.json().await.map_err(source)?;
+        for event in events
+            .as_array()
+            .ok_or_else(|| invalid("Gamma response was not an array"))?
+        {
+            let title = event.get("title").and_then(Value::as_str).unwrap_or("");
+            if !title
+                .to_ascii_lowercase()
+                .contains("highest temperature in nyc")
+            {
+                continue;
+            }
+            for market in event
+                .get("markets")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let resolution = market
+                    .get("resolutionSource")
+                    .or_else(|| event.get("resolutionSource"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if !resolution.contains("wunderground.com/history/daily")
+                    || !resolution.contains("klga")
+                {
+                    continue;
+                }
+                let market_id = required_text(market, "id")?;
+                let condition_id = required_text(market, "conditionId")?;
+                let tokens = json_string_array(market.get("clobTokenIds"))?;
+                if tokens.len() != 2 {
+                    return Err(invalid(
+                        "Gamma temperature market did not expose two CLOB tokens",
+                    ));
+                }
+                if condition_ids.insert(condition_id) {
+                    market_ids.push(market_id);
+                }
+                token_ids.extend(tokens);
+            }
+        }
+    }
+    market_ids.sort();
+    market_ids.dedup();
+    gamma_uris.sort();
+    gamma_uris.dedup();
+    if condition_ids.is_empty() || token_ids.is_empty() {
+        return Err(invalid(
+            "no authoritative NYC temperature markets were found",
+        ));
+    }
+    Ok(PmxtMarketScope {
+        condition_ids,
+        token_ids,
+        market_ids,
+        gamma_uris,
+    })
+}
+
+fn required_text(value: &Value, field: &str) -> Result<String, BackfillExecutionError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| invalid(format!("Gamma market lacked {field}")))
 }
 fn source(e: impl std::fmt::Display) -> BackfillExecutionError {
     BackfillExecutionError::new(
