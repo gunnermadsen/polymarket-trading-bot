@@ -283,7 +283,7 @@ services:
       POLYMARKET_LIVE_STALE_RECONCILE_SECS: "60"
       POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
       POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com/ws/btcusdt@aggTrade"
-      POLYMARKET_BTC_BINANCE_SPOT_L2_ENABLED: "true"
+      POLYMARKET_BTC_BINANCE_SPOT_L2_ENABLED: "false"
       POLYMARKET_BTC_BINANCE_SPOT_L2_WS_URL: "wss://stream.binance.com/ws/btcusdt@depth@100ms"
       POLYMARKET_BTC_BINANCE_REST_BASE_URL: "https://data-api.binance.vision"
       POLYMARKET_BTC_DIRECTIONAL_EXTERNAL_ENABLED: "true"
