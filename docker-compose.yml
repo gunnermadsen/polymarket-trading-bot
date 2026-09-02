@@ -211,6 +211,7 @@ services:
     environment:
       <<: *ingester-environment
       INGESTER_MODE: "worker"
+      MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "1"
       INGESTER_MASTER_URL: "http://ingester-master:8098"
       INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-default}"
       INGESTER_WORKER_MAX_BACKFILLS: "1"
