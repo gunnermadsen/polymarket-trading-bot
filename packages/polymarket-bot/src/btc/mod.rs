@@ -109,9 +109,9 @@ pub use repository::{
     BtcRunManifest, PersistedOfficialResolution,
 };
 pub use runtime::{
-    runtime_status_from_inputs, BinanceSpotL2RuntimeMetrics, BtcHeartbeatConfig,
-    BtcPlaybookRuntimeHandle, BtcRuntime, BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics,
-    BtcRuntimeStatus, BtcStrategyRunner, NoopStrategyRunner, StrategyObservation,
+    runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
+    BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner,
+    NoopStrategyRunner, StrategyObservation,
 };
 pub use strategy::*;
 pub use types::*;
