@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -462,6 +463,7 @@ impl MarketPathSnapshot {
             return None;
         }
         let price_to_beat = self.price_to_beat?;
+        let market_schema_field = format!("market_{:x}", Sha256::digest(self.market_id.as_bytes()));
 
         let mut body = String::with_capacity(self.points.len().saturating_mul(128));
         for point in &self.points {
@@ -471,7 +473,7 @@ impl MarketPathSnapshot {
                 .expect("a current UTC timestamp is representable in nanoseconds");
             writeln!(
                 body,
-                "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat} {point_epoch_nanos}",
+                "{MARKET_PATH_MEASUREMENT} twap_price={},price_to_beat={price_to_beat},{market_schema_field}=1i {point_epoch_nanos}",
                 point.price,
             )
             .expect("writing an Influx line into a String cannot fail");
@@ -771,7 +773,10 @@ mod tests {
         let body = snapshot.influx_body().expect("market path has points");
 
         assert!(body.starts_with("btc_market_path twap_price=100.5,price_to_beat=100.5"));
-        assert!(!body.contains("snapshot_"));
+        let expected_market_field = format!("market_{:x}=1i", Sha256::digest(b"one"));
+        assert!(body
+            .lines()
+            .all(|line| line.contains(&expected_market_field)));
         assert!(body.lines().all(|line| {
             line.split_once(' ')
                 .is_some_and(|(_, fields_and_timestamp)| {
@@ -781,10 +786,53 @@ mod tests {
                             fields.split(',').all(|field| {
                                 field.starts_with("twap_price=")
                                     || field.starts_with("price_to_beat=")
+                                    || field == expected_market_field
                             })
                         })
                 })
         }));
+    }
+
+    #[test]
+    fn market_path_schema_changes_only_when_the_market_changes() {
+        let now = Utc.timestamp_opt(1_800_000_100, 0).unwrap();
+        let first_market = market("one", now);
+        let second_market = market("two", now);
+        let first = MarketPathSnapshot::resolve(
+            now,
+            &first_market,
+            [twap_point(first_market.window_start, dec!(100.5))],
+        )
+        .influx_body()
+        .unwrap();
+        let repeated = MarketPathSnapshot::resolve(
+            now + ChronoDuration::seconds(1),
+            &first_market,
+            [twap_point(first_market.window_start, dec!(100.5))],
+        )
+        .influx_body()
+        .unwrap();
+        let successor = MarketPathSnapshot::resolve(
+            now,
+            &second_market,
+            [twap_point(second_market.window_start, dec!(101))],
+        )
+        .influx_body()
+        .unwrap();
+        let schema = |body: &str| {
+            body.lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .map(|field| field.split_once('=').unwrap().0.to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(schema(&first), schema(&repeated));
+        assert_ne!(schema(&first), schema(&successor));
     }
 
     #[test]
