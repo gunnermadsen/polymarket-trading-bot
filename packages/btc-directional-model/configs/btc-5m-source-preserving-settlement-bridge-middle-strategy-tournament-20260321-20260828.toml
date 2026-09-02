@@ -1,0 +1,147 @@
+[training]
+profile = "btc_5m_middle_strategy_tournament"
+model_family = "btc-5m-source-preserving-settlement-bridge-middle-strategy"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260831
+data_watermark = "2026-08-29T00:00:00Z"
+candidate_freeze = "2026-08-14T00:00:00Z"
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+kraken_start = "2026-04-01T00:00:00Z"
+refprice_start = "2026-06-07T00:00:00Z"
+exact_twap_start = "2026-08-01T02:40:00Z"
+open_interest_start = "2026-07-03T00:00:00Z"
+binance_print_start = "2026-07-22T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-21T00:00:00Z"
+sealed_start = "2026-08-21T00:00:00Z"
+sealed_end = "2026-08-29T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_inclusive = 180
+cadence_seconds = 5
+prediction_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+economic_start_second = 60
+economic_end_second_inclusive = 180
+calibration_cells = [[60, 89], [90, 119], [120, 149], [150, 180]]
+
+[settlement_bridge]
+calibration_start = "2026-08-01T02:40:00Z"
+calibration_end = "2026-08-08T00:00:00Z"
+validation_end = "2026-08-14T00:00:00Z"
+minimum_scale_bps = 0.10
+refprice_minimum_weight = 0.25
+binance_minimum_weight = 0.15
+fallback_weight = 0.10
+official_development_only = true
+official_sealed_only = true
+
+[model]
+learning_rate = 0.06
+max_iter = 120
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 1.5
+max_bins = 127
+calibration_fraction = 0.20
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.01, 0.02, 0.03, 0.05, 0.075, 0.10]
+minimum_confidences = [0.52, 0.55, 0.58, 0.60, 0.62, 0.65, 0.68, 0.70]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+minimum_policy_trades = 100
+
+[sources]
+kraken_spot_root = "/Volumes/docker-data/kraken-spot-data"
+kraken_symbol = "BTCUSD"
+kraken_candle_dataset = "ohlcv_1s"
+kraken_print_dataset = "trade_prints"
+kraken_l2_included = false
+binance_spot_l2_relation = "polymarket.binance_spot_btcusdt_l2_training_features"
+binance_twap_seed_cache = "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828"
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+binance_twap_source_sql = "sql/btc-counterfactual-twap-binance-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+binance_print_source_sql = "sql/btc-binance-trade-print-source.sql"
+spot_l2_source_sql = "sql/btc-middle-strategy-spot-l2-source.sql"
+cache = "data/btc-multivenue-early-entry-20260321-20260828"
+middle_cache = "data/btc-middle-strategy-tournament-20260321-20260828"
+bridge_cache = "data/btc-source-preserving-settlement-bridge-middle-strategy-20260321-20260828"
+runs = "runs/btc-source-preserving-settlement-bridge-middle-strategy-20260321-20260828"
+committed_results = "training-results/btc-5m-source-preserving-settlement-bridge-middle-strategy-20260321-20260828"
+q5_manifest = "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json"
+specialist_manifest = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json"
+
+[comparison]
+prior_metrics = "training-results/btc-5m-twap-normalized-middle-strategy-20260321-20260828/20260831T205253Z/metrics.json"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_bridge_validation"
+test_start = "2026-08-08T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[candidates]]
+name = "middle_specialist_refit"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice"]
+description = "RefPrice-first specialist trained on the source-preserving probabilistic settlement bridge."
+
+[[candidates]]
+name = "middle_q5_admission"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "binance_prints", "execution"]
+description = "Rich directional model with bridge probabilities and separately selected payoff-aware admission."
+
+[[candidates]]
+name = "middle_agreement_ensemble"
+kind = "agreement"
+members = ["middle_specialist_refit", "middle_q5_admission"]
+description = "Trades only when the source-preserving specialist and Q5-style bases agree."
+
+[[candidates]]
+name = "crossvenue_middle_specialist"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken", "spot_l2", "execution"]
+description = "Full cross-venue bridge specialist using Binance, Kraken, Chainlink, futures positioning, and qualified spot L2."
+
+[[candidates]]
+name = "price_time_calibrated_middle_ensemble"
+kind = "calibrated_ensemble"
+members = ["middle_specialist_refit", "middle_q5_admission", "crossvenue_middle_specialist"]
+description = "Probabilistic bridge ensemble with policies calibrated only on August 14-20 official TWAP outcomes."

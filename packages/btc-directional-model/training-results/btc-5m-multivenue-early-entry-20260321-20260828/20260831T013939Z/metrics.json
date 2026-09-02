@@ -1,0 +1,1813 @@
+{
+  "artifact_sha256": "40fc48b3a43bf417f85dceff353c6917713cdac929c0b9b0afab43bc65c5e310",
+  "candidate_count_trained": 8,
+  "candidate_names": [
+    "full_history_price_control",
+    "full_history_refprice_residual",
+    "binance_flow",
+    "kraken_crossvenue",
+    "settlement_aligned_oracle",
+    "dual_venue_flow_agreement",
+    "multivenue_consensus",
+    "time_specialist_ensemble"
+  ],
+  "created_at": "2026-08-31T01:48:06.344284+00:00",
+  "integrity": {
+    "database_mutations": false,
+    "deployed": false,
+    "failed_checks": [
+      "artifact_deserialization"
+    ],
+    "entry_schedule_exact": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180,
+      185,
+      190,
+      195,
+      200,
+      205,
+      210,
+      215,
+      220,
+      225,
+      230,
+      235,
+      240
+    ],
+    "forbidden_inference_tokens": [
+      "twap",
+      "official_outcome",
+      "label_up",
+      "final_price",
+      "resolution"
+    ],
+    "kraken_l2_included": false,
+    "market_disjoint": true,
+    "new_ingesters": false,
+    "new_sources": false,
+    "new_tables": false,
+    "optional_missingness_preserves_rows": true,
+    "passed": false,
+    "runtime_exported": false,
+    "sealed_opened_after_selection": true
+  },
+  "model_family": "btc-5m-multivenue-early-entry",
+  "nominated_predictive_model": "full_history_price_control",
+  "oof_predictive": {
+    "binance_flow": {
+      "accuracy": 0.7318881936541856,
+      "brier_score": 0.17593868879293034,
+      "by_fold": [
+        {
+          "accuracy": 0.7150963463463463,
+          "brier_score": 0.18643632331348217,
+          "fold": "april",
+          "log_loss": 0.5499415559346503,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7269174416351836,
+          "brier_score": 0.17772672441492085,
+          "fold": "may",
+          "log_loss": 0.5271888843605209,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7545201451451451,
+          "brier_score": 0.16435025558866273,
+          "fold": "june",
+          "log_loss": 0.49439806978454903,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7427831056863315,
+          "brier_score": 0.1697020659052481,
+          "fold": "july",
+          "log_loss": 0.5067978576373356,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7042768122116239,
+          "brier_score": 0.18906759280986876,
+          "fold": "august_preseal",
+          "log_loss": 0.5540852612359877,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6694517704831756,
+          "band": "60_120",
+          "brier_score": 0.20843432475115387,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.735712081072044,
+          "band": "125_180",
+          "brier_score": 0.17556517908715386,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7957037646715879,
+          "band": "185_240",
+          "brier_score": 0.14110859287729802,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.004540142339934259,
+      "log_loss": 0.5228650204886198,
+      "markets": 38879,
+      "mean_probability": 0.5025035422294601,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "dual_venue_flow_agreement": {
+      "accuracy": 0.7340084239181438,
+      "brier_score": 0.17479386824218993,
+      "by_fold": [
+        {
+          "accuracy": 0.7150963463463463,
+          "brier_score": 0.18643632331348217,
+          "fold": "april",
+          "log_loss": 0.5499415559346503,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7262393441828926,
+          "brier_score": 0.1776050461953794,
+          "fold": "may",
+          "log_loss": 0.5267801670479062,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7543574824824825,
+          "brier_score": 0.1645991612102233,
+          "fold": "june",
+          "log_loss": 0.49483563577257456,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7428648406470987,
+          "brier_score": 0.169662015701723,
+          "fold": "july",
+          "log_loss": 0.5067471180031611,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7280978547342427,
+          "brier_score": 0.1769874134346665,
+          "fold": "august_preseal",
+          "log_loss": 0.5255152143074759,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6717270743351661,
+          "band": "60_120",
+          "brier_score": 0.2072776772073768,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7381084047086259,
+          "band": "125_180",
+          "brier_score": 0.1744197967892773,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7973799051758876,
+          "band": "185_240",
+          "brier_score": 0.1399771466494835,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.006215538850631249,
+      "log_loss": 0.520106226611776,
+      "markets": 38879,
+      "mean_probability": 0.5043284826322765,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "full_history_price_control": {
+      "accuracy": 0.7340980992309473,
+      "brier_score": 0.1747041715312594,
+      "by_fold": [
+        {
+          "accuracy": 0.7150963463463463,
+          "brier_score": 0.18643632331348217,
+          "fold": "april",
+          "log_loss": 0.5499415559346503,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7259547854305919,
+          "brier_score": 0.1776579320900373,
+          "fold": "may",
+          "log_loss": 0.5267825111068722,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7547516266266266,
+          "brier_score": 0.16440098200395578,
+          "fold": "june",
+          "log_loss": 0.4946475999738282,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7440121573186089,
+          "brier_score": 0.16925215956734815,
+          "fold": "july",
+          "log_loss": 0.5057985563119823,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7260616213327942,
+          "brier_score": 0.1773646456596401,
+          "fold": "august_preseal",
+          "log_loss": 0.5262635692925647,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6720911229514845,
+          "band": "60_120",
+          "brier_score": 0.20709557383713156,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7383055977091317,
+          "band": "125_180",
+          "brier_score": 0.17435597912228862,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7970648250555141,
+          "band": "185_240",
+          "brier_score": 0.13996167810886873,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.00512389675161348,
+      "log_loss": 0.5199192010295239,
+      "markets": 38879,
+      "mean_probability": 0.5031143719776436,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "full_history_refprice_residual": {
+      "accuracy": 0.7337943154193572,
+      "brier_score": 0.17490049033067773,
+      "by_fold": [
+        {
+          "accuracy": 0.7150963463463463,
+          "brier_score": 0.18643632331348217,
+          "fold": "april",
+          "log_loss": 0.5499415559346503,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7266116923374988,
+          "brier_score": 0.17772643812840933,
+          "fold": "may",
+          "log_loss": 0.5270352619812706,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7550706956956957,
+          "brier_score": 0.16428044343019246,
+          "fold": "june",
+          "log_loss": 0.494189218186986,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7426832074009493,
+          "brier_score": 0.17009220857535787,
+          "fold": "july",
+          "log_loss": 0.5081630009702718,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7237726639276199,
+          "brier_score": 0.17751494018964414,
+          "fold": "august_preseal",
+          "log_loss": 0.5263293292047977,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6709791918516422,
+          "band": "60_120",
+          "brier_score": 0.20747292165022987,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7385199379270729,
+          "band": "125_180",
+          "brier_score": 0.17460333080313814,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7971184101099994,
+          "band": "185_240",
+          "brier_score": 0.1399108492620359,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.005787124254091491,
+      "log_loss": 0.5204246677963905,
+      "markets": 38879,
+      "mean_probability": 0.5039202005061973,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "kraken_crossvenue": {
+      "accuracy": 0.7340786348219667,
+      "brier_score": 0.17474069940901746,
+      "by_fold": [
+        {
+          "accuracy": 0.7150963463463463,
+          "brier_score": 0.18643632331348217,
+          "fold": "april",
+          "log_loss": 0.5499415559346503,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7267539717136491,
+          "brier_score": 0.17754570405300202,
+          "fold": "may",
+          "log_loss": 0.5266650245874067,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7545295295295296,
+          "brier_score": 0.1646366182913873,
+          "fold": "june",
+          "log_loss": 0.4952407874205656,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7435641286447738,
+          "brier_score": 0.169377059483339,
+          "fold": "july",
+          "log_loss": 0.506034200526501,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7255345112678803,
+          "brier_score": 0.17716991824864187,
+          "fold": "august_preseal",
+          "log_loss": 0.5260065560764661,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6712067222368413,
+          "band": "60_120",
+          "brier_score": 0.20728976197673954,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7389593353738522,
+          "band": "125_180",
+          "brier_score": 0.17435853042118563,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.797309172903967,
+          "band": "185_240",
+          "brier_score": 0.1398613839484838,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.0065385070239769826,
+      "log_loss": 0.5200534136114675,
+      "markets": 38879,
+      "mean_probability": 0.5046738102083895,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "multivenue_consensus": {
+      "accuracy": 0.7318478745212972,
+      "brier_score": 0.17572045085905277,
+      "by_fold": [
+        {
+          "accuracy": 0.7155374124124124,
+          "brier_score": 0.1861562496414697,
+          "fold": "april",
+          "log_loss": 0.5492883469136993,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7250708369659983,
+          "brier_score": 0.1780378559990287,
+          "fold": "may",
+          "log_loss": 0.5276026906148106,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7546327577577577,
+          "brier_score": 0.16408018003474853,
+          "fold": "june",
+          "log_loss": 0.49389909139396093,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7425106558171074,
+          "brier_score": 0.1701172698126543,
+          "fold": "july",
+          "log_loss": 0.508197516800124,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7076344311182676,
+          "brier_score": 0.18633814942556273,
+          "fold": "august_preseal",
+          "log_loss": 0.5477277119724308,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6690521084152607,
+          "band": "60_120",
+          "brier_score": 0.20827556699912564,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7360828896490822,
+          "band": "125_180",
+          "brier_score": 0.175346863480315,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.795641606008385,
+          "band": "185_240",
+          "brier_score": 0.14082599575271157,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.0034518675192399457,
+      "log_loss": 0.5224133476861937,
+      "markets": 38879,
+      "mean_probability": 0.5014485724498234,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "settlement_aligned_oracle": {
+      "accuracy": 0.733781107427549,
+      "brier_score": 0.17494686392439088,
+      "by_fold": [
+        {
+          "accuracy": 0.7155374124124124,
+          "brier_score": 0.1861562496414697,
+          "fold": "april",
+          "log_loss": 0.5492883469136993,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7279769689043882,
+          "brier_score": 0.17746427393283853,
+          "fold": "may",
+          "log_loss": 0.5266636801365948,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7556243743743744,
+          "brier_score": 0.16411572760369458,
+          "fold": "june",
+          "log_loss": 0.49419817474578037,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7423956214278795,
+          "brier_score": 0.1699304364258988,
+          "fold": "july",
+          "log_loss": 0.5078773111425943,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7187687286538476,
+          "brier_score": 0.1800345351416954,
+          "fold": "august_preseal",
+          "log_loss": 0.5317612211507837,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.671974389971252,
+          "band": "60_120",
+          "brier_score": 0.20726730800918441,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7377268791206907,
+          "band": "125_180",
+          "brier_score": 0.17463675213379526,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7967926129787288,
+          "band": "185_240",
+          "brier_score": 0.14024316128979342,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.003769127125343116,
+      "log_loss": 0.5206535087848425,
+      "markets": 38879,
+      "mean_probability": 0.5018476395404504,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    },
+    "time_specialist_ensemble": {
+      "accuracy": 0.7313292870534569,
+      "brier_score": 0.17627747534521218,
+      "by_fold": [
+        {
+          "accuracy": 0.7134884884884884,
+          "brier_score": 0.1866302933536339,
+          "fold": "april",
+          "log_loss": 0.5497584985688019,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7255884917175239,
+          "brier_score": 0.17835588830600016,
+          "fold": "may",
+          "log_loss": 0.5284335637085027,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7546014764764765,
+          "brier_score": 0.16461894170977415,
+          "fold": "june",
+          "log_loss": 0.4956939087213678,
+          "markets": 8640,
+          "rows": 319680
+        },
+        {
+          "accuracy": 0.7392230940618038,
+          "brier_score": 0.1724041194081558,
+          "fold": "july",
+          "log_loss": 0.5134112751710349,
+          "markets": 8928,
+          "rows": 330336
+        },
+        {
+          "accuracy": 0.7136564830927642,
+          "brier_score": 0.18357286244367477,
+          "fold": "august_preseal",
+          "log_loss": 0.5407794539951504,
+          "markets": 3743,
+          "rows": 138491
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6672021874573381,
+          "band": "60_120",
+          "brier_score": 0.20959755581160264,
+          "markets": 38879,
+          "rows": 505427
+        },
+        {
+          "accuracy": 0.7349597469070707,
+          "band": "125_180",
+          "brier_score": 0.17611412074190483,
+          "markets": 38879,
+          "rows": 466548
+        },
+        {
+          "accuracy": 0.7971698517623053,
+          "band": "185_240",
+          "brier_score": 0.14034407610992988,
+          "markets": 38879,
+          "rows": 466548
+        }
+      ],
+      "ece_15": 0.004425478645601456,
+      "log_loss": 0.5236358192548015,
+      "markets": 38879,
+      "mean_probability": 0.500587713094972,
+      "positive_rate": 0.5000385812392294,
+      "rows": 1438523
+    }
+  },
+  "policy_selection_evidence": {
+    "binance_flow": {
+      "development": {
+        "average_entry_second": 108.63530099357101,
+        "average_share_cost": 0.5138796639392168,
+        "gross_loss": 7251.80736146554,
+        "gross_profit": 8706.29063516228,
+        "losing_trades": 2889,
+        "loss_recovery_wins": 1.140281410067835,
+        "market_coverage": 0.1760333341906942,
+        "maximum_drawdown": 211.56448634751814,
+        "net_pnl": 1454.4832736967398,
+        "profit_factor": 1.2005683826387246,
+        "stress_net_pnl": 1112.28327369674,
+        "trades": 6844,
+        "win_rate": 0.5778784336645236,
+        "winning_trades": 3955
+      },
+      "selection_score": 1.9454615371548494
+    },
+    "dual_venue_flow_agreement": {
+      "development": {
+        "average_entry_second": 108.56282271944923,
+        "average_share_cost": 0.5704389127940332,
+        "gross_loss": 7204.27270526426,
+        "gross_profit": 8690.93335964252,
+        "losing_trades": 2549,
+        "loss_recovery_wins": 1.438370700626093,
+        "market_coverage": 0.17932559993827002,
+        "maximum_drawdown": 133.71054361095824,
+        "net_pnl": 1486.6606543782596,
+        "profit_factor": 1.20635818703697,
+        "stress_net_pnl": 1138.0606543782599,
+        "trades": 6972,
+        "win_rate": 0.6343947217441194,
+        "winning_trades": 4423
+      },
+      "selection_score": 2.28252587554074
+    },
+    "full_history_price_control": {
+      "development": {
+        "average_entry_second": 114.10451774829689,
+        "average_share_cost": 0.5517268949444245,
+        "gross_loss": 5589.0732674776,
+        "gross_profit": 7229.0624178977005,
+        "losing_trades": 2053,
+        "loss_recovery_wins": 1.3274800414099324,
+        "market_coverage": 0.1434707682810772,
+        "maximum_drawdown": 94.55390985545907,
+        "net_pnl": 1639.9891504200996,
+        "profit_factor": 1.2934277422990812,
+        "stress_net_pnl": 1361.0891504201002,
+        "trades": 5578,
+        "win_rate": 0.6319469343850843,
+        "winning_trades": 3525
+      },
+      "selection_score": 2.158797465863151
+    },
+    "full_history_refprice_residual": {
+      "development": {
+        "average_entry_second": 92.43440366972477,
+        "average_share_cost": 0.6186799651376147,
+        "gross_loss": 11603.89235657766,
+        "gross_profit": 12395.06971674664,
+        "losing_trades": 3772,
+        "loss_recovery_wins": 1.769093246397203,
+        "market_coverage": 0.28035700506700273,
+        "maximum_drawdown": 263.32688978629096,
+        "net_pnl": 791.1773601689797,
+        "profit_factor": 1.0681820664874146,
+        "stress_net_pnl": 246.1773601689794,
+        "trades": 10900,
+        "win_rate": 0.6539449541284403,
+        "winning_trades": 7128
+      },
+      "selection_score": 1.9687618120405468
+    },
+    "kraken_crossvenue": {
+      "development": {
+        "average_entry_second": 110.64518633540372,
+        "average_share_cost": 0.5851492701863354,
+        "gross_loss": 6525.11663107876,
+        "gross_profit": 8025.6822737969,
+        "losing_trades": 2235,
+        "loss_recovery_wins": 1.5296595724176192,
+        "market_coverage": 0.16564212042490806,
+        "maximum_drawdown": 95.07427673551865,
+        "net_pnl": 1500.5656427181398,
+        "profit_factor": 1.2299676354551319,
+        "stress_net_pnl": 1178.5656427181395,
+        "trades": 6440,
+        "win_rate": 0.6529503105590062,
+        "winning_trades": 4205
+      },
+      "selection_score": 2.3650336380751633
+    },
+    "multivenue_consensus": {
+      "development": {
+        "average_entry_second": 112.68730886850153,
+        "average_share_cost": 0.5739443577981652,
+        "gross_loss": 5192.7384918565,
+        "gross_profit": 6735.02573169774,
+        "losing_trades": 1809,
+        "loss_recovery_wins": 1.4589000019954703,
+        "market_coverage": 0.13457136243216133,
+        "maximum_drawdown": 112.62386657188154,
+        "net_pnl": 1542.2872398412396,
+        "profit_factor": 1.2970084556077546,
+        "stress_net_pnl": 1280.6872398412397,
+        "trades": 5232,
+        "win_rate": 0.654243119266055,
+        "winning_trades": 3423
+      },
+      "selection_score": 2.3274449899602345
+    },
+    "settlement_aligned_oracle": {
+      "development": {
+        "average_entry_second": 110.52259205660074,
+        "average_share_cost": 0.5969480784692073,
+        "gross_loss": 6091.51819938364,
+        "gross_profit": 7690.6301467729,
+        "losing_trades": 2056,
+        "loss_recovery_wins": 1.6037878558826812,
+        "market_coverage": 0.15995781784510918,
+        "maximum_drawdown": 87.99211578889901,
+        "net_pnl": 1599.1119473892597,
+        "profit_factor": 1.2625145152732307,
+        "stress_net_pnl": 1288.16194738926,
+        "trades": 6219,
+        "win_rate": 0.6694002251165783,
+        "winning_trades": 4163
+      },
+      "selection_score": 2.213554612348263
+    },
+    "time_specialist_ensemble": {
+      "development": {
+        "average_entry_second": 126.37634801681594,
+        "average_share_cost": 0.5848952440138914,
+        "gross_loss": 5319.102683695321,
+        "gross_profit": 6911.20252532568,
+        "losing_trades": 1837,
+        "loss_recovery_wins": 1.5225112883586414,
+        "market_coverage": 0.14071863988271302,
+        "maximum_drawdown": 87.98529389865925,
+        "net_pnl": 1592.09984163036,
+        "profit_factor": 1.2993173729303316,
+        "stress_net_pnl": 1318.5498416303597,
+        "trades": 5471,
+        "win_rate": 0.6642295741180771,
+        "winning_trades": 3634
+      },
+      "selection_score": 2.113089115625206
+    }
+  },
+  "predictive_ranking_preseal": [
+    "full_history_price_control",
+    "kraken_crossvenue",
+    "dual_venue_flow_agreement",
+    "full_history_refprice_residual",
+    "settlement_aligned_oracle",
+    "multivenue_consensus",
+    "binance_flow",
+    "time_specialist_ensemble"
+  ],
+  "prior_champion_reference": {
+    "artifact_path": "training-results/btc-5m-early-entry-settlement-consensus-20260321-20260827/20260829T144048Z/tournament.joblib",
+    "artifact_sha256": "562c39688790f055414c0f23ee372db08f782e1e2106189ef8424220ea4715e2",
+    "directly_comparable_60_240": false,
+    "name": "prior_frozen_champion_reference",
+    "observation_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180
+    ],
+    "predictive": {
+      "brier": 0.18134350988514517,
+      "directional_accuracy": 0.7295852534562212,
+      "expected_calibration_error": 0.028447110155994347,
+      "log_loss": 0.5409027538496085,
+      "markets": 3689,
+      "mean_uncertainty_bps": 8.224530006887639,
+      "quantile_interval_coverage": 0.8820710219571701,
+      "rows": 92225,
+      "terminal_margin_mae_bps": 6.012047171093022
+    },
+    "prospective": {
+      "classification": "historically_consumed_holdout_unavailable",
+      "economic": {
+        "accuracy": null,
+        "accuracy_exact_interval": null,
+        "active_days": 0,
+        "average_loss": null,
+        "average_win": null,
+        "base_expectancy": 0.0,
+        "base_pnl": 0.0,
+        "best_day_pnl_concentration": null,
+        "cvar_5pct": 0.0,
+        "longest_losing_streak": 0,
+        "loss_recovery_wins": null,
+        "losses": 0,
+        "market_coverage": 0.0,
+        "maximum_contract_cost": null,
+        "maximum_drawdown": 0.0,
+        "maximum_hypothetical_next_loss_impact": null,
+        "mean_contract_cost": null,
+        "median_contract_cost": null,
+        "pnl_after_injected_stressed_loss": null,
+        "pnl_excluding_best_day": 0.0,
+        "profit_factor": null,
+        "profit_factor_undefined_zero_losses": false,
+        "recovery": {
+          "maximum_recovery_hours": null,
+          "maximum_recovery_trades": null,
+          "mean_recovery_hours": null,
+          "mean_recovery_trades": null,
+          "recovered_losses": 0,
+          "unrecovered_losses": 0
+        },
+        "stressed_expectancy": 0.0,
+        "stressed_pnl": 0.0,
+        "trades": 0,
+        "trades_per_active_day": 0.0,
+        "wins": 0
+      },
+      "policy": "edge_loss_compensation_tail_risk",
+      "predictive": {
+        "brier": null,
+        "directional_accuracy": null,
+        "expected_calibration_error": null,
+        "log_loss": null,
+        "markets": 0,
+        "quantile_interval_coverage": null,
+        "rows": 0,
+        "terminal_margin_mae_bps": null
+      },
+      "reason": "no complete post-freeze causal path and executable snapshot exists",
+      "tuning_performed": false
+    },
+    "reason": "The immutable prior model has a 60..180 input contract and is retained as a reference, not refit or extrapolated to 240 seconds.",
+    "source_candidate": "frozen_bridge_control"
+  },
+  "producing_commit": "f318c96020a934a3ad66df7ed9ded996e1ed7807",
+  "post_training_validation": {
+    "artifact_deserialization": {
+      "error": "AttributeError: Can't get attribute 'CandidateModel' on <module '__main__'>",
+      "passed": false,
+      "reason": "The training CLI serialized module dataclasses under __main__, so the immutable model artifact cannot be loaded from an importing process."
+    },
+    "artifact_sha256_verified": true,
+    "retraining_performed": false,
+    "sealed_rerun_performed": false
+  },
+  "qualification_status": "disqualified_artifact_deserialization_failure",
+  "run_id": "20260831T013939Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "sklearn": "1.9.0"
+  },
+  "schema_version": "btc-multivenue-early-entry-tournament-v1",
+  "sealed_economic": {
+    "binance_flow": {
+      "average_entry_second": 99.23556430446195,
+      "average_share_cost": 0.4689400656167979,
+      "gross_loss": 1796.1224929823402,
+      "gross_profit": 1730.97930041264,
+      "losing_trades": 790,
+      "loss_recovery_wins": 0.9640799385253247,
+      "market_coverage": 0.41278439869989164,
+      "maximum_drawdown": 128.33869397481993,
+      "net_pnl": -65.14319256969999,
+      "profit_factor": 0.9637312082977513,
+      "stress_net_pnl": -141.34319256970005,
+      "trades": 1524,
+      "win_rate": 0.4816272965879265,
+      "winning_trades": 734
+    },
+    "dual_venue_flow_agreement": {
+      "average_entry_second": 99.46747676912081,
+      "average_share_cost": 0.5306410007147964,
+      "gross_loss": 1650.23336608206,
+      "gross_profit": 1604.10356105278,
+      "losing_trades": 636,
+      "loss_recovery_wins": 1.2341853394359763,
+      "market_coverage": 0.3789274106175515,
+      "maximum_drawdown": 153.51710051058006,
+      "net_pnl": -46.12980502928002,
+      "profit_factor": 0.9720464959820803,
+      "stress_net_pnl": -116.07980502928008,
+      "trades": 1399,
+      "win_rate": 0.5453895639742673,
+      "winning_trades": 763
+    },
+    "full_history_price_control": {
+      "average_entry_second": 105.6677796327212,
+      "average_share_cost": 0.5034774791318865,
+      "gross_loss": 1406.32957735554,
+      "gross_profit": 1392.30525273028,
+      "losing_trades": 572,
+      "loss_recovery_wins": 1.1054292541221307,
+      "market_coverage": 0.32448537378114845,
+      "maximum_drawdown": 157.7004174436202,
+      "net_pnl": -14.024324625260036,
+      "profit_factor": 0.9900277112484319,
+      "stress_net_pnl": -73.9243246252601,
+      "trades": 1198,
+      "win_rate": 0.5225375626043406,
+      "winning_trades": 626
+    },
+    "full_history_refprice_residual": {
+      "average_entry_second": 91.64730728616684,
+      "average_share_cost": 0.576298479408659,
+      "gross_loss": 2180.11952261542,
+      "gross_profit": 2079.7265500843,
+      "losing_trades": 783,
+      "loss_recovery_wins": 1.487395162659528,
+      "market_coverage": 0.5130010834236186,
+      "maximum_drawdown": 160.73303740876014,
+      "net_pnl": -100.39297253112005,
+      "profit_factor": 0.9539507024776872,
+      "stress_net_pnl": -195.09297253112013,
+      "trades": 1894,
+      "win_rate": 0.5865892291446674,
+      "winning_trades": 1111
+    },
+    "kraken_crossvenue": {
+      "average_entry_second": 104.63253509496285,
+      "average_share_cost": 0.5471661932287366,
+      "gross_loss": 1416.72643868678,
+      "gross_profit": 1365.0699925442,
+      "losing_trades": 533,
+      "loss_recovery_wins": 1.3201812598714222,
+      "market_coverage": 0.3280065005417118,
+      "maximum_drawdown": 162.11908007666017,
+      "net_pnl": -51.65644614258002,
+      "profit_factor": 0.9635381646505712,
+      "stress_net_pnl": -112.20644614258006,
+      "trades": 1211,
+      "win_rate": 0.5598678777869529,
+      "winning_trades": 678
+    },
+    "multivenue_consensus": {
+      "average_entry_second": 102.4186778593914,
+      "average_share_cost": 0.54717370409234,
+      "gross_loss": 1118.4803891000402,
+      "gross_profit": 1099.21563421518,
+      "losing_trades": 415,
+      "loss_recovery_wins": 1.3191058792242765,
+      "market_coverage": 0.25812567713976164,
+      "maximum_drawdown": 79.61882976689996,
+      "net_pnl": -19.26475488486001,
+      "profit_factor": 0.9827759564918602,
+      "stress_net_pnl": -66.91475488486006,
+      "trades": 953,
+      "win_rate": 0.5645330535152151,
+      "winning_trades": 538
+    },
+    "settlement_aligned_oracle": {
+      "average_entry_second": 106.12274024738345,
+      "average_share_cost": 0.5738870599429116,
+      "gross_loss": 1199.34329104478,
+      "gross_profit": 1172.7485538318,
+      "losing_trades": 431,
+      "loss_recovery_wins": 1.4711366780838457,
+      "market_coverage": 0.28466955579631636,
+      "maximum_drawdown": 97.58395634070001,
+      "net_pnl": -26.59473721298003,
+      "profit_factor": 0.977825583874478,
+      "stress_net_pnl": -79.14473721298003,
+      "trades": 1051,
+      "win_rate": 0.5899143672692674,
+      "winning_trades": 620
+    },
+    "time_specialist_ensemble": {
+      "average_entry_second": 124.43844492440604,
+      "average_share_cost": 0.565624060475162,
+      "gross_loss": 1046.3647518079601,
+      "gross_profit": 1059.3524709161202,
+      "losing_trades": 380,
+      "loss_recovery_wins": 1.4192263426362042,
+      "market_coverage": 0.25081256771397614,
+      "maximum_drawdown": 70.12962985068003,
+      "net_pnl": 12.987719108159974,
+      "profit_factor": 1.0124122291827198,
+      "stress_net_pnl": -33.31228089184002,
+      "trades": 926,
+      "win_rate": 0.5896328293736501,
+      "winning_trades": 546
+    }
+  },
+  "sealed_predictive": {
+    "binance_flow": {
+      "accuracy": 0.7535064859008521,
+      "brier_score": 0.16398035744854883,
+      "by_fold": [
+        {
+          "accuracy": 0.7535064859008521,
+          "brier_score": 0.16398035744854883,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.49315478213352326,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.680785898824902,
+          "band": "60_120",
+          "brier_score": 0.20434229938158688,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7565456843625857,
+          "band": "125_180",
+          "brier_score": 0.16432153174710884,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8292479234380643,
+          "band": "185_240",
+          "brier_score": 0.11991374605586427,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.01325870196272081,
+      "log_loss": 0.49315478213352326,
+      "markets": 3692,
+      "mean_probability": 0.5054224787245212,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "dual_venue_flow_agreement": {
+      "accuracy": 0.7592310620479634,
+      "brier_score": 0.1616012749616615,
+      "by_fold": [
+        {
+          "accuracy": 0.7592310620479634,
+          "brier_score": 0.1616012749616615,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.4866758341438263,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6857863155262939,
+          "band": "60_120",
+          "brier_score": 0.201550112564914,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7643779342723005,
+          "band": "125_180",
+          "brier_score": 0.16189546355787715,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8336493318887686,
+          "band": "185_240",
+          "brier_score": 0.11802917896192228,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.01217812305588987,
+      "log_loss": 0.4866758341438263,
+      "markets": 3692,
+      "mean_probability": 0.5054184139662958,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "full_history_price_control": {
+      "accuracy": 0.7578914233843811,
+      "brier_score": 0.1617014595201603,
+      "by_fold": [
+        {
+          "accuracy": 0.7578914233843811,
+          "brier_score": 0.1617014595201603,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.4867734520035738,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6844112009334111,
+          "band": "60_120",
+          "brier_score": 0.20148855811447886,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.762143373058866,
+          "band": "125_180",
+          "brier_score": 0.16202714565975754,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8332430480317804,
+          "band": "185_240",
+          "brier_score": 0.11827308323671795,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.010835143353532061,
+      "log_loss": 0.4867734520035738,
+      "markets": 3692,
+      "mean_probability": 0.5037664168436464,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "full_history_refprice_residual": {
+      "accuracy": 0.7610392082223069,
+      "brier_score": 0.16107442381655926,
+      "by_fold": [
+        {
+          "accuracy": 0.7610392082223069,
+          "brier_score": 0.16107442381655926,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.48582672692688395,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6906200516709726,
+          "band": "60_120",
+          "brier_score": 0.20040049516162986,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.763926507764536,
+          "band": "125_180",
+          "brier_score": 0.1615544835647925,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8344393282773565,
+          "band": "185_240",
+          "brier_score": 0.11799112011116615,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.01735801410999027,
+      "log_loss": 0.48582672692688395,
+      "markets": 3692,
+      "mean_probability": 0.5029664127252699,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "kraken_crossvenue": {
+      "accuracy": 0.7570422535211268,
+      "brier_score": 0.16144920025149204,
+      "by_fold": [
+        {
+          "accuracy": 0.7570422535211268,
+          "brier_score": 0.16144920025149204,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.48628793077700466,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6845987165597133,
+          "band": "60_120",
+          "brier_score": 0.20101023159561618,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7607890935355724,
+          "band": "125_180",
+          "brier_score": 0.1617906695316702,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8317759118815456,
+          "band": "185_240",
+          "brier_score": 0.11824994701517946,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.013378422647520476,
+      "log_loss": 0.48628793077700466,
+      "markets": 3692,
+      "mean_probability": 0.5054639055020754,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "multivenue_consensus": {
+      "accuracy": 0.7531185031185031,
+      "brier_score": 0.16423408526451713,
+      "by_fold": [
+        {
+          "accuracy": 0.7531185031185031,
+          "brier_score": 0.16423408526451713,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.4930411385293166,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6793482790232519,
+          "band": "60_120",
+          "brier_score": 0.2043309491473411,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7565456843625857,
+          "band": "125_180",
+          "brier_score": 0.16475169131703807,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8296090646442759,
+          "band": "185_240",
+          "brier_score": 0.12027821000560363,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.013151776637216766,
+      "log_loss": 0.4930411385293166,
+      "markets": 3692,
+      "mean_probability": 0.5030103978150632,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "settlement_aligned_oracle": {
+      "accuracy": 0.7590846534508506,
+      "brier_score": 0.1609230139426465,
+      "by_fold": [
+        {
+          "accuracy": 0.7590846534508506,
+          "brier_score": 0.1609230139426465,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.4851142725833097,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6868697391449288,
+          "band": "60_120",
+          "brier_score": 0.20074532626771463,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7632267966775009,
+          "band": "125_180",
+          "brier_score": 0.16132559306982125,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8331753340556157,
+          "band": "185_240",
+          "brier_score": 0.11737959646331465,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.01560329061418493,
+      "log_loss": 0.4851142725833097,
+      "markets": 3692,
+      "mean_probability": 0.5004769367037725,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    },
+    "time_specialist_ensemble": {
+      "accuracy": 0.7579499868232262,
+      "brier_score": 0.16161254480741477,
+      "by_fold": [
+        {
+          "accuracy": 0.7579499868232262,
+          "brier_score": 0.16161254480741477,
+          "fold": "sealed_20260814_20260828",
+          "log_loss": 0.48667898065619475,
+          "markets": 3692,
+          "rows": 136604
+        }
+      ],
+      "by_timing_band": [
+        {
+          "accuracy": 0.6847237269772481,
+          "band": "60_120",
+          "brier_score": 0.20177298113007855,
+          "markets": 3692,
+          "rows": 47996
+        },
+        {
+          "accuracy": 0.7592316720837847,
+          "band": "125_180",
+          "brier_score": 0.16256186826428273,
+          "markets": 3692,
+          "rows": 44304
+        },
+        {
+          "accuracy": 0.8359967497291441,
+          "band": "185_240",
+          "brier_score": 0.11715608200099445,
+          "markets": 3692,
+          "rows": 44304
+        }
+      ],
+      "ece_15": 0.01726496130105689,
+      "log_loss": 0.48667898065619475,
+      "markets": 3692,
+      "mean_probability": 0.5054667800009351,
+      "positive_rate": 0.502979414951246,
+      "rows": 136604
+    }
+  },
+  "selected_policies": {
+    "binance_flow": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.55,
+      "minimum_edge": 0.1
+    },
+    "dual_venue_flow_agreement": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.075
+    },
+    "full_history_price_control": {
+      "maximum_share_cost": 0.85,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.1
+    },
+    "full_history_refprice_residual": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.01
+    },
+    "kraken_crossvenue": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.65,
+      "minimum_edge": 0.075
+    },
+    "multivenue_consensus": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.1
+    },
+    "settlement_aligned_oracle": {
+      "maximum_share_cost": 0.8,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.075
+    },
+    "time_specialist_ensemble": {
+      "maximum_share_cost": 0.85,
+      "minimum_confidence": 0.7,
+      "minimum_edge": 0.1
+    }
+  },
+  "selection_frozen_at": "2026-08-31T01:44:30.210610+00:00",
+  "source_panel": {
+    "complete_core_markets": 45738,
+    "coverage": {
+      "binance_prints": {
+        "markets": 10302,
+        "rows": 190777
+      },
+      "candles": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "core": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "kraken": {
+        "markets": 42563,
+        "rows": 766254
+      },
+      "open_interest": {
+        "markets": 15786,
+        "rows": 584082
+      },
+      "oracle": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "refprice": {
+        "markets": 22997,
+        "rows": 844888
+      }
+    },
+    "database_mutations": false,
+    "entry_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180,
+      185,
+      190,
+      195,
+      200,
+      205,
+      210,
+      215,
+      220,
+      225,
+      230,
+      235,
+      240
+    ],
+    "feature_groups": {
+      "binance_prints": [
+        "binance_print_return_5s_bps",
+        "binance_print_signed_share_5s",
+        "binance_print_log_quote_volume_5s",
+        "binance_print_log_trade_count_5s",
+        "binance_print_return_15s_bps",
+        "binance_print_signed_share_15s",
+        "binance_print_log_quote_volume_15s",
+        "binance_print_log_trade_count_15s",
+        "binance_print_return_30s_bps",
+        "binance_print_signed_share_30s",
+        "binance_print_log_quote_volume_30s",
+        "binance_print_log_trade_count_30s",
+        "binance_print_return_60s_bps",
+        "binance_print_signed_share_60s",
+        "binance_print_log_quote_volume_60s",
+        "binance_print_log_trade_count_60s"
+      ],
+      "candles": [
+        "chainlink_candle_return_5m_bps",
+        "chainlink_candle_return_15m_bps",
+        "chainlink_candle_return_30m_bps",
+        "chainlink_candle_return_60m_bps",
+        "chainlink_candle_realized_volatility_15m_bps",
+        "chainlink_candle_realized_volatility_60m_bps",
+        "chainlink_candle_range_15m_bps",
+        "chainlink_candle_range_60m_bps"
+      ],
+      "core": [
+        "seconds_elapsed_scaled",
+        "seconds_remaining_scaled",
+        "btc_path_from_window_open_bps",
+        "btc_cross_venue_boundary_gap_bps",
+        "btc_window_open_cross_venue_basis_bps",
+        "btc_return_1s_bps",
+        "btc_return_5s_bps",
+        "btc_return_15s_bps",
+        "btc_return_30s_bps",
+        "btc_return_60s_bps",
+        "btc_return_90s_bps",
+        "btc_return_120s_bps",
+        "btc_return_180s_bps",
+        "btc_realized_volatility_5s_bps",
+        "btc_realized_volatility_15s_bps",
+        "btc_realized_volatility_30s_bps",
+        "btc_realized_volatility_60s_bps",
+        "btc_realized_volatility_90s_bps",
+        "btc_realized_volatility_120s_bps",
+        "btc_realized_volatility_180s_bps",
+        "btc_range_5s_bps",
+        "btc_range_30s_bps",
+        "btc_range_60s_bps",
+        "btc_path_efficiency_30s",
+        "btc_path_efficiency_60s",
+        "btc_range_position_30s",
+        "btc_range_position_60s",
+        "btc_signed_flow_5s",
+        "btc_signed_flow_30s",
+        "btc_signed_flow_60s",
+        "btc_signed_flow_90s",
+        "btc_signed_flow_120s",
+        "btc_signed_flow_180s",
+        "btc_path_cross_count",
+        "btc_boundary_cross_count",
+        "btc_seconds_since_path_cross",
+        "btc_seconds_since_boundary_cross",
+        "btc_path_terminal_volatility_z",
+        "btc_boundary_terminal_volatility_z",
+        "btc_boundary_distance_velocity_5s_bps",
+        "btc_boundary_momentum_alignment_5s",
+        "btc_momentum_multihorizon_score",
+        "btc_momentum_acceleration_5_vs_30",
+        "btc_momentum_acceleration_15_vs_60",
+        "btc_reversal_5_vs_30",
+        "btc_path_max_favorable_excursion_bps",
+        "btc_path_max_adverse_excursion_bps",
+        "btc_path_pullback_from_favorable_extreme_bps",
+        "btc_path_recovery_from_adverse_extreme_bps",
+        "btc_seconds_since_path_high_scaled",
+        "btc_seconds_since_path_low_scaled",
+        "btc_volatility_shock_30_vs_120",
+        "btc_volatility_shock_60_vs_180",
+        "btc_path_sign_normalized_return_5s_bps",
+        "btc_path_sign_normalized_return_30s_bps",
+        "btc_path_sign_normalized_return_60s_bps",
+        "btc_path_sign_normalized_return_90s_bps",
+        "btc_path_sign_normalized_return_120s_bps",
+        "btc_path_sign_normalized_flow_5s",
+        "btc_path_sign_normalized_flow_30s",
+        "btc_path_sign_normalized_flow_60s",
+        "btc_path_sign_normalized_flow_90s",
+        "btc_path_sign_normalized_flow_120s",
+        "hour_sin",
+        "hour_cos",
+        "weekday_sin",
+        "weekday_cos"
+      ],
+      "kraken": [
+        "kraken_return_5s_bps",
+        "kraken_return_15s_bps",
+        "kraken_return_30s_bps",
+        "kraken_return_60s_bps",
+        "kraken_return_120s_bps",
+        "kraken_realized_volatility_30s_bps",
+        "kraken_realized_volatility_60s_bps",
+        "kraken_log_quote_volume_30s",
+        "kraken_log_quote_volume_60s",
+        "kraken_print_signed_share_5s",
+        "kraken_print_signed_share_30s",
+        "kraken_print_signed_share_60s",
+        "kraken_log_trade_count_30s",
+        "kraken_log_trade_count_60s",
+        "kraken_binance_basis_bps",
+        "kraken_binance_return_agreement_30s",
+        "kraken_binance_flow_agreement_30s"
+      ],
+      "open_interest": [
+        "binance_oi_change_5m_bps",
+        "binance_oi_change_15m_bps",
+        "binance_oi_change_30m_bps",
+        "binance_oi_change_60m_bps",
+        "binance_oi_value_change_15m_bps",
+        "binance_oi_value_change_60m_bps",
+        "binance_oi_acceleration_5_vs_30_bps",
+        "binance_oi_path_agreement_15m",
+        "binance_oi_path_agreement_60m"
+      ],
+      "oracle": [
+        "oracle_return_from_window_open_bps",
+        "oracle_round_age_seconds_scaled",
+        "oracle_update_count_since_open_scaled",
+        "binance_oracle_basis_bps"
+      ],
+      "refprice": [
+        "chainlink_ref_return_1s_bps",
+        "chainlink_ref_return_5s_bps",
+        "chainlink_ref_return_15s_bps",
+        "chainlink_ref_return_30s_bps",
+        "chainlink_ref_return_60s_bps",
+        "chainlink_ref_binance_basis_bps",
+        "chainlink_ref_boundary_gap_bps",
+        "chainlink_ref_spread_bps",
+        "chainlink_ref_spread_change_30s_bps",
+        "chainlink_ref_binance_direction_agreement_30s",
+        "chainlink_ref_return_90s_bps",
+        "chainlink_ref_return_120s_bps",
+        "chainlink_ref_momentum_alignment_5_30",
+        "chainlink_ref_reversal_5_vs_30",
+        "chainlink_ref_reversal_15_vs_60",
+        "chainlink_ref_boundary_velocity_5s_bps",
+        "chainlink_ref_realized_volatility_5s_bps",
+        "chainlink_ref_realized_volatility_15s_bps",
+        "chainlink_ref_realized_volatility_30s_bps",
+        "chainlink_ref_realized_volatility_60s_bps",
+        "chainlink_ref_realized_volatility_90s_bps",
+        "chainlink_ref_realized_volatility_120s_bps",
+        "chainlink_ref_range_15s_bps",
+        "chainlink_ref_range_30s_bps",
+        "chainlink_ref_range_60s_bps",
+        "chainlink_ref_range_90s_bps",
+        "chainlink_ref_range_120s_bps",
+        "chainlink_ref_path_efficiency_30s",
+        "chainlink_ref_path_efficiency_60s",
+        "chainlink_ref_range_position_60s",
+        "chainlink_ref_boundary_cross_count_60s",
+        "chainlink_ref_direction_changes_60s",
+        "chainlink_ref_age_seconds",
+        "chainlink_ref_reports_60s",
+        "chainlink_ref_max_gap_60s",
+        "chainlink_ref_binance_basis_velocity_5s_bps",
+        "chainlink_ref_binance_disagreement_30s",
+        "chainlink_ref_source_skew_seconds"
+      ]
+    },
+    "kraken_l2_included": false,
+    "label_contract": "official resolved up/down outcome for every retained historical market",
+    "markets": 45738,
+    "new_tables": false,
+    "optional_missingness_preserves_rows": true,
+    "rows": 1692306,
+    "schema_version": "btc-multivenue-early-entry-data-v1",
+    "sha256": "52c3b666a8b0fc3b04f64c3538ab1d5dab88c4de00a42f3b8f3056863350a345",
+    "source_markets": 45740
+  },
+  "split_manifest": {
+    "entry_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180,
+      185,
+      190,
+      195,
+      200,
+      205,
+      210,
+      215,
+      220,
+      225,
+      230,
+      235,
+      240
+    ],
+    "fit_end_exclusive": "2026-08-14T00:00:00+00:00",
+    "folds": [
+      {
+        "name": "april",
+        "test_end": "2026-05-01T00:00:00Z",
+        "test_start": "2026-04-01T00:00:00Z"
+      },
+      {
+        "name": "may",
+        "test_end": "2026-06-01T00:00:00Z",
+        "test_start": "2026-05-01T00:00:00Z"
+      },
+      {
+        "name": "june",
+        "test_end": "2026-07-01T00:00:00Z",
+        "test_start": "2026-06-01T00:00:00Z"
+      },
+      {
+        "name": "july",
+        "test_end": "2026-08-01T00:00:00Z",
+        "test_start": "2026-07-01T00:00:00Z"
+      },
+      {
+        "name": "august_preseal",
+        "test_end": "2026-08-14T00:00:00Z",
+        "test_start": "2026-08-01T00:00:00Z"
+      }
+    ],
+    "market_disjoint": true,
+    "schema_version": "btc-multivenue-early-entry-tournament-v1",
+    "sealed_end_exclusive": "2026-08-29T00:00:00+00:00",
+    "sealed_start_inclusive": "2026-08-14T00:00:00+00:00"
+  }
+}

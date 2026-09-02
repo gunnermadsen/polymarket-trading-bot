@@ -1,0 +1,40 @@
+{
+  "authentic_only_filter": false,
+  "bridge_supervision_candidate": "bridge_aware_specialist",
+  "development_end_exclusive": "2026-08-20 00:00:00+00:00",
+  "development_start_inclusive": "2026-08-14 00:00:00+00:00",
+  "fit_end_exclusive": "2026-08-14 00:00:00+00:00",
+  "folds": [
+    {
+      "name": "april",
+      "test_end": "2026-05-01T00:00:00Z",
+      "test_start": "2026-04-01T00:00:00Z"
+    },
+    {
+      "name": "may",
+      "test_end": "2026-06-01T00:00:00Z",
+      "test_start": "2026-05-01T00:00:00Z"
+    },
+    {
+      "name": "june",
+      "test_end": "2026-07-01T00:00:00Z",
+      "test_start": "2026-06-01T00:00:00Z"
+    },
+    {
+      "name": "july",
+      "test_end": "2026-08-01T00:00:00Z",
+      "test_start": "2026-07-01T00:00:00Z"
+    },
+    {
+      "name": "august_pre_cutover",
+      "test_end": "2026-08-14T00:00:00Z",
+      "test_start": "2026-08-01T00:00:00Z"
+    }
+  ],
+  "heldout_excluded_from_model_calibration_admission_and_policy_selection": true,
+  "market_disjoint": true,
+  "official_outcome_supervision_canonical": true,
+  "sealed_end_exclusive": "2026-08-26 00:00:00+00:00",
+  "sealed_start_inclusive": "2026-08-20 00:00:00+00:00",
+  "source_start": "2026-03-21 00:00:00+00:00"
+}

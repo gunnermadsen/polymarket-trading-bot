@@ -1,0 +1,65 @@
+{
+  "ledgers": [
+    {
+      "bytes": 15262629,
+      "path": "ledgers/candidate-oof-binance_flow.parquet",
+      "rows": 1438523,
+      "sha256": "5ed51b24fdd6ea5bf70ffac97117aa90c74b77c50cac23a59799d17bd64366ff"
+    },
+    {
+      "bytes": 15372591,
+      "path": "ledgers/candidate-oof-dual_venue_flow_agreement.parquet",
+      "rows": 1438523,
+      "sha256": "1fd653640c531c34be25ae830037a6fcc8d29815228ddb8a0eb869b698f6b65e"
+    },
+    {
+      "bytes": 15287429,
+      "path": "ledgers/candidate-oof-full_history_price_control.parquet",
+      "rows": 1438523,
+      "sha256": "9f0ba5c1b67181693a0a412216559189a56415ece4d6bfed3fa467ea2e7140d7"
+    },
+    {
+      "bytes": 15298005,
+      "path": "ledgers/candidate-oof-full_history_refprice_residual.parquet",
+      "rows": 1438523,
+      "sha256": "aa0c0695912e28496c7d6e6939f0f3242b5aa9ea052068bb3bb85eac0dc6305f"
+    },
+    {
+      "bytes": 15359239,
+      "path": "ledgers/candidate-oof-kraken_crossvenue.parquet",
+      "rows": 1438523,
+      "sha256": "f82dbf735a184af9fc26efbe268e7942d54e7e1ef944345b49a9590f16edac2e"
+    },
+    {
+      "bytes": 15402489,
+      "path": "ledgers/candidate-oof-multivenue_consensus.parquet",
+      "rows": 1438523,
+      "sha256": "f7b118f4dc9dfefc5763a619c0f180c535f8f8f948c468392bc868fb2202074f"
+    },
+    {
+      "bytes": 15348282,
+      "path": "ledgers/candidate-oof-settlement_aligned_oracle.parquet",
+      "rows": 1438523,
+      "sha256": "9d942c8d3a522ef22b6505320dd840ff8f13db9dd32f4cd896a797914ac6d64f"
+    },
+    {
+      "bytes": 15573899,
+      "path": "ledgers/candidate-oof-time_specialist_ensemble.parquet",
+      "rows": 1438523,
+      "sha256": "33adbe20730cc546fcdebb611caadef6633c39cbb346c43df4f4de63597cde10"
+    },
+    {
+      "bytes": 11998257,
+      "path": "ledgers/sealed-predictions.parquet",
+      "rows": 1092832,
+      "sha256": "17d69e2ffe416797a4c93e4231517f798fc5055db0b1027c74bec92bd2a3e0ed"
+    },
+    {
+      "bytes": 410496,
+      "path": "ledgers/sealed-trades.parquet",
+      "rows": 10156,
+      "sha256": "3df9a6c1790782e2069d1e5c95262efe8bd9b4269d15745c0be84f3462bf3ac9"
+    }
+  ],
+  "schema_version": "btc-multivenue-ledger-manifest-v1"
+}

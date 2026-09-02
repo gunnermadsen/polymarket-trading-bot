@@ -1,0 +1,2694 @@
+{
+  "admission_target": "enter-now realized stress edge and loss probability",
+  "best_later_target_used": false,
+  "dual_head": {
+    "120_149": {
+      "maximum_loss_probability": 0.3,
+      "minimum_expected_stress_edge": -0.02,
+      "minimum_profit_probability": 0.45
+    },
+    "150_180": {
+      "maximum_loss_probability": 0.3,
+      "minimum_expected_stress_edge": -0.02,
+      "minimum_profit_probability": 0.45
+    },
+    "60_89": {
+      "maximum_loss_probability": 0.5,
+      "minimum_expected_stress_edge": -0.02,
+      "minimum_profit_probability": 0.45
+    },
+    "90_119": {
+      "maximum_loss_probability": 0.4,
+      "minimum_expected_stress_edge": 0.02,
+      "minimum_profit_probability": 0.45
+    }
+  },
+  "dual_head_evidence": {
+    "120_149": {
+      "attempted": 120,
+      "development": {
+        "active_days": 6,
+        "average_entry_second": 126.47798742138365,
+        "average_share_cost": 0.7495235849056604,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 67,
+            "net_pnl": 35.82914231254,
+            "trades": 318,
+            "wins": 251
+          },
+          "150_180": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 36,
+            "net_pnl": 14.709930465879994,
+            "trades": 157,
+            "wins": 121
+          },
+          "0.80_0.95": {
+            "losses": 15,
+            "net_pnl": -1.6626005742799985,
+            "trades": 113,
+            "wins": 98
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 16,
+            "net_pnl": 22.78181242094,
+            "trades": 48,
+            "wins": 32
+          }
+        },
+        "expectancy_per_trade": 0.11267025884446541,
+        "gross_loss": 243.28835999999998,
+        "gross_profit": 279.11750231253995,
+        "losing_trades": 67,
+        "loss_recovery_wins": 3.2653758723857447,
+        "market_coverage": 0.18434782608695652,
+        "maximum_daily_pnl_concentration": 0.5650496878283988,
+        "maximum_drawdown": 17.871474534119997,
+        "net_pnl": 35.82914231254,
+        "profit_factor": 1.147270269373101,
+        "profitable_day_ratio": 1.0,
+        "stress_net_pnl": 19.929142312539987,
+        "trades": 318,
+        "win_loss_ratio": 3.746268656716418,
+        "win_rate": 0.789308176100629,
+        "winning_trades": 251
+      },
+      "selection_score": -0.048845461529121295
+    },
+    "150_180": {
+      "attempted": 120,
+      "development": {
+        "active_days": 6,
+        "average_entry_second": 161.25377643504532,
+        "average_share_cost": 0.7456566163141994,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 66,
+            "net_pnl": 62.86199373833999,
+            "trades": 331,
+            "wins": 265
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 32,
+            "net_pnl": 24.243328192839996,
+            "trades": 146,
+            "wins": 114
+          },
+          "0.80_0.95": {
+            "losses": 15,
+            "net_pnl": 3.76434,
+            "trades": 129,
+            "wins": 114
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 19,
+            "net_pnl": 34.8543255455,
+            "trades": 56,
+            "wins": 37
+          }
+        },
+        "expectancy_per_trade": 0.18991538893758306,
+        "gross_loss": 228.49028,
+        "gross_profit": 291.35227373833993,
+        "losing_trades": 66,
+        "loss_recovery_wins": 3.1488448062132544,
+        "market_coverage": 0.1918840579710145,
+        "maximum_daily_pnl_concentration": 0.40250463819923143,
+        "maximum_drawdown": 29.473764999999993,
+        "net_pnl": 62.86199373833999,
+        "profit_factor": 1.275118896691535,
+        "profitable_day_ratio": 0.6666666666666666,
+        "stress_net_pnl": 46.31199373833998,
+        "trades": 331,
+        "win_loss_ratio": 4.015151515151516,
+        "win_rate": 0.8006042296072508,
+        "winning_trades": 265
+      },
+      "selection_score": 0.03607322382603919
+    },
+    "60_89": {
+      "attempted": 120,
+      "development": {
+        "active_days": 6,
+        "average_entry_second": 66.27893518518519,
+        "average_share_cost": 0.5596270370370371,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "60_89": {
+            "losses": 401,
+            "net_pnl": -192.1275670864,
+            "trades": 864,
+            "wins": 463
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 57,
+            "net_pnl": -59.22374315668,
+            "trades": 178,
+            "wins": 121
+          },
+          "0.80_0.95": {
+            "losses": 5,
+            "net_pnl": 11.282319999999999,
+            "trades": 54,
+            "wins": 49
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 339,
+            "net_pnl": -144.18614392972,
+            "trades": 632,
+            "wins": 293
+          }
+        },
+        "expectancy_per_trade": -0.22236986931296296,
+        "gross_loss": 1064.71796456434,
+        "gross_profit": 872.5903974779401,
+        "losing_trades": 401,
+        "loss_recovery_wins": 1.4088370709637195,
+        "market_coverage": 0.5008695652173913,
+        "maximum_daily_pnl_concentration": 0.8811837379343213,
+        "maximum_drawdown": 216.9911870864001,
+        "net_pnl": -192.1275670864,
+        "profit_factor": 0.81955074162291,
+        "profitable_day_ratio": 0.3333333333333333,
+        "stress_net_pnl": -235.3275670864,
+        "trades": 864,
+        "win_loss_ratio": 1.1546134663341645,
+        "win_rate": 0.5358796296296297,
+        "winning_trades": 463
+      },
+      "selection_score": -0.3382687569193039
+    },
+    "90_119": {
+      "attempted": 120,
+      "development": {
+        "active_days": 6,
+        "average_entry_second": 97.78455284552845,
+        "average_share_cost": 0.6176051219512195,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 86,
+            "net_pnl": 15.177830143979985,
+            "trades": 246,
+            "wins": 160
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 20,
+            "net_pnl": 8.21155261431999,
+            "trades": 85,
+            "wins": 65
+          },
+          "0.80_0.95": {
+            "losses": 4,
+            "net_pnl": -9.486640000000001,
+            "trades": 13,
+            "wins": 9
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 62,
+            "net_pnl": 16.452917529659985,
+            "trades": 148,
+            "wins": 86
+          }
+        },
+        "expectancy_per_trade": 0.061698496520243847,
+        "gross_loss": 258.60704557023996,
+        "gross_profit": 273.78487571422,
+        "losing_trades": 86,
+        "loss_recovery_wins": 1.7573263893862126,
+        "market_coverage": 0.1426086956521739,
+        "maximum_daily_pnl_concentration": 0.4711391510688336,
+        "maximum_drawdown": 47.96948776104,
+        "net_pnl": 15.177830143979985,
+        "profit_factor": 1.0586907062431816,
+        "profitable_day_ratio": 0.5,
+        "stress_net_pnl": 2.8778301439799665,
+        "trades": 246,
+        "win_loss_ratio": 1.8604651162790697,
+        "win_rate": 0.6504065040650406,
+        "winning_trades": 160
+      },
+      "selection_score": -0.12915433123479855
+    }
+  },
+  "frozen_at": "2026-09-01T23:27:04.051440+00:00",
+  "heldout_metrics_accessed": false,
+  "programmatic": {
+    "bridge_aware_specialist": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.7,
+        "minimum_confidence": 0.75,
+        "minimum_edge": 0.125
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      }
+    },
+    "crossvenue_lead_lag": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.0
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.55,
+        "minimum_edge": 0.02
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.7,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.01
+      }
+    },
+    "extended_specialist_official": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.075
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.125
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      }
+    },
+    "frozen_specialist_control": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.7,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.01
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.1
+      }
+    },
+    "refprice_residual_specialist": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.75,
+        "minimum_edge": 0.03
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.62,
+        "minimum_edge": 0.05
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.0
+      }
+    },
+    "settlement_agnostic_trajectory": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.75,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.125
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.75,
+        "minimum_edge": 0.01
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.075
+      }
+    },
+    "specialist_dual_head_economics": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.0
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.075
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.125
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.0
+      }
+    }
+  },
+  "programmatic_evidence": {
+    "bridge_aware_specialist": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 5,
+          "average_entry_second": 127.5,
+          "average_share_cost": 0.5508333333333334,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 3,
+              "net_pnl": 10.642174999999998,
+              "trades": 12,
+              "wins": 9
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 3,
+              "net_pnl": 10.642174999999998,
+              "trades": 12,
+              "wins": 9
+            }
+          },
+          "expectancy_per_trade": 0.8868479166666665,
+          "gross_loss": 8.126090000000001,
+          "gross_profit": 18.768265,
+          "losing_trades": 3,
+          "loss_recovery_wins": 1.2989090893590858,
+          "market_coverage": 0.006956521739130435,
+          "maximum_daily_pnl_concentration": 0.6094157303192682,
+          "maximum_drawdown": 3.3056400000000004,
+          "net_pnl": 10.642174999999998,
+          "profit_factor": 2.3096304618826515,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 10.042174999999999,
+          "trades": 12,
+          "win_loss_ratio": 3.0,
+          "win_rate": 0.75,
+          "winning_trades": 9
+        },
+        "selection_score": 0.1999706338978654
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 163.89705882352942,
+          "average_share_cost": 0.5597841176470584,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 22,
+              "net_pnl": 32.44169574584,
+              "trades": 68,
+              "wins": 46
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 3,
+              "net_pnl": 1.2184207458399996,
+              "trades": 11,
+              "wins": 8
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 19,
+              "net_pnl": 31.223275,
+              "trades": 57,
+              "wins": 38
+            }
+          },
+          "expectancy_per_trade": 0.4770837609682353,
+          "gross_loss": 57.90013999999999,
+          "gross_profit": 90.34183574583999,
+          "losing_trades": 22,
+          "loss_recovery_wins": 1.3400649664846307,
+          "market_coverage": 0.03942028985507246,
+          "maximum_daily_pnl_concentration": 0.4228972334388246,
+          "maximum_drawdown": 12.320404999999987,
+          "net_pnl": 32.44169574584,
+          "profit_factor": 1.5603042712131612,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 29.041695745840002,
+          "trades": 68,
+          "win_loss_ratio": 2.090909090909091,
+          "win_rate": 0.6764705882352942,
+          "winning_trades": 46
+        },
+        "selection_score": 0.15970852608141364
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 69.43298969072166,
+          "average_share_cost": 0.8060414432989689,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 16,
+              "net_pnl": 6.59648223134,
+              "trades": 97,
+              "wins": 81
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 9,
+              "net_pnl": -7.5835097126600015,
+              "trades": 33,
+              "wins": 24
+            },
+            "0.80_0.95": {
+              "losses": 4,
+              "net_pnl": 19.843515000000004,
+              "trades": 60,
+              "wins": 56
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 3,
+              "net_pnl": -5.663523056,
+              "trades": 4,
+              "wins": 1
+            }
+          },
+          "expectancy_per_trade": 0.0680049714571134,
+          "gross_loss": 57.60300776866,
+          "gross_profit": 64.19949,
+          "losing_trades": 16,
+          "loss_recovery_wins": 4.542329336710327,
+          "market_coverage": 0.05623188405797101,
+          "maximum_daily_pnl_concentration": 0.5296014697356434,
+          "maximum_drawdown": 16.57888471266,
+          "net_pnl": 6.59648223134,
+          "profit_factor": 1.1145162811260168,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": 1.7464822313399988,
+          "trades": 97,
+          "win_loss_ratio": 5.0625,
+          "win_rate": 0.8350515463917526,
+          "winning_trades": 81
+        },
+        "selection_score": -0.16790120561441127
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 97.10526315789474,
+          "average_share_cost": 0.7995342105263157,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 18,
+              "net_pnl": 15.552283763499995,
+              "trades": 114,
+              "wins": 96
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 6,
+              "net_pnl": 2.2875349999999957,
+              "trades": 29,
+              "wins": 23
+            },
+            "0.80_0.95": {
+              "losses": 6,
+              "net_pnl": 20.3711437635,
+              "trades": 76,
+              "wins": 70
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 6,
+              "net_pnl": -7.106394999999999,
+              "trades": 9,
+              "wins": 3
+            }
+          },
+          "expectancy_per_trade": 0.13642354178508767,
+          "gross_loss": 63.27175,
+          "gross_profit": 78.82403376349998,
+          "losing_trades": 18,
+          "loss_recovery_wins": 4.281046239599978,
+          "market_coverage": 0.06608695652173913,
+          "maximum_daily_pnl_concentration": 0.5362483792397228,
+          "maximum_drawdown": 18.447665,
+          "net_pnl": 15.552283763499995,
+          "profit_factor": 1.245801384717508,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": 9.8522837635,
+          "trades": 114,
+          "win_loss_ratio": 5.333333333333333,
+          "win_rate": 0.8421052631578947,
+          "winning_trades": 96
+        },
+        "selection_score": -0.08237668188163268
+      }
+    },
+    "crossvenue_lead_lag": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 128.1390977443609,
+          "average_share_cost": 0.5155706015037594,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 114,
+              "net_pnl": 45.840054283619985,
+              "trades": 266,
+              "wins": 152
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 114,
+              "net_pnl": 45.840054283619985,
+              "trades": 266,
+              "wins": 152
+            }
+          },
+          "expectancy_per_trade": 0.1723310311414285,
+          "gross_loss": 274.8280040646601,
+          "gross_profit": 320.66805834828,
+          "losing_trades": 114,
+          "loss_recovery_wins": 1.1427310242259607,
+          "market_coverage": 0.15420289855072464,
+          "maximum_daily_pnl_concentration": 0.29351791559666895,
+          "maximum_drawdown": 34.000725,
+          "net_pnl": 45.840054283619985,
+          "profit_factor": 1.166795426978522,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 32.540054283619995,
+          "trades": 266,
+          "win_loss_ratio": 1.3333333333333333,
+          "win_rate": 0.5714285714285714,
+          "winning_trades": 152
+        },
+        "selection_score": -0.011527207050414844
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 159.88970588235293,
+          "average_share_cost": 0.5216529411764705,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 119,
+              "net_pnl": 28.373030086040004,
+              "trades": 272,
+              "wins": 153
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 21,
+              "net_pnl": 11.120412803259999,
+              "trades": 85,
+              "wins": 64
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 98,
+              "net_pnl": 17.25261728278,
+              "trades": 187,
+              "wins": 89
+            }
+          },
+          "expectancy_per_trade": 0.10431261061044118,
+          "gross_loss": 267.63035470055996,
+          "gross_profit": 296.0033847866,
+          "losing_trades": 119,
+          "loss_recovery_wins": 1.1624737689312685,
+          "market_coverage": 0.15768115942028985,
+          "maximum_daily_pnl_concentration": 0.38540870252827525,
+          "maximum_drawdown": 22.55946,
+          "net_pnl": 28.373030086040004,
+          "profit_factor": 1.1060157399476804,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 14.77303008603998,
+          "trades": 272,
+          "win_loss_ratio": 1.2857142857142858,
+          "win_rate": 0.5625,
+          "winning_trades": 153
+        },
+        "selection_score": -0.07385343642944839
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 66.94902548725638,
+          "average_share_cost": 0.4738776011994003,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 340,
+              "net_pnl": -17.357550738800015,
+              "trades": 667,
+              "wins": 327
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 340,
+              "net_pnl": -17.357550738800015,
+              "trades": 667,
+              "wins": 327
+            }
+          },
+          "expectancy_per_trade": -0.026023314450974534,
+          "gross_loss": 795.6787979967801,
+          "gross_profit": 778.3212472579801,
+          "losing_trades": 340,
+          "loss_recovery_wins": 0.9832132783579886,
+          "market_coverage": 0.38666666666666666,
+          "maximum_daily_pnl_concentration": 0.3316339608062505,
+          "maximum_drawdown": 95.48479801804001,
+          "net_pnl": -17.357550738800015,
+          "profit_factor": 0.9781852290365161,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": -50.70755073880001,
+          "trades": 667,
+          "win_loss_ratio": 0.961764705882353,
+          "win_rate": 0.49025487256371814,
+          "winning_trades": 327
+        },
+        "selection_score": -0.15695832420499062
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 98.61111111111111,
+          "average_share_cost": 0.532190486111111,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 117,
+              "net_pnl": 58.21344886125999,
+              "trades": 288,
+              "wins": 171
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 9,
+              "net_pnl": 16.796734999999995,
+              "trades": 41,
+              "wins": 32
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 108,
+              "net_pnl": 41.416713861259986,
+              "trades": 247,
+              "wins": 139
+            }
+          },
+          "expectancy_per_trade": 0.20213003076826386,
+          "gross_loss": 290.52328113874,
+          "gross_profit": 348.73672999999997,
+          "losing_trades": 117,
+          "loss_recovery_wins": 1.2175687641408464,
+          "market_coverage": 0.16695652173913045,
+          "maximum_daily_pnl_concentration": 0.4335021940438565,
+          "maximum_drawdown": 32.9301255685,
+          "net_pnl": 58.21344886125999,
+          "profit_factor": 1.200374471309444,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 43.81344886125999,
+          "trades": 288,
+          "win_loss_ratio": 1.4615384615384615,
+          "win_rate": 0.59375,
+          "winning_trades": 171
+        },
+        "selection_score": 0.024106774014777427
+      }
+    },
+    "extended_specialist_official": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 128.0952380952381,
+          "average_share_cost": 0.5390476190476191,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 6,
+              "net_pnl": 16.117089999999997,
+              "trades": 21,
+              "wins": 15
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 6,
+              "net_pnl": 16.117089999999997,
+              "trades": 21,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": 0.7674804761904761,
+          "gross_loss": 15.24301,
+          "gross_profit": 31.360100000000003,
+          "losing_trades": 6,
+          "loss_recovery_wins": 1.215159549873884,
+          "market_coverage": 0.01217391304347826,
+          "maximum_daily_pnl_concentration": 0.7230400963580462,
+          "maximum_drawdown": 6.625920000000001,
+          "net_pnl": 16.117089999999997,
+          "profit_factor": 2.05734300508889,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": 15.06709,
+          "trades": 21,
+          "win_loss_ratio": 2.5,
+          "win_rate": 0.7142857142857143,
+          "winning_trades": 15
+        },
+        "selection_score": 0.2411801885050577
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 163.20945945945945,
+          "average_share_cost": 0.5981487837837837,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 47,
+              "net_pnl": 47.0178300859,
+              "trades": 148,
+              "wins": 101
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 14,
+              "net_pnl": 6.740899540399999,
+              "trades": 56,
+              "wins": 42
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 33,
+              "net_pnl": 40.276930545499994,
+              "trades": 92,
+              "wins": 59
+            }
+          },
+          "expectancy_per_trade": 0.31768804112094595,
+          "gross_loss": 132.81949500000002,
+          "gross_profit": 179.8373250859,
+          "losing_trades": 47,
+          "loss_recovery_wins": 1.5871044388508413,
+          "market_coverage": 0.08579710144927537,
+          "maximum_daily_pnl_concentration": 0.4129803194116498,
+          "maximum_drawdown": 22.423629999999996,
+          "net_pnl": 47.0178300859,
+          "profit_factor": 1.3539979585519428,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 39.617830085899996,
+          "trades": 148,
+          "win_loss_ratio": 2.148936170212766,
+          "win_rate": 0.6824324324324325,
+          "winning_trades": 101
+        },
+        "selection_score": 0.09029182486783557
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 71.51515151515152,
+          "average_share_cost": 0.6369339393939395,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 9,
+              "net_pnl": 11.504175287339999,
+              "trades": 33,
+              "wins": 24
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 5,
+              "net_pnl": 0.5787802873399996,
+              "trades": 18,
+              "wins": 13
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": 10.925394999999998,
+              "trades": 15,
+              "wins": 11
+            }
+          },
+          "expectancy_per_trade": 0.3486113723436363,
+          "gross_loss": 28.31772471266,
+          "gross_profit": 39.8219,
+          "losing_trades": 9,
+          "loss_recovery_wins": 1.8962915523140114,
+          "market_coverage": 0.019130434782608695,
+          "maximum_daily_pnl_concentration": 0.4930253632364469,
+          "maximum_drawdown": 9.01986,
+          "net_pnl": 11.504175287339999,
+          "profit_factor": 1.406253518037656,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 9.854175287339999,
+          "trades": 33,
+          "win_loss_ratio": 2.6666666666666665,
+          "win_rate": 0.7272727272727273,
+          "winning_trades": 24
+        },
+        "selection_score": -0.084737615473829
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 5,
+          "average_entry_second": 102.0,
+          "average_share_cost": 0.6026666666666667,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 4,
+              "net_pnl": 8.27742,
+              "trades": 15,
+              "wins": 11
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 10.583665,
+              "trades": 8,
+              "wins": 8
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": -2.306245,
+              "trades": 7,
+              "wins": 3
+            }
+          },
+          "expectancy_per_trade": 0.551828,
+          "gross_loss": 9.269305,
+          "gross_profit": 17.546725,
+          "losing_trades": 4,
+          "loss_recovery_wins": 1.4527262922283217,
+          "market_coverage": 0.008695652173913044,
+          "maximum_daily_pnl_concentration": 0.7941575234497161,
+          "maximum_drawdown": 4.90993,
+          "net_pnl": 8.27742,
+          "profit_factor": 1.8929925166989328,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 7.5274199999999984,
+          "trades": 15,
+          "win_loss_ratio": 2.75,
+          "win_rate": 0.7333333333333333,
+          "winning_trades": 11
+        },
+        "selection_score": 0.019936264238437015
+      }
+    },
+    "frozen_specialist_control": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 3,
+          "average_entry_second": 128.0,
+          "average_share_cost": 0.562,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 10.402864999999998,
+              "trades": 5,
+              "wins": 5
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 0,
+              "net_pnl": 10.402864999999998,
+              "trades": 5,
+              "wins": 5
+            }
+          },
+          "expectancy_per_trade": 2.080573,
+          "gross_loss": 0.0,
+          "gross_profit": 10.402864999999998,
+          "losing_trades": 0,
+          "loss_recovery_wins": null,
+          "market_coverage": 0.002898550724637681,
+          "maximum_daily_pnl_concentration": 0.4302910784673261,
+          "maximum_drawdown": 0.0,
+          "net_pnl": 10.402864999999998,
+          "profit_factor": null,
+          "profitable_day_ratio": 1.0,
+          "stress_net_pnl": 10.152865,
+          "trades": 5,
+          "win_loss_ratio": null,
+          "win_rate": 1.0,
+          "winning_trades": 5
+        },
+        "selection_score": 1.8575625938892073
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 4,
+          "average_entry_second": 164.5,
+          "average_share_cost": 0.6575,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 3,
+              "net_pnl": 17.279895000000003,
+              "trades": 20,
+              "wins": 17
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 1,
+              "net_pnl": 11.377880000000001,
+              "trades": 13,
+              "wins": 12
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 2,
+              "net_pnl": 5.902015,
+              "trades": 7,
+              "wins": 5
+            }
+          },
+          "expectancy_per_trade": 0.8639947500000001,
+          "gross_loss": 9.264225,
+          "gross_profit": 26.544120000000003,
+          "losing_trades": 3,
+          "loss_recovery_wins": 1.977736500588454,
+          "market_coverage": 0.011594202898550725,
+          "maximum_daily_pnl_concentration": 0.444767653537177,
+          "maximum_drawdown": 4.384829999999997,
+          "net_pnl": 17.279895000000003,
+          "profit_factor": 2.8652283380423085,
+          "profitable_day_ratio": 0.75,
+          "stress_net_pnl": 16.279895000000003,
+          "trades": 20,
+          "win_loss_ratio": 5.666666666666667,
+          "win_rate": 0.85,
+          "winning_trades": 17
+        },
+        "selection_score": 0.4112252859065309
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 62.51488095238095,
+          "average_share_cost": 0.42679773809523813,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 578,
+              "net_pnl": -105.66698232184002,
+              "trades": 1008,
+              "wins": 430
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 8,
+              "net_pnl": 11.402194999999995,
+              "trades": 34,
+              "wins": 26
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 570,
+              "net_pnl": -117.06917732183999,
+              "trades": 974,
+              "wins": 404
+            }
+          },
+          "expectancy_per_trade": -0.1048283554780159,
+          "gross_loss": 1200.72048007844,
+          "gross_profit": 1095.0534977565999,
+          "losing_trades": 578,
+          "loss_recovery_wins": 0.8157314351618818,
+          "market_coverage": 0.5843478260869566,
+          "maximum_daily_pnl_concentration": 0.5609835244760214,
+          "maximum_drawdown": 163.55696938358037,
+          "net_pnl": -105.66698232184002,
+          "profit_factor": 0.9119970183943751,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": -156.06698232184004,
+          "trades": 1008,
+          "win_loss_ratio": 0.7439446366782007,
+          "win_rate": 0.42658730158730157,
+          "winning_trades": 430
+        },
+        "selection_score": -0.21417784889265956
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 96.88679245283019,
+          "average_share_cost": 0.5611320754716982,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 14,
+              "net_pnl": 40.59419,
+              "trades": 53,
+              "wins": 39
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 7.203649999999999,
+              "trades": 5,
+              "wins": 5
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 14,
+              "net_pnl": 33.39054,
+              "trades": 48,
+              "wins": 34
+            }
+          },
+          "expectancy_per_trade": 0.7659281132075472,
+          "gross_loss": 37.039075000000004,
+          "gross_profit": 77.633265,
+          "losing_trades": 14,
+          "loss_recovery_wins": 1.3290730508003608,
+          "market_coverage": 0.03072463768115942,
+          "maximum_daily_pnl_concentration": 0.3407940354795277,
+          "maximum_drawdown": 9.001895000000008,
+          "net_pnl": 40.59419,
+          "profit_factor": 2.095982823545134,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 37.94419,
+          "trades": 53,
+          "win_loss_ratio": 2.7857142857142856,
+          "win_rate": 0.7358490566037735,
+          "winning_trades": 39
+        },
+        "selection_score": 0.42844970014828415
+      }
+    },
+    "refprice_residual_specialist": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 5,
+          "average_entry_second": 126.16279069767442,
+          "average_share_cost": 0.5390697674418604,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 16,
+              "net_pnl": 14.436869999999997,
+              "trades": 43,
+              "wins": 27
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 16,
+              "net_pnl": 14.436869999999997,
+              "trades": 43,
+              "wins": 27
+            }
+          },
+          "expectancy_per_trade": 0.3357411627906976,
+          "gross_loss": 39.8223,
+          "gross_profit": 54.25916999999999,
+          "losing_trades": 16,
+          "loss_recovery_wins": 1.238502749857766,
+          "market_coverage": 0.024927536231884057,
+          "maximum_daily_pnl_concentration": 0.3946360576291823,
+          "maximum_drawdown": 7.037510000000001,
+          "net_pnl": 14.436869999999997,
+          "profit_factor": 1.3625322997416018,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 12.286869999999995,
+          "trades": 43,
+          "win_loss_ratio": 1.6875,
+          "win_rate": 0.627906976744186,
+          "winning_trades": 27
+        },
+        "selection_score": -0.05329004142668587
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 156.7669172932331,
+          "average_share_cost": 0.6425212030075188,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 42,
+              "net_pnl": 15.21700074584,
+              "trades": 133,
+              "wins": 91
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 11,
+              "net_pnl": 12.583430745839998,
+              "trades": 54,
+              "wins": 43
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": 4.010745000000003,
+              "trades": 25,
+              "wins": 22
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 28,
+              "net_pnl": -1.3771750000000051,
+              "trades": 54,
+              "wins": 26
+            }
+          },
+          "expectancy_per_trade": 0.11441353944240601,
+          "gross_loss": 116.57449,
+          "gross_profit": 131.79149074584,
+          "losing_trades": 42,
+          "loss_recovery_wins": 1.916497493406184,
+          "market_coverage": 0.07710144927536232,
+          "maximum_daily_pnl_concentration": 0.507870477185736,
+          "maximum_drawdown": 17.582795,
+          "net_pnl": 15.21700074584,
+          "profit_factor": 1.1305345684621053,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 8.567000745839996,
+          "trades": 133,
+          "win_loss_ratio": 2.1666666666666665,
+          "win_rate": 0.6842105263157895,
+          "winning_trades": 91
+        },
+        "selection_score": -0.11497392015578982
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 64.42271880819366,
+          "average_share_cost": 0.551035791433892,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 236,
+              "net_pnl": -30.57214490794002,
+              "trades": 537,
+              "wins": 301
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 29,
+              "net_pnl": -18.388605705520007,
+              "trades": 98,
+              "wins": 69
+            },
+            "0.80_0.95": {
+              "losses": 3,
+              "net_pnl": 7.1616422850400046,
+              "trades": 29,
+              "wins": 26
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 204,
+              "net_pnl": -19.345181487460017,
+              "trades": 410,
+              "wins": 206
+            }
+          },
+          "expectancy_per_trade": -0.05693136854364995,
+          "gross_loss": 618.0491559966599,
+          "gross_profit": 587.47701108872,
+          "losing_trades": 236,
+          "loss_recovery_wins": 1.341796435013674,
+          "market_coverage": 0.31130434782608696,
+          "maximum_daily_pnl_concentration": 0.8534682569573943,
+          "maximum_drawdown": 74.18156142538,
+          "net_pnl": -30.57214490794002,
+          "profit_factor": 0.9505344443701415,
+          "profitable_day_ratio": 0.3333333333333333,
+          "stress_net_pnl": -57.42214490794002,
+          "trades": 537,
+          "win_loss_ratio": 1.2754237288135593,
+          "win_rate": 0.5605214152700186,
+          "winning_trades": 301
+        },
+        "selection_score": -0.19764400532890833
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 94.70319634703196,
+          "average_share_cost": 0.7615585388127853,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 49,
+              "net_pnl": -1.8080733034400005,
+              "trades": 219,
+              "wins": 170
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 21,
+              "net_pnl": -17.3427077332,
+              "trades": 76,
+              "wins": 55
+            },
+            "0.80_0.95": {
+              "losses": 9,
+              "net_pnl": 7.218980000000006,
+              "trades": 95,
+              "wins": 86
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 19,
+              "net_pnl": 8.315654429759997,
+              "trades": 48,
+              "wins": 29
+            }
+          },
+          "expectancy_per_trade": -0.00825604248146119,
+          "gross_loss": 171.28263557024,
+          "gross_profit": 169.47456226679998,
+          "losing_trades": 49,
+          "loss_recovery_wins": 3.5064016130839035,
+          "market_coverage": 0.12695652173913044,
+          "maximum_daily_pnl_concentration": 0.5708628378349416,
+          "maximum_drawdown": 31.524639999999998,
+          "net_pnl": -1.8080733034400005,
+          "profit_factor": 0.9894439194176309,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": -12.75807330344002,
+          "trades": 219,
+          "win_loss_ratio": 3.4693877551020407,
+          "win_rate": 0.776255707762557,
+          "winning_trades": 170
+        },
+        "selection_score": -0.19505763581392527
+      }
+    },
+    "settlement_agnostic_trajectory": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 127.5,
+          "average_share_cost": 0.551679117647059,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 23,
+              "net_pnl": 30.074395935339993,
+              "trades": 68,
+              "wins": 45
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 23,
+              "net_pnl": 30.074395935339993,
+              "trades": 68,
+              "wins": 45
+            }
+          },
+          "expectancy_per_trade": 0.4422705284608823,
+          "gross_loss": 63.09837406466,
+          "gross_profit": 93.17276999999999,
+          "losing_trades": 23,
+          "loss_recovery_wins": 1.3249937783463057,
+          "market_coverage": 0.03942028985507246,
+          "maximum_daily_pnl_concentration": 0.34001700657214823,
+          "maximum_drawdown": 13.685185,
+          "net_pnl": 30.074395935339993,
+          "profit_factor": 1.4766271141079053,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 26.674395935339998,
+          "trades": 68,
+          "win_loss_ratio": 1.9565217391304348,
+          "win_rate": 0.6617647058823529,
+          "winning_trades": 45
+        },
+        "selection_score": 0.11186067583160755
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 162.58928571428572,
+          "average_share_cost": 0.576112142857143,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 16,
+              "net_pnl": 32.983649540399995,
+              "trades": 56,
+              "wins": 40
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 4,
+              "net_pnl": 12.2789945404,
+              "trades": 23,
+              "wins": 19
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 12,
+              "net_pnl": 20.704654999999995,
+              "trades": 33,
+              "wins": 21
+            }
+          },
+          "expectancy_per_trade": 0.588993741792857,
+          "gross_loss": 37.807835,
+          "gross_profit": 70.7914845404,
+          "losing_trades": 16,
+          "loss_recovery_wins": 1.3351830112569343,
+          "market_coverage": 0.03246376811594203,
+          "maximum_daily_pnl_concentration": 0.2568014655268884,
+          "maximum_drawdown": 8.171225,
+          "net_pnl": 32.983649540399995,
+          "profit_factor": 1.8724024938322972,
+          "profitable_day_ratio": 1.0,
+          "stress_net_pnl": 30.183649540399998,
+          "trades": 56,
+          "win_loss_ratio": 2.5,
+          "win_rate": 0.7142857142857143,
+          "winning_trades": 40
+        },
+        "selection_score": 0.2746608640567094
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 66.56084656084656,
+          "average_share_cost": 0.7097883597883599,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 48,
+              "net_pnl": 16.88064829007999,
+              "trades": 189,
+              "wins": 141
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 27,
+              "net_pnl": -10.122383994959998,
+              "trades": 101,
+              "wins": 74
+            },
+            "0.80_0.95": {
+              "losses": 2,
+              "net_pnl": 15.460412285040004,
+              "trades": 39,
+              "wins": 37
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 19,
+              "net_pnl": 11.542619999999996,
+              "trades": 49,
+              "wins": 30
+            }
+          },
+          "expectancy_per_trade": 0.08931559941841265,
+          "gross_loss": 160.31284399496002,
+          "gross_profit": 177.19349228504,
+          "losing_trades": 48,
+          "loss_recovery_wins": 2.657653919240202,
+          "market_coverage": 0.10956521739130434,
+          "maximum_daily_pnl_concentration": 0.5165892960449266,
+          "maximum_drawdown": 33.27010771495999,
+          "net_pnl": 16.88064829007999,
+          "profit_factor": 1.1052981649468503,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 7.43064829007999,
+          "trades": 189,
+          "win_loss_ratio": 2.9375,
+          "win_rate": 0.746031746031746,
+          "winning_trades": 141
+        },
+        "selection_score": -0.10709601496795923
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 96.11111111111111,
+          "average_share_cost": 0.5825465079365079,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 40,
+              "net_pnl": 49.75304386126,
+              "trades": 126,
+              "wins": 86
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 3,
+              "net_pnl": 25.840395,
+              "trades": 30,
+              "wins": 27
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 37,
+              "net_pnl": 23.91264886126,
+              "trades": 96,
+              "wins": 59
+            }
+          },
+          "expectancy_per_trade": 0.39486542747031744,
+          "gross_loss": 108.72932613873999,
+          "gross_profit": 158.48237000000003,
+          "losing_trades": 40,
+          "loss_recovery_wins": 1.4750413638961288,
+          "market_coverage": 0.07304347826086957,
+          "maximum_daily_pnl_concentration": 0.3936494993805363,
+          "maximum_drawdown": 19.01653557024001,
+          "net_pnl": 49.75304386126,
+          "profit_factor": 1.4575862430874862,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 43.45304386126003,
+          "trades": 126,
+          "win_loss_ratio": 2.15,
+          "win_rate": 0.6825396825396826,
+          "winning_trades": 86
+        },
+        "selection_score": 0.1540223329322013
+      }
+    },
+    "specialist_dual_head_economics": {
+      "120_149": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 128.0952380952381,
+          "average_share_cost": 0.5390476190476191,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 6,
+              "net_pnl": 16.117089999999997,
+              "trades": 21,
+              "wins": 15
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 6,
+              "net_pnl": 16.117089999999997,
+              "trades": 21,
+              "wins": 15
+            }
+          },
+          "expectancy_per_trade": 0.7674804761904761,
+          "gross_loss": 15.24301,
+          "gross_profit": 31.360100000000003,
+          "losing_trades": 6,
+          "loss_recovery_wins": 1.215159549873884,
+          "market_coverage": 0.01217391304347826,
+          "maximum_daily_pnl_concentration": 0.7230400963580462,
+          "maximum_drawdown": 6.625920000000001,
+          "net_pnl": 16.117089999999997,
+          "profit_factor": 2.05734300508889,
+          "profitable_day_ratio": 0.5,
+          "stress_net_pnl": 15.06709,
+          "trades": 21,
+          "win_loss_ratio": 2.5,
+          "win_rate": 0.7142857142857143,
+          "winning_trades": 15
+        },
+        "selection_score": 0.2411801885050577
+      },
+      "150_180": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 163.20945945945945,
+          "average_share_cost": 0.5981487837837837,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 47,
+              "net_pnl": 47.0178300859,
+              "trades": 148,
+              "wins": 101
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 14,
+              "net_pnl": 6.740899540399999,
+              "trades": 56,
+              "wins": 42
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 33,
+              "net_pnl": 40.276930545499994,
+              "trades": 92,
+              "wins": 59
+            }
+          },
+          "expectancy_per_trade": 0.31768804112094595,
+          "gross_loss": 132.81949500000002,
+          "gross_profit": 179.8373250859,
+          "losing_trades": 47,
+          "loss_recovery_wins": 1.5871044388508413,
+          "market_coverage": 0.08579710144927537,
+          "maximum_daily_pnl_concentration": 0.4129803194116498,
+          "maximum_drawdown": 22.423629999999996,
+          "net_pnl": 47.0178300859,
+          "profit_factor": 1.3539979585519428,
+          "profitable_day_ratio": 0.6666666666666666,
+          "stress_net_pnl": 39.617830085899996,
+          "trades": 148,
+          "win_loss_ratio": 2.148936170212766,
+          "win_rate": 0.6824324324324325,
+          "winning_trades": 101
+        },
+        "selection_score": 0.09029182486783557
+      },
+      "60_89": {
+        "attempted": 616,
+        "development": {
+          "active_days": 6,
+          "average_entry_second": 71.51515151515152,
+          "average_share_cost": 0.6369339393939395,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 9,
+              "net_pnl": 11.504175287339999,
+              "trades": 33,
+              "wins": 24
+            },
+            "90_119": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 5,
+              "net_pnl": 0.5787802873399996,
+              "trades": 18,
+              "wins": 13
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": 10.925394999999998,
+              "trades": 15,
+              "wins": 11
+            }
+          },
+          "expectancy_per_trade": 0.3486113723436363,
+          "gross_loss": 28.31772471266,
+          "gross_profit": 39.8219,
+          "losing_trades": 9,
+          "loss_recovery_wins": 1.8962915523140114,
+          "market_coverage": 0.019130434782608695,
+          "maximum_daily_pnl_concentration": 0.4930253632364469,
+          "maximum_drawdown": 9.01986,
+          "net_pnl": 11.504175287339999,
+          "profit_factor": 1.406253518037656,
+          "profitable_day_ratio": 0.8333333333333334,
+          "stress_net_pnl": 9.854175287339999,
+          "trades": 33,
+          "win_loss_ratio": 2.6666666666666665,
+          "win_rate": 0.7272727272727273,
+          "winning_trades": 24
+        },
+        "selection_score": -0.084737615473829
+      },
+      "90_119": {
+        "attempted": 616,
+        "development": {
+          "active_days": 5,
+          "average_entry_second": 102.0,
+          "average_share_cost": 0.6026666666666667,
+          "by_entry_cell": {
+            "120_149": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "150_180": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "60_89": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "90_119": {
+              "losses": 4,
+              "net_pnl": 8.27742,
+              "trades": 15,
+              "wins": 11
+            }
+          },
+          "by_price_bucket": {
+            "0.65_0.80": {
+              "losses": 0,
+              "net_pnl": 10.583665,
+              "trades": 8,
+              "wins": 8
+            },
+            "0.80_0.95": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0.95_1.0": {
+              "losses": 0,
+              "net_pnl": 0.0,
+              "trades": 0,
+              "wins": 0
+            },
+            "0_0.65": {
+              "losses": 4,
+              "net_pnl": -2.306245,
+              "trades": 7,
+              "wins": 3
+            }
+          },
+          "expectancy_per_trade": 0.551828,
+          "gross_loss": 9.269305,
+          "gross_profit": 17.546725,
+          "losing_trades": 4,
+          "loss_recovery_wins": 1.4527262922283217,
+          "market_coverage": 0.008695652173913044,
+          "maximum_daily_pnl_concentration": 0.7941575234497161,
+          "maximum_drawdown": 4.90993,
+          "net_pnl": 8.27742,
+          "profit_factor": 1.8929925166989328,
+          "profitable_day_ratio": 0.6,
+          "stress_net_pnl": 7.5274199999999984,
+          "trades": 15,
+          "win_loss_ratio": 2.75,
+          "win_rate": 0.7333333333333333,
+          "winning_trades": 11
+        },
+        "selection_score": 0.019936264238437015
+      }
+    }
+  }
+}

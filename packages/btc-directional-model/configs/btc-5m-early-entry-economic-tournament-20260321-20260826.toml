@@ -1,0 +1,183 @@
+[training]
+profile = "btc_5m_early_entry_economic_tournament"
+model_family = "btc-5m-early-entry-economic-tournament"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260901
+data_watermark = "2026-08-26T00:00:00Z"
+candidate_freeze = "2026-09-01T00:00:00Z"
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+kraken_start = "2026-04-01T00:00:00Z"
+kraken_l2_start = "2026-04-01T00:00:00Z"
+kraken_l2_end = "2026-08-26T00:00:00Z"
+refprice_start = "2026-06-07T00:00:00Z"
+open_interest_start = "2026-07-03T00:00:00Z"
+binance_print_start = "2026-07-22T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-20T00:00:00Z"
+sealed_start = "2026-08-20T00:00:00Z"
+sealed_end = "2026-08-26T00:00:00Z"
+tail_start = "2026-08-27T00:00:00Z"
+cutover = "2026-08-14T00:00:00Z"
+
+[entry]
+start_second = 60
+end_second_inclusive = 180
+cadence_seconds = 5
+prediction_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+economic_start_second = 60
+economic_end_second_inclusive = 180
+calibration_cells = [[60, 89], [90, 119], [120, 149], [150, 180]]
+primary_competition_band = "60_89"
+fallback_band = "90_119"
+late_benchmark_band = "150_180"
+
+[model]
+learning_rate = 0.06
+max_iter = 120
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 1.5
+max_bins = 127
+calibration_fraction = 0.20
+margin_target_clip = 8.0
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.125]
+minimum_confidences = [0.52, 0.55, 0.58, 0.60, 0.62, 0.65, 0.70, 0.75, 0.80]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+minimum_policy_trades = 1
+minimum_positive_fold_ratio = 0.0
+require_positive_stress_pnl = false
+selection_source = "post_cutover_development_20260814_20260819"
+allow_abstention = false
+recovery_soft_target = 3.5
+recovery_penalty = 0.01
+
+[hybrid_admission]
+probability_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70, 0.80]
+lower_bound_thresholds = [-0.05, 0.00, 0.02, 0.05]
+maximum_expected_shortfalls = [0.15, 0.25, 0.40]
+minimum_now_advantages = [-0.02, 0.00, 0.02]
+lower_bound_quantile = 0.90
+max_iter = 120
+
+[sources]
+kraken_spot_root = "/Volumes/docker-data/kraken-spot-data"
+kraken_symbol = "BTCUSD"
+kraken_candle_dataset = "ohlcv_1s"
+kraken_print_dataset = "trade_prints"
+kraken_l2_root = "/Volumes/docker-data/kraken-data/spot-l2/cryptohftdata/kraken_spot"
+kraken_l2_included = true
+binance_spot_l2_relation = "polymarket.binance_spot_btcusdt_l2_training_features"
+
+[paths]
+label_source_sql = "sql/btc-twap60-label-source.sql"
+refprice_source_sql = "sql/btc-twap60-refprice-source.sql"
+core_source_sql = "sql/btc-twap60-core-current-source.sql"
+oracle_source_sql = "sql/btc-core-oracle-source.sql"
+candle_source_sql = "sql/btc-twap60-candle-source.sql"
+execution_source_sql = "sql/btc-capacity-execution-evidence.sql"
+open_interest_source_sql = "sql/btc-binance-five-minute-open-interest-source.sql"
+binance_print_source_sql = "sql/btc-binance-trade-print-source.sql"
+spot_l2_source_sql = "sql/btc-middle-strategy-spot-l2-source.sql"
+cache = "data/btc-full-august-vwap-admission-20260321-20260901"
+middle_cache = "data/btc-full-august-vwap-admission-20260321-20260901"
+hybrid_cache = "data/btc-full-august-vwap-admission-20260321-20260901"
+tail_cache = "data/btc-full-august-vwap-admission-tail-20260827-20260901"
+input_hybrid_cache = "data/btc-hybrid-payoff-admission-20260321-20260827"
+runs = "runs/btc-early-entry-economic-tournament-20260321-20260826"
+committed_results = "training-results/btc-5m-early-entry-economic-tournament-20260321-20260826"
+q5_manifest = "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json"
+specialist_manifest = "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json"
+
+[diagnostics]
+twap_attribution = "training-results/btc-5m-counterfactual-twap-state-causal-20260321-20260827/20260828T012814Z/twap-attribution-diagnostic.json"
+bridge_manifest = "data/btc-hybrid-payoff-admission-20260321-20260827/panel-manifest.json"
+selection_influence = false
+
+[comparison]
+early_tournament_metrics = "training-results/btc-5m-hybrid-payoff-admission-20260321-20260827/20260901T031058Z/metrics.json"
+full_august_tournament_metrics = "training-results/btc-5m-full-august-vwap-admission-20260321-20260901/20260901T163321Z/metrics.json"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_pre_cutover"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[candidates]]
+name = "external_flow_only_control"
+kind = "base"
+feature_groups = ["core", "open_interest", "binance_prints", "kraken", "spot_l2", "kraken_l2"]
+preferred_admission = "hybrid_vwap5"
+description = "Settlement-feed-free control using Binance and Kraken path, flow, positioning, and L2 evidence."
+
+[[candidates]]
+name = "middle_specialist_refit"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice"]
+preferred_admission = "hybrid_vwap5"
+description = "RefPrice-context specialist with execution evidence isolated from directional prediction."
+
+[[candidates]]
+name = "middle_q5_admission"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "binance_prints"]
+preferred_admission = "hybrid_vwap5"
+description = "Recovery-oriented Q5 challenger using RefPrice context, uncertainty, and Binance flow."
+
+[[candidates]]
+name = "crossvenue_middle_specialist"
+kind = "base"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken", "spot_l2", "kraken_l2"]
+preferred_admission = "hybrid_full_vwap_dual_l2"
+description = "Cross-venue challenger using fresh Binance and Kraken microstructure with venue-disagreement evidence."
+
+[[candidates]]
+name = "latent_boundary_margin_specialist"
+kind = "margin_base"
+feature_groups = ["core", "candles", "oracle", "refprice", "open_interest", "binance_prints", "kraken", "spot_l2", "kraken_l2"]
+preferred_admission = "hybrid_vwap5"
+description = "Boundary-margin component retained to supply independent ensemble diversity."
+
+[[candidates]]
+name = "middle_agreement_ensemble"
+kind = "agreement"
+members = ["external_flow_only_control", "middle_specialist_refit", "middle_q5_admission", "crossvenue_middle_specialist", "latent_boundary_margin_specialist"]
+preferred_admission = "hybrid_vwap5"
+description = "Primary early-entry champion: abstaining consensus across the predictive families."
+
+[[candidates]]
+name = "price_time_calibrated_middle_ensemble"
+kind = "calibrated_ensemble"
+members = ["external_flow_only_control", "middle_specialist_refit", "middle_q5_admission", "crossvenue_middle_specialist", "latent_boundary_margin_specialist"]
+preferred_admission = "hybrid_vwap5"
+description = "Coverage challenger with probability calibration separated by entry-time bucket."

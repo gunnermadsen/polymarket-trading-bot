@@ -1,0 +1,50 @@
+{
+  "frozen_at": "2026-08-31T16:18:34.836619+00:00",
+  "policies": {
+    "crossvenue_middle_specialist": {
+      "maximum_share_cost": 0.9,
+      "minimum_confidence": 0.65,
+      "minimum_edge": 0.02
+    },
+    "middle_agreement_ensemble": {
+      "maximum_share_cost": 0.9,
+      "minimum_confidence": 0.65,
+      "minimum_edge": 0.01
+    },
+    "middle_q5_admission": {
+      "maximum_share_cost": 0.9,
+      "minimum_confidence": 0.62,
+      "minimum_edge": 0.02
+    },
+    "middle_specialist_refit": {
+      "maximum_share_cost": 0.9,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.01
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "120_149": {
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.68,
+        "minimum_edge": 0.02
+      },
+      "150_179": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.62,
+        "minimum_edge": 0.1
+      },
+      "90_119": {
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.01
+      }
+    }
+  },
+  "predictive_ranking": [
+    "middle_q5_admission",
+    "price_time_calibrated_middle_ensemble",
+    "middle_agreement_ensemble",
+    "crossvenue_middle_specialist",
+    "middle_specialist_refit"
+  ],
+  "sealed_metrics_accessed": false
+}

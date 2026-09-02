@@ -1,0 +1,44 @@
+{
+  "actual": {
+    "bridge_oof": {
+      "first_window": "2026-04-01 00:00:00+00:00",
+      "last_window": "2026-08-13 23:55:00+00:00",
+      "markets": 38879,
+      "rows": 1438523
+    },
+    "development_panel": {
+      "first_window": "2026-08-14 00:00:00+00:00",
+      "last_window": "2026-08-19 23:55:00+00:00",
+      "markets": 1725,
+      "rows": 63825
+    },
+    "fit_panel": {
+      "first_window": "2026-03-21 00:05:00+00:00",
+      "last_window": "2026-08-13 23:55:00+00:00",
+      "markets": 42046,
+      "rows": 1555702
+    },
+    "official_oof": {
+      "first_window": "2026-04-01 00:00:00+00:00",
+      "last_window": "2026-08-13 23:55:00+00:00",
+      "markets": 38879,
+      "rows": 1438523
+    },
+    "sealed_panel": {
+      "first_window": "2026-08-20 00:00:00+00:00",
+      "last_window": "2026-08-31 23:55:00+00:00",
+      "markets": 3390,
+      "rows": 125430
+    }
+  },
+  "development_end_exclusive": "2026-08-20 00:00:00+00:00",
+  "development_start": "2026-08-14 00:00:00+00:00",
+  "fit_end_exclusive": "2026-08-14 00:00:00+00:00",
+  "market_disjoint": true,
+  "prospective_end_exclusive": "2026-09-02T00:00:00Z",
+  "prospective_start": "2026-09-01T00:00:00Z",
+  "sealed_end_exclusive": "2026-09-01 00:00:00+00:00",
+  "sealed_loaded_after_policy_freeze": true,
+  "sealed_start": "2026-08-20 00:00:00+00:00",
+  "source_start": "2026-03-21 00:00:00+00:00"
+}

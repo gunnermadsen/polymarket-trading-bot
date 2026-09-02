@@ -1,0 +1,198 @@
+{
+  "frozen_at": "2026-09-01T01:18:50.557291+00:00",
+  "known_comparison_metrics_accessed": false,
+  "policies": {
+    "crossvenue_middle_specialist": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.03
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.03
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.8,
+        "minimum_confidence": 0.55,
+        "minimum_edge": 0.1
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.6,
+        "minimum_edge": 0.05
+      }
+    },
+    "external_flow_only_control": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.125
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.9,
+        "minimum_edge": 0.1
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.62,
+        "minimum_edge": 0.1
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.1
+      }
+    },
+    "latent_boundary_margin_specialist": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.075
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.075
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.8,
+        "minimum_confidence": 0.6,
+        "minimum_edge": 0.075
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.6,
+        "minimum_edge": 0.02
+      }
+    },
+    "middle_agreement_ensemble": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.62,
+        "minimum_edge": 0.01
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.02
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.75,
+        "minimum_confidence": 0.75,
+        "minimum_edge": 0.1
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.68,
+        "minimum_edge": 0.02
+      }
+    },
+    "middle_q5_admission": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.55,
+        "minimum_edge": 0.075
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.55,
+        "minimum_edge": 0.05
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.8,
+        "minimum_confidence": 0.62,
+        "minimum_edge": 0.05
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.6,
+        "minimum_edge": 0.05
+      }
+    },
+    "middle_specialist_refit": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.55,
+        "minimum_edge": 0.02
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.075
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.02
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.95,
+        "minimum_confidence": 0.58,
+        "minimum_edge": 0.03
+      }
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "120_149": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.52,
+        "minimum_edge": 0.125
+      },
+      "150_180": {
+        "abstain": false,
+        "maximum_share_cost": 0.85,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.15
+      },
+      "60_89": {
+        "abstain": false,
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.8,
+        "minimum_edge": 0.15
+      },
+      "90_119": {
+        "abstain": false,
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.85,
+        "minimum_edge": 0.05
+      }
+    }
+  },
+  "predictive_ranking": [
+    "middle_agreement_ensemble",
+    "middle_q5_admission",
+    "crossvenue_middle_specialist",
+    "middle_specialist_refit",
+    "latent_boundary_margin_specialist",
+    "external_flow_only_control",
+    "price_time_calibrated_middle_ensemble"
+  ],
+  "sealed_metrics_accessed": false
+}

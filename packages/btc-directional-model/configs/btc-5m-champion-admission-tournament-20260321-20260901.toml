@@ -1,0 +1,121 @@
+[training]
+profile = "btc_5m_champion_admission_tournament"
+model_family = "btc-5m-champion-admission"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260902
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-20T00:00:00Z"
+sealed_start = "2026-08-20T00:00:00Z"
+sealed_end = "2026-09-01T00:00:00Z"
+
+[entry]
+economic_start_second = 60
+economic_end_second_inclusive = 180
+competition_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+
+[model]
+learning_rate = 0.06
+max_iter = 90
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 2.0
+max_bins = 127
+calibration_fraction = 0.20
+hard_negative_multiplier = 4.0
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+recovery_soft_target = 2.5
+recovery_penalty = 0.01
+
+[admission]
+learning_rate = 0.05
+max_iter = 100
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 5.0
+minimum_development_trades = 10
+probability_thresholds = [0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75]
+stress_edge_thresholds = [-0.05, -0.02, 0.00, 0.02, 0.05]
+maximum_loss_thresholds = [0.15, 0.25, 0.40, 0.60, 0.90]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.95]
+
+[paths]
+panel = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel.parquet"
+panel_manifest = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel-manifest.json"
+bridge_panel = "data/btc-hybrid-payoff-admission-20260321-20260827/middle-panel.parquet"
+bridge_manifest = "data/btc-hybrid-payoff-admission-20260321-20260827/panel-manifest.json"
+champion_artifact = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/tournament.joblib"
+champion_metrics = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/metrics.json"
+official_oof = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/ledgers/specialist-oof-predictions.parquet"
+development_predictions = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/ledgers/development-predictions.parquet"
+committed_results = "training-results/btc-5m-champion-admission-tournament-20260321-20260901"
+
+[[folds]]
+name = "april"
+test_start = "2026-04-01T00:00:00Z"
+test_end = "2026-05-01T00:00:00Z"
+
+[[folds]]
+name = "may"
+test_start = "2026-05-01T00:00:00Z"
+test_end = "2026-06-01T00:00:00Z"
+
+[[folds]]
+name = "june"
+test_start = "2026-06-01T00:00:00Z"
+test_end = "2026-07-01T00:00:00Z"
+
+[[folds]]
+name = "july"
+test_start = "2026-07-01T00:00:00Z"
+test_end = "2026-08-01T00:00:00Z"
+
+[[folds]]
+name = "august_pre_cutover"
+test_start = "2026-08-01T00:00:00Z"
+test_end = "2026-08-14T00:00:00Z"
+
+[[candidates]]
+name = "official_specialist_control"
+base = "extended_specialist_official"
+admission = "programmatic"
+
+[[candidates]]
+name = "bridge_aware_control"
+base = "bridge_aware_specialist"
+admission = "programmatic"
+
+[[candidates]]
+name = "official_vwap_admission"
+base = "extended_specialist_official"
+admission = "vwap_bucket"
+
+[[candidates]]
+name = "bridge_vwap_admission"
+base = "bridge_aware_specialist"
+admission = "vwap_bucket_below_080"
+
+[[candidates]]
+name = "official_loss_severity_veto"
+base = "extended_specialist_official"
+admission = "loss_severity"
+
+[[candidates]]
+name = "bridge_capacity_curve_veto"
+base = "bridge_aware_specialist"
+admission = "capacity_curve"
+
+[[candidates]]
+name = "specialist_consensus_admission"
+base = "consensus"
+admission = "consensus"

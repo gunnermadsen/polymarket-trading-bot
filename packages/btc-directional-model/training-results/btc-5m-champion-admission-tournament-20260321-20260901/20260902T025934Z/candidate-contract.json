@@ -1,0 +1,30 @@
+{
+  "bridge_aware_control": {
+    "admission": "programmatic",
+    "base": "bridge_aware_specialist"
+  },
+  "bridge_capacity_curve_veto": {
+    "admission": "capacity_curve",
+    "base": "bridge_aware_specialist"
+  },
+  "bridge_vwap_admission": {
+    "admission": "vwap_bucket_below_080",
+    "base": "bridge_aware_specialist"
+  },
+  "official_loss_severity_veto": {
+    "admission": "loss_severity",
+    "base": "extended_specialist_official"
+  },
+  "official_specialist_control": {
+    "admission": "programmatic",
+    "base": "extended_specialist_official"
+  },
+  "official_vwap_admission": {
+    "admission": "vwap_bucket",
+    "base": "extended_specialist_official"
+  },
+  "specialist_consensus_admission": {
+    "admission": "consensus",
+    "base": "consensus"
+  }
+}

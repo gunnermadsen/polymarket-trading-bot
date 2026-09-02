@@ -1,0 +1,3806 @@
+{
+  "artifact_sha256": "c5acd5b0aadc0be50a79288c615433d8cd7a2230412359e54ddc7c3d9f534a4b",
+  "candidate_count_trained": 5,
+  "candidate_names": [
+    "middle_specialist_refit",
+    "middle_q5_admission",
+    "middle_agreement_ensemble",
+    "crossvenue_middle_specialist",
+    "price_time_calibrated_middle_ensemble"
+  ],
+  "created_at": "2026-08-31T22:56:42.412797+00:00",
+  "data_observed": {
+    "configured_end_exclusive": "2026-08-29T00:00:00+00:00",
+    "configured_start": "2026-03-21T00:00:00+00:00",
+    "first_observed_market": "2026-03-21T00:05:00+00:00",
+    "last_observed_market": "2026-08-26T23:55:00+00:00",
+    "markets": 45738,
+    "rows": 1692306,
+    "sealed_first_observed_market": "2026-08-21T00:00:00+00:00",
+    "sealed_last_observed_market": "2026-08-26T23:55:00+00:00",
+    "sealed_markets": 1679
+  },
+  "derived_ensemble_count": 2,
+  "economic_ranking_sealed": [
+    "crossvenue_middle_specialist",
+    "middle_q5_admission",
+    "middle_agreement_ensemble",
+    "price_time_calibrated_middle_ensemble",
+    "middle_specialist_refit"
+  ],
+  "frozen_comparator_references": {
+    "frozen_middle_specialist": {
+      "manifest_path": "runtime-models/btc-5m-specialist-distilled-fair-value-paper-20260823-v1/manifest.json",
+      "manifest_sha256": "d77d80c17c488ed3134a7654c2d94b72c7fd694279214d226ea4d5348b6d972d",
+      "model_artifact_sha256": "9ec96d8aaedd7ab656230fa12012122ea934f7a350995ada4d0bc2802464f799",
+      "reason": "Immutable runtime comparator retained for provenance; its input, target, and entry-policy contract is not identical to this tournament panel.",
+      "scored_without_alteration": false
+    },
+    "frozen_q5": {
+      "manifest_path": "runtime-models/btc-5m-payoff-aware-q5-paper-20260820/manifest.json",
+      "manifest_sha256": "b5d5aed5ac889e5a42801948b2a6a1e88b1a65220ce703f880adf0cb1cbdbcf0",
+      "model_artifact_sha256": "ddb2c1cfedb9132d1120dfcdb405ab7737d808b124306e36da8f850ef51d803e",
+      "reason": "Immutable runtime comparator retained for provenance; its input, target, and entry-policy contract is not identical to this tournament panel.",
+      "scored_without_alteration": false
+    }
+  },
+  "integrity": {
+    "artifact_round_trip_load": true,
+    "database_mutations": false,
+    "deployed": false,
+    "finalized_from_existing_checkpoints_without_retraining": true,
+    "full_history_retained": true,
+    "historical_official_label_preserved": true,
+    "kraken_l2_included": false,
+    "market_disjoint": true,
+    "new_ingesters": false,
+    "new_sources": false,
+    "new_tables": false,
+    "optional_missingness_preserves_rows": true,
+    "passed": true,
+    "runtime_exported": false,
+    "sealed_opened_after_selection": true,
+    "source_values_remain_distinct": true,
+    "twap_inference_feature": false
+  },
+  "learned_base_model_count": 3,
+  "limitations": [
+    "The August 14-28 development/test period is row-disjoint but was observed during previous research and is not epistemically fresh.",
+    "Kraken L2 is excluded because its historical backfill is incomplete.",
+    "Qualified Binance spot L2 ends August 1; later rows remain usable with L2 missing.",
+    "Projected PnL assumes recorded ask VWAP was fillable and does not model queue position."
+  ],
+  "oof_predictive": {
+    "crossvenue_middle_specialist": {
+      "accuracy": 0.7825095603415916,
+      "bridge_target_brier_score": 0.13608025706736987,
+      "bridge_target_cross_entropy": 0.4570402422317706,
+      "brier_score": 0.14879719181107662,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7602855541087963,
+          "bridge_target_brier_score": 0.15140010876170884,
+          "bridge_target_cross_entropy": 0.5009515053271061,
+          "brier_score": 0.1642686915271792,
+          "ece_15": 0.01240008863783001,
+          "log_loss": 0.499145636480498,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "150_180": {
+          "accuracy": 0.7987157428075397,
+          "bridge_target_brier_score": 0.12809619324146032,
+          "bridge_target_cross_entropy": 0.439784763825877,
+          "brier_score": 0.14072533835345213,
+          "ece_15": 0.009829248718684264,
+          "log_loss": 0.4370637361458483,
+          "markets": 36864,
+          "rows": 258048
+        },
+        "60_89": {
+          "accuracy": 0.6880425347222222,
+          "bridge_target_brier_score": 0.18887929683953536,
+          "bridge_target_cross_entropy": 0.5910091861955467,
+          "brier_score": 0.20217992954902758,
+          "ece_15": 0.021289590713438285,
+          "log_loss": 0.5903372824206199,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "90_119": {
+          "accuracy": 0.7245325159143519,
+          "bridge_target_brier_score": 0.17089342270162605,
+          "bridge_target_cross_entropy": 0.5485669315638229,
+          "brier_score": 0.18400077650780186,
+          "ece_15": 0.013665403459583472,
+          "log_loss": 0.5474354052335536,
+          "markets": 36864,
+          "rows": 221184
+        }
+      },
+      "ece_15": 0.008917012150712675,
+      "log_loss": 0.4545771191940098,
+      "markets": 36864,
+      "mean_probability": 0.493898786006476,
+      "positive_rate": 0.4951171875,
+      "rows": 1363968
+    },
+    "middle_agreement_ensemble": {
+      "accuracy": 0.7829377228791291,
+      "bridge_target_brier_score": 0.1357987194459643,
+      "bridge_target_cross_entropy": 0.4556996359259653,
+      "brier_score": 0.14848874710077728,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7607331452546297,
+          "bridge_target_brier_score": 0.1510964269887006,
+          "bridge_target_cross_entropy": 0.4998051718929125,
+          "brier_score": 0.16392352289657341,
+          "ece_15": 0.012123182915568374,
+          "log_loss": 0.4978593140025706,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "150_180": {
+          "accuracy": 0.7986847408234127,
+          "bridge_target_brier_score": 0.12782713339092552,
+          "bridge_target_cross_entropy": 0.4382866587672691,
+          "brier_score": 0.14042780089092538,
+          "ece_15": 0.00996662272223683,
+          "log_loss": 0.43543277355222243,
+          "markets": 36864,
+          "rows": 258048
+        },
+        "60_89": {
+          "accuracy": 0.6892451533564815,
+          "bridge_target_brier_score": 0.1883020817297918,
+          "bridge_target_cross_entropy": 0.5892623992824674,
+          "brier_score": 0.2015683177097624,
+          "ece_15": 0.02116834877321741,
+          "log_loss": 0.5884799411225912,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "90_119": {
+          "accuracy": 0.7260877821180556,
+          "bridge_target_brier_score": 0.17040901711769627,
+          "bridge_target_cross_entropy": 0.5468939264389419,
+          "brier_score": 0.18347899623622752,
+          "ece_15": 0.012926888565744143,
+          "log_loss": 0.5456417577673444,
+          "markets": 36864,
+          "rows": 221184
+        }
+      },
+      "ece_15": 0.008247103919001231,
+      "log_loss": 0.45312136334839087,
+      "markets": 36864,
+      "mean_probability": 0.4895807254021937,
+      "positive_rate": 0.4951171875,
+      "rows": 1363968
+    },
+    "middle_q5_admission": {
+      "accuracy": 0.7827786282376126,
+      "bridge_target_brier_score": 0.1359963548182785,
+      "bridge_target_cross_entropy": 0.45647401807153487,
+      "brier_score": 0.14869518168879256,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7606879340277778,
+          "bridge_target_brier_score": 0.15127964849605394,
+          "bridge_target_cross_entropy": 0.5005175880575008,
+          "brier_score": 0.16412006307844745,
+          "ece_15": 0.01214942399490446,
+          "log_loss": 0.4985703973698701,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "150_180": {
+          "accuracy": 0.7988164992559523,
+          "bridge_target_brier_score": 0.12802472899982442,
+          "bridge_target_cross_entropy": 0.4390748082816697,
+          "brier_score": 0.14063305760329387,
+          "ece_15": 0.009938818410547428,
+          "log_loss": 0.436215145327642,
+          "markets": 36864,
+          "rows": 258048
+        },
+        "60_89": {
+          "accuracy": 0.6890236183449074,
+          "bridge_target_brier_score": 0.18853897016810248,
+          "bridge_target_cross_entropy": 0.5900511420799248,
+          "brier_score": 0.20180569397787754,
+          "ece_15": 0.02095110838148883,
+          "log_loss": 0.5892544761636827,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "90_119": {
+          "accuracy": 0.7259702329282407,
+          "bridge_target_brier_score": 0.1706460980003588,
+          "bridge_target_cross_entropy": 0.5477282607939371,
+          "brier_score": 0.1837204047540773,
+          "ece_15": 0.012765870914157153,
+          "log_loss": 0.5464461865931555,
+          "markets": 36864,
+          "rows": 221184
+        }
+      },
+      "ece_15": 0.007738745006543477,
+      "log_loss": 0.4538995518940067,
+      "markets": 36864,
+      "mean_probability": 0.4895235534034581,
+      "positive_rate": 0.4951171875,
+      "rows": 1363968
+    },
+    "middle_specialist_refit": {
+      "accuracy": 0.7827427036411412,
+      "bridge_target_brier_score": 0.13598590880322486,
+      "bridge_target_cross_entropy": 0.45643722859165436,
+      "brier_score": 0.14866713724233674,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7604483145254629,
+          "bridge_target_brier_score": 0.1513228273317203,
+          "bridge_target_cross_entropy": 0.5007174746316113,
+          "brier_score": 0.16413660456507248,
+          "ece_15": 0.012897930571980878,
+          "log_loss": 0.4987420546305047,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "150_180": {
+          "accuracy": 0.7985723586309523,
+          "bridge_target_brier_score": 0.12800327462605784,
+          "bridge_target_cross_entropy": 0.43913563800668987,
+          "brier_score": 0.1405962810225881,
+          "ece_15": 0.009819754742527581,
+          "log_loss": 0.43626415679611175,
+          "markets": 36864,
+          "rows": 258048
+        },
+        "60_89": {
+          "accuracy": 0.6887659143518519,
+          "bridge_target_brier_score": 0.18853368058845998,
+          "bridge_target_cross_entropy": 0.5899264085289321,
+          "brier_score": 0.20179942873862622,
+          "ece_15": 0.023031263898843843,
+          "log_loss": 0.5891455182709111,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "90_119": {
+          "accuracy": 0.7255497685185185,
+          "bridge_target_brier_score": 0.17061520121470078,
+          "bridge_target_cross_entropy": 0.5475488367828055,
+          "brier_score": 0.18368085269804482,
+          "ece_15": 0.01350618377653065,
+          "log_loss": 0.5462917285936408,
+          "markets": 36864,
+          "rows": 221184
+        }
+      },
+      "ece_15": 0.008782315029296857,
+      "log_loss": 0.45381616032304195,
+      "markets": 36864,
+      "mean_probability": 0.4896378974009294,
+      "positive_rate": 0.4951171875,
+      "rows": 1363968
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "accuracy": 0.7820381416572822,
+      "bridge_target_brier_score": 0.14783632224923846,
+      "bridge_target_cross_entropy": 0.5495624134542038,
+      "brier_score": 0.160278069238798,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7601273148148148,
+          "bridge_target_brier_score": 0.1650231080718957,
+          "bridge_target_cross_entropy": 0.6088168586710521,
+          "brier_score": 0.1775793898050649,
+          "ece_15": 0.09436788460719749,
+          "log_loss": 0.6049802132884812,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "150_180": {
+          "accuracy": 0.7981964595734127,
+          "bridge_target_brier_score": 0.1385510756726744,
+          "bridge_target_cross_entropy": 0.535343196677076,
+          "brier_score": 0.1508383683544707,
+          "ece_15": 0.07713803499115263,
+          "log_loss": 0.5293700832782396,
+          "markets": 36864,
+          "rows": 258048
+        },
+        "60_89": {
+          "accuracy": 0.6871202256944444,
+          "bridge_target_brier_score": 0.20772290261331036,
+          "bridge_target_cross_entropy": 0.6993376255973475,
+          "brier_score": 0.2208774504293293,
+          "ece_15": 0.11515886294771188,
+          "log_loss": 0.6979520010622124,
+          "markets": 36864,
+          "rows": 221184
+        },
+        "90_119": {
+          "accuracy": 0.7244692201967593,
+          "bridge_target_brier_score": 0.186189760907528,
+          "bridge_target_cross_entropy": 0.6516351474548299,
+          "brier_score": 0.19904141282849838,
+          "ece_15": 0.10152454321284729,
+          "log_loss": 0.6491635622844485,
+          "markets": 36864,
+          "rows": 221184
+        }
+      },
+      "ece_15": 0.0802847965174185,
+      "log_loss": 0.5444349215527183,
+      "markets": 36864,
+      "mean_probability": 0.5060200073637436,
+      "positive_rate": 0.4951171875,
+      "rows": 1363968
+    }
+  },
+  "policy_selection_evidence": {
+    "crossvenue_middle_specialist": {
+      "policy": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.05
+      },
+      "selection_score": "recorded_before_seal"
+    },
+    "middle_agreement_ensemble": {
+      "policy": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.68,
+        "minimum_edge": 0.075
+      },
+      "selection_score": "recorded_before_seal"
+    },
+    "middle_q5_admission": {
+      "policy": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.68,
+        "minimum_edge": 0.1
+      },
+      "selection_score": "recorded_before_seal"
+    },
+    "middle_specialist_refit": {
+      "policy": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.01
+      },
+      "selection_score": "recorded_before_seal"
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "policy": {
+        "120_149": {
+          "maximum_share_cost": 0.9,
+          "minimum_confidence": 0.7,
+          "minimum_edge": 0.1
+        },
+        "150_180": {
+          "maximum_share_cost": 0.9,
+          "minimum_confidence": 0.7,
+          "minimum_edge": 0.05
+        },
+        "60_89": {
+          "maximum_share_cost": 0.65,
+          "minimum_confidence": 0.65,
+          "minimum_edge": 0.03
+        },
+        "90_119": {
+          "maximum_share_cost": 0.65,
+          "minimum_confidence": 0.58,
+          "minimum_edge": 0.02
+        }
+      },
+      "selection_score": "recorded_before_seal"
+    }
+  },
+  "predictive_ranking_preseal": [
+    "middle_agreement_ensemble",
+    "middle_specialist_refit",
+    "middle_q5_admission",
+    "crossvenue_middle_specialist",
+    "price_time_calibrated_middle_ensemble"
+  ],
+  "prior_run_comparison": {
+    "candidates": {
+      "crossvenue_middle_specialist": {
+        "brier_score_delta": -0.02067214451447344,
+        "coverage_delta": 0.025610482430017845,
+        "net_pnl_delta": 13.394644895240006,
+        "profit_factor_delta": 0.02378189881626358,
+        "stress_net_pnl_delta": 11.244644895239986,
+        "trade_count_delta": 43
+      },
+      "middle_agreement_ensemble": {
+        "brier_score_delta": -0.021111852005404802,
+        "coverage_delta": -0.08933889219773677,
+        "net_pnl_delta": -31.061599164299963,
+        "profit_factor_delta": -0.0633866053994594,
+        "stress_net_pnl_delta": -23.561599164299963,
+        "trade_count_delta": -150
+      },
+      "middle_q5_admission": {
+        "brier_score_delta": -0.020983278364369917,
+        "coverage_delta": -0.09469922572960099,
+        "net_pnl_delta": 8.437511503300001,
+        "profit_factor_delta": -0.01650265799294115,
+        "stress_net_pnl_delta": 16.387511503300004,
+        "trade_count_delta": -159
+      },
+      "middle_specialist_refit": {
+        "brier_score_delta": -0.021493228337101933,
+        "coverage_delta": -0.014889815366289472,
+        "net_pnl_delta": -54.39489631645998,
+        "profit_factor_delta": -0.054696204825011585,
+        "stress_net_pnl_delta": -53.144896316460006,
+        "trade_count_delta": -25
+      },
+      "price_time_calibrated_middle_ensemble": {
+        "brier_score_delta": -0.007503886644205732,
+        "coverage_delta": 0.3007742703990471,
+        "net_pnl_delta": -21.91032515866,
+        "profit_factor_delta": 0.015755455771538474,
+        "stress_net_pnl_delta": -47.16032515865996,
+        "trade_count_delta": 505
+      }
+    },
+    "prior_metrics_path": "training-results/btc-5m-twap-normalized-middle-strategy-20260321-20260828/20260831T205253Z/metrics.json",
+    "prior_metrics_sha256": "479afa1a5c498438850c00fb15e3df72ab2d69b8261d3a6c9668ae088247b209",
+    "prior_run_id": "20260831T205253Z",
+    "same_sealed_market_contract": true
+  },
+  "producing_commit": "619d8a729ef35e48d7f7a31781aa5a02c0838a60",
+  "qualification_status": "trained_evaluated_not_promoted_negative_expectancy",
+  "run_id": "20260831T224530Z",
+  "runtime": {
+    "numpy": "2.5.1",
+    "polars": "1.43.0",
+    "python": "3.13.7",
+    "sklearn": "1.9.0"
+  },
+  "schema_version": "btc-middle-strategy-tournament-v1",
+  "sealed_counterfactual_economic": {
+    "crossvenue_middle_specialist": {
+      "entries_150_180_only": {
+        "active_days": 5,
+        "average_entry_second": 159.29166666666666,
+        "average_share_cost": 0.5792095833333335,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 94,
+            "net_pnl": 8.979333237979993,
+            "trades": 240,
+            "wins": 146
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 94,
+            "net_pnl": 8.979333237979993,
+            "trades": 240,
+            "wins": 146
+          }
+        },
+        "expectancy_per_trade": 0.03741388849158331,
+        "gross_loss": 276.7536862781601,
+        "gross_profit": 285.73301951613996,
+        "losing_trades": 94,
+        "loss_recovery_wins": 1.504381505870854,
+        "market_coverage": 0.1429422275163788,
+        "maximum_daily_pnl_concentration": 0.5662185688303308,
+        "maximum_drawdown": 50.66192127816001,
+        "net_pnl": 8.979333237979993,
+        "profit_factor": 1.0324452163898366,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -3.0206667620200154,
+        "trades": 240,
+        "win_loss_ratio": 1.553191489361702,
+        "win_rate": 0.6083333333333333,
+        "winning_trades": 146
+      },
+      "p80_required_at_60_89": {
+        "active_days": 5,
+        "average_entry_second": 112.41747572815534,
+        "average_share_cost": 0.591541359223301,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 50,
+            "net_pnl": -8.070345000000007,
+            "trades": 124,
+            "wins": 74
+          },
+          "150_180": {
+            "losses": 28,
+            "net_pnl": 18.02553499999999,
+            "trades": 83,
+            "wins": 55
+          },
+          "60_89": {
+            "losses": 24,
+            "net_pnl": 5.011359587499996,
+            "trades": 67,
+            "wins": 43
+          },
+          "90_119": {
+            "losses": 107,
+            "net_pnl": -63.90136029054002,
+            "trades": 241,
+            "wins": 134
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 209,
+            "net_pnl": -48.93481070304003,
+            "trades": 515,
+            "wins": 306
+          }
+        },
+        "expectancy_per_trade": -0.09501904990881559,
+        "gross_loss": 634.9871137991,
+        "gross_profit": 586.0523030960601,
+        "losing_trades": 209,
+        "loss_recovery_wins": 1.5863670305038078,
+        "market_coverage": 0.3067301965455628,
+        "maximum_daily_pnl_concentration": 0.6644744585808687,
+        "maximum_drawdown": 86.57517570303993,
+        "net_pnl": -48.93481070304003,
+        "profit_factor": 0.9229357420967724,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -74.68481070304001,
+        "trades": 515,
+        "win_loss_ratio": 1.4641148325358853,
+        "win_rate": 0.5941747572815534,
+        "winning_trades": 306
+      }
+    },
+    "middle_agreement_ensemble": {
+      "entries_150_180_only": {
+        "active_days": 5,
+        "average_entry_second": 158.9712918660287,
+        "average_share_cost": 0.5650764593301436,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 86,
+            "net_pnl": 1.8004995161399933,
+            "trades": 209,
+            "wins": 123
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 86,
+            "net_pnl": 1.8004995161399933,
+            "trades": 209,
+            "wins": 123
+          }
+        },
+        "expectancy_per_trade": 0.008614830220765517,
+        "gross_loss": 246.029845,
+        "gross_profit": 247.83034451614003,
+        "losing_trades": 86,
+        "loss_recovery_wins": 1.419841848987572,
+        "market_coverage": 0.12447885646217986,
+        "maximum_daily_pnl_concentration": 0.48454573834569276,
+        "maximum_drawdown": 62.861465000000024,
+        "net_pnl": 1.8004995161399933,
+        "profit_factor": 1.0073182158698675,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -8.649500483860002,
+        "trades": 209,
+        "win_loss_ratio": 1.430232558139535,
+        "win_rate": 0.5885167464114832,
+        "winning_trades": 123
+      },
+      "p80_required_at_60_89": {
+        "active_days": 5,
+        "average_entry_second": 112.0909090909091,
+        "average_share_cost": 0.5816336363636364,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 52,
+            "net_pnl": -35.00968,
+            "trades": 112,
+            "wins": 60
+          },
+          "150_180": {
+            "losses": 19,
+            "net_pnl": 39.95538,
+            "trades": 67,
+            "wins": 48
+          },
+          "60_89": {
+            "losses": 22,
+            "net_pnl": 7.663358520859997,
+            "trades": 63,
+            "wins": 41
+          },
+          "90_119": {
+            "losses": 92,
+            "net_pnl": -65.06573431093999,
+            "trades": 198,
+            "wins": 106
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 185,
+            "net_pnl": -52.45667579008002,
+            "trades": 440,
+            "wins": 255
+          }
+        },
+        "expectancy_per_trade": -0.11921971770472732,
+        "gross_loss": 554.0247171744401,
+        "gross_profit": 501.56804138435996,
+        "losing_trades": 185,
+        "loss_recovery_wins": 1.5225365817421417,
+        "market_coverage": 0.26206075044669447,
+        "maximum_daily_pnl_concentration": 0.7203422043269347,
+        "maximum_drawdown": 83.66810079008008,
+        "net_pnl": -52.45667579008002,
+        "profit_factor": 0.9053170839423693,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -74.45667579008001,
+        "trades": 440,
+        "win_loss_ratio": 1.3783783783783783,
+        "win_rate": 0.5795454545454546,
+        "winning_trades": 255
+      }
+    },
+    "middle_q5_admission": {
+      "entries_150_180_only": {
+        "active_days": 5,
+        "average_entry_second": 160.10471204188482,
+        "average_share_cost": 0.5552371727748691,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 83,
+            "net_pnl": -11.044586762020007,
+            "trades": 191,
+            "wins": 108
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 83,
+            "net_pnl": -11.044586762020007,
+            "trades": 191,
+            "wins": 108
+          }
+        },
+        "expectancy_per_trade": -0.05782506158125658,
+        "gross_loss": 234.26709127816002,
+        "gross_profit": 223.22250451614002,
+        "losing_trades": 83,
+        "loss_recovery_wins": 1.365585736213848,
+        "market_coverage": 0.11375818939845146,
+        "maximum_daily_pnl_concentration": 0.48136642624004267,
+        "maximum_drawdown": 55.94081127816,
+        "net_pnl": -11.044586762020007,
+        "profit_factor": 0.9528547236329235,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -20.594586762020015,
+        "trades": 191,
+        "win_loss_ratio": 1.3012048192771084,
+        "win_rate": 0.5654450261780105,
+        "winning_trades": 108
+      },
+      "p80_required_at_60_89": {
+        "active_days": 5,
+        "average_entry_second": 114.3896103896104,
+        "average_share_cost": 0.5695986493506493,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 40,
+            "net_pnl": 17.414118217839995,
+            "trades": 106,
+            "wins": 66
+          },
+          "150_180": {
+            "losses": 22,
+            "net_pnl": 26.289254999999994,
+            "trades": 65,
+            "wins": 43
+          },
+          "60_89": {
+            "losses": 20,
+            "net_pnl": 12.219783520859998,
+            "trades": 59,
+            "wins": 39
+          },
+          "90_119": {
+            "losses": 75,
+            "net_pnl": -54.445444310940005,
+            "trades": 155,
+            "wins": 80
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 157,
+            "net_pnl": 1.4777124277599896,
+            "trades": 385,
+            "wins": 228
+          }
+        },
+        "expectancy_per_trade": 0.003838214098077895,
+        "gross_loss": 458.7702439566,
+        "gross_profit": 460.24795638436,
+        "losing_trades": 157,
+        "loss_recovery_wins": 1.4475666446921176,
+        "market_coverage": 0.22930315664085765,
+        "maximum_daily_pnl_concentration": 0.5586156330461466,
+        "maximum_drawdown": 57.965570377579986,
+        "net_pnl": 1.4777124277599896,
+        "profit_factor": 1.003221029365409,
+        "profitable_day_ratio": 0.6,
+        "stress_net_pnl": -17.77228757224001,
+        "trades": 385,
+        "win_loss_ratio": 1.4522292993630572,
+        "win_rate": 0.5922077922077922,
+        "winning_trades": 228
+      }
+    },
+    "middle_specialist_refit": {
+      "entries_150_180_only": {
+        "active_days": 5,
+        "average_entry_second": 158.77887788778878,
+        "average_share_cost": 0.570764686468647,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 123,
+            "net_pnl": 2.429426964299978,
+            "trades": 303,
+            "wins": 180
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 123,
+            "net_pnl": 2.429426964299978,
+            "trades": 303,
+            "wins": 180
+          }
+        },
+        "expectancy_per_trade": 0.008017910773267254,
+        "gross_loss": 354.11824517864005,
+        "gross_profit": 356.54767214294,
+        "losing_trades": 123,
+        "loss_recovery_wins": 1.4534432916025009,
+        "market_coverage": 0.18046456223942822,
+        "maximum_daily_pnl_concentration": 0.7136847279189532,
+        "maximum_drawdown": 60.33937111505995,
+        "net_pnl": 2.429426964299978,
+        "profit_factor": 1.0068604964510495,
+        "profitable_day_ratio": 0.4,
+        "stress_net_pnl": -12.720573035700014,
+        "trades": 303,
+        "win_loss_ratio": 1.4634146341463414,
+        "win_rate": 0.594059405940594,
+        "winning_trades": 180
+      },
+      "p80_required_at_60_89": {
+        "active_days": 5,
+        "average_entry_second": 110.08025682182985,
+        "average_share_cost": 0.5879416051364366,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 56,
+            "net_pnl": -26.78928000000001,
+            "trades": 128,
+            "wins": 72
+          },
+          "150_180": {
+            "losses": 27,
+            "net_pnl": 24.029327626799994,
+            "trades": 81,
+            "wins": 54
+          },
+          "60_89": {
+            "losses": 25,
+            "net_pnl": 9.672939587499993,
+            "trades": 72,
+            "wins": 47
+          },
+          "90_119": {
+            "losses": 163,
+            "net_pnl": -145.8991709356,
+            "trades": 342,
+            "wins": 179
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.80_0.95": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 271,
+            "net_pnl": -138.98618372130005,
+            "trades": 623,
+            "wins": 352
+          }
+        },
+        "expectancy_per_trade": -0.22309178767463891,
+        "gross_loss": 814.9196637991001,
+        "gross_profit": 675.9334800777999,
+        "losing_trades": 271,
+        "loss_recovery_wins": 1.565972790292798,
+        "market_coverage": 0.3710541989279333,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 162.53370180065974,
+        "net_pnl": -138.98618372130005,
+        "profit_factor": 0.8294479935931892,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -170.13618372130003,
+        "trades": 623,
+        "win_loss_ratio": 1.2988929889298892,
+        "win_rate": 0.565008025682183,
+        "winning_trades": 352
+      }
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "entries_150_180_only": {
+        "active_days": 5,
+        "average_entry_second": 153.84065934065933,
+        "average_share_cost": 0.7309937142857144,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "150_180": {
+            "losses": 255,
+            "net_pnl": -130.30223873724,
+            "trades": 910,
+            "wins": 655
+          },
+          "60_89": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "90_119": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 84,
+            "net_pnl": -58.77707500000001,
+            "trades": 291,
+            "wins": 207
+          },
+          "0.80_0.95": {
+            "losses": 57,
+            "net_pnl": -69.95089373723998,
+            "trades": 351,
+            "wins": 294
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 114,
+            "net_pnl": -1.5742700000000127,
+            "trades": 268,
+            "wins": 154
+          }
+        },
+        "expectancy_per_trade": -0.14318927333762638,
+        "gross_loss": 877.837795,
+        "gross_profit": 747.53555626276,
+        "losing_trades": 255,
+        "loss_recovery_wins": 3.0163625513921626,
+        "market_coverage": 0.5419892793329363,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 139.10550873724,
+        "net_pnl": -130.30223873724,
+        "profit_factor": 0.8515645606974122,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -175.80223873724003,
+        "trades": 910,
+        "win_loss_ratio": 2.5686274509803924,
+        "win_rate": 0.7197802197802198,
+        "winning_trades": 655
+      },
+      "p80_required_at_60_89": {
+        "active_days": 5,
+        "average_entry_second": 96.98581560283688,
+        "average_share_cost": 0.6522239184397164,
+        "by_entry_cell": {
+          "120_149": {
+            "losses": 77,
+            "net_pnl": -63.06692948226001,
+            "trades": 319,
+            "wins": 242
+          },
+          "150_180": {
+            "losses": 10,
+            "net_pnl": 14.012189999999999,
+            "trades": 75,
+            "wins": 65
+          },
+          "60_89": {
+            "losses": 197,
+            "net_pnl": -100.81181240318,
+            "trades": 454,
+            "wins": 257
+          },
+          "90_119": {
+            "losses": 115,
+            "net_pnl": 5.170980830619985,
+            "trades": 280,
+            "wins": 165
+          }
+        },
+        "by_price_bucket": {
+          "0.65_0.80": {
+            "losses": 38,
+            "net_pnl": -29.22749448226001,
+            "trades": 139,
+            "wins": 101
+          },
+          "0.80_0.95": {
+            "losses": 31,
+            "net_pnl": -11.668429999999997,
+            "trades": 218,
+            "wins": 187
+          },
+          "0.95_1.0": {
+            "losses": 0,
+            "net_pnl": 0.0,
+            "trades": 0,
+            "wins": 0
+          },
+          "0_0.65": {
+            "losses": 330,
+            "net_pnl": -103.79964657256002,
+            "trades": 771,
+            "wins": 441
+          }
+        },
+        "expectancy_per_trade": -0.12827621547413126,
+        "gross_loss": 1252.0853791269599,
+        "gross_profit": 1107.3898080721399,
+        "losing_trades": 399,
+        "loss_recovery_wins": 2.0657989612795635,
+        "market_coverage": 0.6718284693269804,
+        "maximum_daily_pnl_concentration": 1.0,
+        "maximum_drawdown": 179.74010128192,
+        "net_pnl": -144.69557105482005,
+        "profit_factor": 0.884436338394342,
+        "profitable_day_ratio": 0.2,
+        "stress_net_pnl": -201.09557105482003,
+        "trades": 1128,
+        "win_loss_ratio": 1.8270676691729324,
+        "win_rate": 0.6462765957446809,
+        "winning_trades": 729
+      }
+    }
+  },
+  "sealed_economic": {
+    "crossvenue_middle_specialist": {
+      "active_days": 5,
+      "average_entry_second": 94.26163723916532,
+      "average_share_cost": 0.5892215088282503,
+      "by_entry_cell": {
+        "120_149": {
+          "losses": 41,
+          "net_pnl": 2.283674999999997,
+          "trades": 106,
+          "wins": 65
+        },
+        "150_180": {
+          "losses": 21,
+          "net_pnl": 17.96265499999999,
+          "trades": 64,
+          "wins": 43
+        },
+        "60_89": {
+          "losses": 146,
+          "net_pnl": -80.32058511372003,
+          "trades": 334,
+          "wins": 188
+        },
+        "90_119": {
+          "losses": 46,
+          "net_pnl": 2.112015232559987,
+          "trades": 119,
+          "wins": 73
+        }
+      },
+      "by_price_bucket": {
+        "0.65_0.80": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.80_0.95": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.95_1.0": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0_0.65": {
+          "losses": 254,
+          "net_pnl": -57.962239881160016,
+          "trades": 623,
+          "wins": 369
+        }
+      },
+      "expectancy_per_trade": -0.09303730318003213,
+      "gross_loss": 767.5528389267599,
+      "gross_profit": 709.5905990456,
+      "losing_trades": 254,
+      "loss_recovery_wins": 1.5714229036334082,
+      "market_coverage": 0.3710541989279333,
+      "maximum_daily_pnl_concentration": 0.6669024069804795,
+      "maximum_drawdown": 98.61708636689993,
+      "net_pnl": -57.962239881160016,
+      "profit_factor": 0.9244843651907974,
+      "profitable_day_ratio": 0.4,
+      "stress_net_pnl": -89.11223988116002,
+      "trades": 623,
+      "win_loss_ratio": 1.452755905511811,
+      "win_rate": 0.5922953451043339,
+      "winning_trades": 369
+    },
+    "middle_agreement_ensemble": {
+      "active_days": 5,
+      "average_entry_second": 94.74311926605505,
+      "average_share_cost": 0.5767497614678899,
+      "by_entry_cell": {
+        "120_149": {
+          "losses": 43,
+          "net_pnl": -23.354160000000004,
+          "trades": 95,
+          "wins": 52
+        },
+        "150_180": {
+          "losses": 18,
+          "net_pnl": 30.765335,
+          "trades": 60,
+          "wins": 42
+        },
+        "60_89": {
+          "losses": 140,
+          "net_pnl": -101.93280226739999,
+          "trades": 298,
+          "wins": 158
+        },
+        "90_119": {
+          "losses": 41,
+          "net_pnl": -21.533056761940006,
+          "trades": 92,
+          "wins": 51
+        }
+      },
+      "by_price_bucket": {
+        "0.65_0.80": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.80_0.95": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.95_1.0": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0_0.65": {
+          "losses": 242,
+          "net_pnl": -116.05468402934,
+          "trades": 545,
+          "wins": 303
+        }
+      },
+      "expectancy_per_trade": -0.21294437436576147,
+      "gross_loss": 717.5818640293401,
+      "gross_profit": 601.52718,
+      "losing_trades": 242,
+      "loss_recovery_wins": 1.4936314884287698,
+      "market_coverage": 0.32459797498511017,
+      "maximum_daily_pnl_concentration": 1.0,
+      "maximum_drawdown": 138.20635402934,
+      "net_pnl": -116.05468402934,
+      "profit_factor": 0.8382697642640048,
+      "profitable_day_ratio": 0.2,
+      "stress_net_pnl": -143.30468402933997,
+      "trades": 545,
+      "win_loss_ratio": 1.2520661157024793,
+      "win_rate": 0.5559633027522936,
+      "winning_trades": 303
+    },
+    "middle_q5_admission": {
+      "active_days": 5,
+      "average_entry_second": 96.76160337552743,
+      "average_share_cost": 0.565609282700422,
+      "by_entry_cell": {
+        "120_149": {
+          "losses": 34,
+          "net_pnl": 6.96179321783999,
+          "trades": 86,
+          "wins": 52
+        },
+        "150_180": {
+          "losses": 19,
+          "net_pnl": 21.47872499999999,
+          "trades": 56,
+          "wins": 37
+        },
+        "60_89": {
+          "losses": 119,
+          "net_pnl": -74.23602205025998,
+          "trades": 253,
+          "wins": 134
+        },
+        "90_119": {
+          "losses": 38,
+          "net_pnl": -26.562396761940008,
+          "trades": 79,
+          "wins": 41
+        }
+      },
+      "by_price_bucket": {
+        "0.65_0.80": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.80_0.95": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.95_1.0": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0_0.65": {
+          "losses": 210,
+          "net_pnl": -72.35790059436,
+          "trades": 474,
+          "wins": 264
+        }
+      },
+      "expectancy_per_trade": -0.1526537987222785,
+      "gross_loss": 612.0567789566,
+      "gross_profit": 539.6988783622401,
+      "losing_trades": 210,
+      "loss_recovery_wins": 1.4256890993846252,
+      "market_coverage": 0.2823108993448481,
+      "maximum_daily_pnl_concentration": 1.0,
+      "maximum_drawdown": 97.40244176194004,
+      "net_pnl": -72.35790059436,
+      "profit_factor": 0.8817791043541554,
+      "profitable_day_ratio": 0.2,
+      "stress_net_pnl": -96.05790059436,
+      "trades": 474,
+      "win_loss_ratio": 1.2571428571428571,
+      "win_rate": 0.5569620253164557,
+      "winning_trades": 264
+    },
+    "middle_specialist_refit": {
+      "active_days": 5,
+      "average_entry_second": 88.09305373525557,
+      "average_share_cost": 0.5858712712975098,
+      "by_entry_cell": {
+        "120_149": {
+          "losses": 39,
+          "net_pnl": -11.986170000000003,
+          "trades": 91,
+          "wins": 52
+        },
+        "150_180": {
+          "losses": 20,
+          "net_pnl": 19.454012626799994,
+          "trades": 60,
+          "wins": 40
+        },
+        "60_89": {
+          "losses": 212,
+          "net_pnl": -109.76956703621997,
+          "trades": 485,
+          "wins": 273
+        },
+        "90_119": {
+          "losses": 57,
+          "net_pnl": -40.65767,
+          "trades": 127,
+          "wins": 70
+        }
+      },
+      "by_price_bucket": {
+        "0.65_0.80": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.80_0.95": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0.95_1.0": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0_0.65": {
+          "losses": 328,
+          "net_pnl": -142.95939440942,
+          "trades": 763,
+          "wins": 435
+        }
+      },
+      "expectancy_per_trade": -0.18736486816437747,
+      "gross_loss": 985.97574961622,
+      "gross_profit": 843.0163552068,
+      "losing_trades": 328,
+      "loss_recovery_wins": 1.5511208882435872,
+      "market_coverage": 0.45443716497915426,
+      "maximum_daily_pnl_concentration": 1.0,
+      "maximum_drawdown": 172.75710434147987,
+      "net_pnl": -142.95939440942,
+      "profit_factor": 0.8550071901209889,
+      "profitable_day_ratio": 0.2,
+      "stress_net_pnl": -181.10939440942002,
+      "trades": 763,
+      "win_loss_ratio": 1.326219512195122,
+      "win_rate": 0.5701179554390564,
+      "winning_trades": 435
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "active_days": 5,
+      "average_entry_second": 86.62650602409639,
+      "average_share_cost": 0.631211256454389,
+      "by_entry_cell": {
+        "120_149": {
+          "losses": 67,
+          "net_pnl": -71.45114448225999,
+          "trades": 263,
+          "wins": 196
+        },
+        "150_180": {
+          "losses": 7,
+          "net_pnl": 18.537160000000004,
+          "trades": 62,
+          "wins": 55
+        },
+        "60_89": {
+          "losses": 305,
+          "net_pnl": -22.007119389159996,
+          "trades": 735,
+          "wins": 430
+        },
+        "90_119": {
+          "losses": 44,
+          "net_pnl": -14.585837910740006,
+          "trades": 102,
+          "wins": 58
+        }
+      },
+      "by_price_bucket": {
+        "0.65_0.80": {
+          "losses": 32,
+          "net_pnl": -26.24417948226001,
+          "trades": 115,
+          "wins": 83
+        },
+        "0.80_0.95": {
+          "losses": 29,
+          "net_pnl": -26.486659999999993,
+          "trades": 180,
+          "wins": 151
+        },
+        "0.95_1.0": {
+          "losses": 0,
+          "net_pnl": 0.0,
+          "trades": 0,
+          "wins": 0
+        },
+        "0_0.65": {
+          "losses": 362,
+          "net_pnl": -36.776102299900025,
+          "trades": 867,
+          "wins": 505
+        }
+      },
+      "expectancy_per_trade": -0.07702834921012049,
+      "gross_loss": 1299.4651977232402,
+      "gross_profit": 1209.95825594108,
+      "losing_trades": 423,
+      "loss_recovery_wins": 1.876282969010286,
+      "market_coverage": 0.6920786182251341,
+      "maximum_daily_pnl_concentration": 0.5716363650705929,
+      "maximum_drawdown": 147.72726554912026,
+      "net_pnl": -89.50694178216001,
+      "profit_factor": 0.9311201700984506,
+      "profitable_day_ratio": 0.4,
+      "stress_net_pnl": -147.60694178216,
+      "trades": 1162,
+      "win_loss_ratio": 1.7470449172576832,
+      "win_rate": 0.6359724612736661,
+      "winning_trades": 739
+    }
+  },
+  "sealed_predictive": {
+    "crossvenue_middle_specialist": {
+      "accuracy": 0.7760410797933133,
+      "bridge_target_brier_score": 0.15520505500676443,
+      "bridge_target_cross_entropy": 0.4738677306597028,
+      "brier_score": 0.15520505500676443,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7446892991860234,
+          "bridge_target_brier_score": 0.17298216973794256,
+          "bridge_target_cross_entropy": 0.5211430254926259,
+          "brier_score": 0.17298216973794256,
+          "ece_15": 0.03442957780841529,
+          "log_loss": 0.5211430254926259,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7845656428146005,
+          "bridge_target_brier_score": 0.15188868201174843,
+          "bridge_target_cross_entropy": 0.47263854049281184,
+          "brier_score": 0.15188868201174843,
+          "ece_15": 0.02984390356552664,
+          "log_loss": 0.47263854049281184,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6909866984316061,
+          "bridge_target_brier_score": 0.20279617523213617,
+          "bridge_target_cross_entropy": 0.5936600121372837,
+          "brier_score": 0.20279617523213617,
+          "ece_15": 0.03814129083070961,
+          "log_loss": 0.5936600121372837,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7215604526503872,
+          "bridge_target_brier_score": 0.18909615375653757,
+          "bridge_target_cross_entropy": 0.5622092941702048,
+          "brier_score": 0.18909615375653757,
+          "ece_15": 0.039229516555822616,
+          "log_loss": 0.5622092941702048,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.025041110614921903,
+      "log_loss": 0.4738677306597028,
+      "markets": 1679,
+      "mean_probability": 0.5023031905656816,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_agreement_ensemble": {
+      "accuracy": 0.777264459218003,
+      "bridge_target_brier_score": 0.1536991224877743,
+      "bridge_target_cross_entropy": 0.4662763976748302,
+      "brier_score": 0.1536991224877743,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7456819535437761,
+          "bridge_target_brier_score": 0.17107165198483767,
+          "bridge_target_cross_entropy": 0.513015216905187,
+          "brier_score": 0.17107165198483767,
+          "ece_15": 0.03085855616751712,
+          "log_loss": 0.513015216905187,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7872032672509146,
+          "bridge_target_brier_score": 0.1501070574131672,
+          "bridge_target_cross_entropy": 0.46259634668051586,
+          "brier_score": 0.1501070574131672,
+          "ece_15": 0.032333802498442366,
+          "log_loss": 0.46259634668051586,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6896962477665277,
+          "bridge_target_brier_score": 0.20217192721358568,
+          "bridge_target_cross_entropy": 0.5900719948453713,
+          "brier_score": 0.20217192721358568,
+          "ece_15": 0.039862414315594445,
+          "log_loss": 0.5900719948453713,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7229501687512409,
+          "bridge_target_brier_score": 0.18781454290459143,
+          "bridge_target_cross_entropy": 0.5556907821144325,
+          "brier_score": 0.18781454290459143,
+          "ece_15": 0.03271392170960312,
+          "log_loss": 0.5556907821144325,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.023639419212110536,
+      "log_loss": 0.4662763976748302,
+      "markets": 1679,
+      "mean_probability": 0.4995494409774084,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_q5_admission": {
+      "accuracy": 0.777377138901856,
+      "bridge_target_brier_score": 0.1536402181772664,
+      "bridge_target_cross_entropy": 0.46643627318215014,
+      "brier_score": 0.1536402181772664,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7464760770299782,
+          "bridge_target_brier_score": 0.17100954038467112,
+          "bridge_target_cross_entropy": 0.5131667525037279,
+          "brier_score": 0.17100954038467112,
+          "ece_15": 0.03003055766150032,
+          "log_loss": 0.5131667525037279,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7874585212286225,
+          "bridge_target_brier_score": 0.15015819511814474,
+          "bridge_target_cross_entropy": 0.4631591194580222,
+          "brier_score": 0.15015819511814474,
+          "ece_15": 0.030498068454243844,
+          "log_loss": 0.4631591194580222,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6894977168949772,
+          "bridge_target_brier_score": 0.20219865603993914,
+          "bridge_target_cross_entropy": 0.59029450202638,
+          "brier_score": 0.20219865603993914,
+          "ece_15": 0.03571783492569444,
+          "log_loss": 0.59029450202638,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7223545761365893,
+          "bridge_target_brier_score": 0.18758626411213017,
+          "bridge_target_cross_entropy": 0.5554674855297574,
+          "brier_score": 0.18758626411213017,
+          "ece_15": 0.03214128661164922,
+          "log_loss": 0.5554674855297574,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.023245012502212933,
+      "log_loss": 0.46643627318215014,
+      "markets": 1679,
+      "mean_probability": 0.4995030085496561,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "middle_specialist_refit": {
+      "accuracy": 0.7767493520918178,
+      "bridge_target_brier_score": 0.15401412371168227,
+      "bridge_target_cross_entropy": 0.46732450877832904,
+      "brier_score": 0.15401412371168227,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7458804844153266,
+          "bridge_target_brier_score": 0.171401212964584,
+          "bridge_target_cross_entropy": 0.5139373824849973,
+          "brier_score": 0.171401212964584,
+          "ece_15": 0.03439110128408319,
+          "log_loss": 0.5139373824849973,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7879690291840381,
+          "bridge_target_brier_score": 0.15030312143642238,
+          "bridge_target_cross_entropy": 0.4636390840572325,
+          "brier_score": 0.15030312143642238,
+          "ece_15": 0.03322209553208986,
+          "log_loss": 0.4636390840572325,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6881080007941235,
+          "bridge_target_brier_score": 0.20245698718075766,
+          "bridge_target_cross_entropy": 0.5909026670123791,
+          "brier_score": 0.20245698718075766,
+          "ece_15": 0.039939738111007886,
+          "log_loss": 0.5909026670123791,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7202700019853087,
+          "bridge_target_brier_score": 0.18833943923719315,
+          "bridge_target_cross_entropy": 0.5569373114948664,
+          "brier_score": 0.18833943923719315,
+          "ece_15": 0.03500432821773259,
+          "log_loss": 0.5569373114948664,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.02480023603561238,
+      "log_loss": 0.46732450877832904,
+      "markets": 1679,
+      "mean_probability": 0.49959587340516065,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "accuracy": 0.7769103230687507,
+      "bridge_target_brier_score": 0.1674337227005952,
+      "bridge_target_cross_entropy": 0.574156646492547,
+      "brier_score": 0.1674337227005952,
+      "by_timing_band": {
+        "120_149": {
+          "accuracy": 0.7457812189795513,
+          "bridge_target_brier_score": 0.1889551231029002,
+          "bridge_target_cross_entropy": 0.6392546544277248,
+          "brier_score": 0.1889551231029002,
+          "ece_15": 0.1253627346347023,
+          "log_loss": 0.6392546544277248,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "150_180": {
+          "accuracy": 0.7872032672509146,
+          "bridge_target_brier_score": 0.16300858898281884,
+          "bridge_target_cross_entropy": 0.5873642104565244,
+          "brier_score": 0.16300858898281884,
+          "ece_15": 0.10242851633888178,
+          "log_loss": 0.5873642104565244,
+          "markets": 1679,
+          "rows": 11753
+        },
+        "60_89": {
+          "accuracy": 0.6884057971014492,
+          "bridge_target_brier_score": 0.222835524790029,
+          "bridge_target_cross_entropy": 0.702638289362466,
+          "brier_score": 0.222835524790029,
+          "ece_15": 0.13807861351740197,
+          "log_loss": 0.702638289362466,
+          "markets": 1679,
+          "rows": 10074
+        },
+        "90_119": {
+          "accuracy": 0.7220567798292634,
+          "bridge_target_brier_score": 0.20682886311364293,
+          "bridge_target_cross_entropy": 0.6781760124115302,
+          "brier_score": 0.20682886311364293,
+          "ece_15": 0.12890993133882858,
+          "log_loss": 0.6781760124115302,
+          "markets": 1679,
+          "rows": 10074
+        }
+      },
+      "ece_15": 0.10187509416240058,
+      "log_loss": 0.574156646492547,
+      "markets": 1679,
+      "mean_probability": 0.5005612976003468,
+      "positive_rate": 0.50565812983919,
+      "rows": 62123
+    }
+  },
+  "selected_policies": {
+    "crossvenue_middle_specialist": {
+      "maximum_share_cost": 0.65,
+      "minimum_confidence": 0.7,
+      "minimum_edge": 0.05
+    },
+    "middle_agreement_ensemble": {
+      "maximum_share_cost": 0.65,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.075
+    },
+    "middle_q5_admission": {
+      "maximum_share_cost": 0.65,
+      "minimum_confidence": 0.68,
+      "minimum_edge": 0.1
+    },
+    "middle_specialist_refit": {
+      "maximum_share_cost": 0.65,
+      "minimum_confidence": 0.65,
+      "minimum_edge": 0.01
+    },
+    "price_time_calibrated_middle_ensemble": {
+      "120_149": {
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.1
+      },
+      "150_180": {
+        "maximum_share_cost": 0.9,
+        "minimum_confidence": 0.7,
+        "minimum_edge": 0.05
+      },
+      "60_89": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.65,
+        "minimum_edge": 0.03
+      },
+      "90_119": {
+        "maximum_share_cost": 0.65,
+        "minimum_confidence": 0.58,
+        "minimum_edge": 0.02
+      }
+    }
+  },
+  "selection_frozen_at": "2026-08-31T22:51:15.109321+00:00",
+  "source_panel": {
+    "all_label_weights_nonzero": true,
+    "all_markets_retained": true,
+    "base_panel": {
+      "authentic_only_filter": false,
+      "base_panel": {
+        "complete_core_markets": 45738,
+        "coverage": {
+          "binance_prints": {
+            "markets": 10302,
+            "rows": 190777
+          },
+          "candles": {
+            "markets": 45738,
+            "rows": 1692306
+          },
+          "core": {
+            "markets": 45738,
+            "rows": 1692306
+          },
+          "kraken": {
+            "markets": 42563,
+            "rows": 766254
+          },
+          "open_interest": {
+            "markets": 15786,
+            "rows": 584082
+          },
+          "oracle": {
+            "markets": 45738,
+            "rows": 1692306
+          },
+          "refprice": {
+            "markets": 22997,
+            "rows": 844888
+          }
+        },
+        "database_mutations": false,
+        "entry_seconds": [
+          60,
+          65,
+          70,
+          75,
+          80,
+          85,
+          90,
+          95,
+          100,
+          105,
+          110,
+          115,
+          120,
+          125,
+          130,
+          135,
+          140,
+          145,
+          150,
+          155,
+          160,
+          165,
+          170,
+          175,
+          180,
+          185,
+          190,
+          195,
+          200,
+          205,
+          210,
+          215,
+          220,
+          225,
+          230,
+          235,
+          240
+        ],
+        "feature_groups": {
+          "binance_prints": [
+            "binance_print_return_5s_bps",
+            "binance_print_signed_share_5s",
+            "binance_print_log_quote_volume_5s",
+            "binance_print_log_trade_count_5s",
+            "binance_print_return_15s_bps",
+            "binance_print_signed_share_15s",
+            "binance_print_log_quote_volume_15s",
+            "binance_print_log_trade_count_15s",
+            "binance_print_return_30s_bps",
+            "binance_print_signed_share_30s",
+            "binance_print_log_quote_volume_30s",
+            "binance_print_log_trade_count_30s",
+            "binance_print_return_60s_bps",
+            "binance_print_signed_share_60s",
+            "binance_print_log_quote_volume_60s",
+            "binance_print_log_trade_count_60s"
+          ],
+          "candles": [
+            "chainlink_candle_return_5m_bps",
+            "chainlink_candle_return_15m_bps",
+            "chainlink_candle_return_30m_bps",
+            "chainlink_candle_return_60m_bps",
+            "chainlink_candle_realized_volatility_15m_bps",
+            "chainlink_candle_realized_volatility_60m_bps",
+            "chainlink_candle_range_15m_bps",
+            "chainlink_candle_range_60m_bps"
+          ],
+          "core": [
+            "seconds_elapsed_scaled",
+            "seconds_remaining_scaled",
+            "btc_path_from_window_open_bps",
+            "btc_cross_venue_boundary_gap_bps",
+            "btc_window_open_cross_venue_basis_bps",
+            "btc_return_1s_bps",
+            "btc_return_5s_bps",
+            "btc_return_15s_bps",
+            "btc_return_30s_bps",
+            "btc_return_60s_bps",
+            "btc_return_90s_bps",
+            "btc_return_120s_bps",
+            "btc_return_180s_bps",
+            "btc_realized_volatility_5s_bps",
+            "btc_realized_volatility_15s_bps",
+            "btc_realized_volatility_30s_bps",
+            "btc_realized_volatility_60s_bps",
+            "btc_realized_volatility_90s_bps",
+            "btc_realized_volatility_120s_bps",
+            "btc_realized_volatility_180s_bps",
+            "btc_range_5s_bps",
+            "btc_range_30s_bps",
+            "btc_range_60s_bps",
+            "btc_path_efficiency_30s",
+            "btc_path_efficiency_60s",
+            "btc_range_position_30s",
+            "btc_range_position_60s",
+            "btc_signed_flow_5s",
+            "btc_signed_flow_30s",
+            "btc_signed_flow_60s",
+            "btc_signed_flow_90s",
+            "btc_signed_flow_120s",
+            "btc_signed_flow_180s",
+            "btc_path_cross_count",
+            "btc_boundary_cross_count",
+            "btc_seconds_since_path_cross",
+            "btc_seconds_since_boundary_cross",
+            "btc_path_terminal_volatility_z",
+            "btc_boundary_terminal_volatility_z",
+            "btc_boundary_distance_velocity_5s_bps",
+            "btc_boundary_momentum_alignment_5s",
+            "btc_momentum_multihorizon_score",
+            "btc_momentum_acceleration_5_vs_30",
+            "btc_momentum_acceleration_15_vs_60",
+            "btc_reversal_5_vs_30",
+            "btc_path_max_favorable_excursion_bps",
+            "btc_path_max_adverse_excursion_bps",
+            "btc_path_pullback_from_favorable_extreme_bps",
+            "btc_path_recovery_from_adverse_extreme_bps",
+            "btc_seconds_since_path_high_scaled",
+            "btc_seconds_since_path_low_scaled",
+            "btc_volatility_shock_30_vs_120",
+            "btc_volatility_shock_60_vs_180",
+            "btc_path_sign_normalized_return_5s_bps",
+            "btc_path_sign_normalized_return_30s_bps",
+            "btc_path_sign_normalized_return_60s_bps",
+            "btc_path_sign_normalized_return_90s_bps",
+            "btc_path_sign_normalized_return_120s_bps",
+            "btc_path_sign_normalized_flow_5s",
+            "btc_path_sign_normalized_flow_30s",
+            "btc_path_sign_normalized_flow_60s",
+            "btc_path_sign_normalized_flow_90s",
+            "btc_path_sign_normalized_flow_120s",
+            "hour_sin",
+            "hour_cos",
+            "weekday_sin",
+            "weekday_cos"
+          ],
+          "kraken": [
+            "kraken_return_5s_bps",
+            "kraken_return_15s_bps",
+            "kraken_return_30s_bps",
+            "kraken_return_60s_bps",
+            "kraken_return_120s_bps",
+            "kraken_realized_volatility_30s_bps",
+            "kraken_realized_volatility_60s_bps",
+            "kraken_log_quote_volume_30s",
+            "kraken_log_quote_volume_60s",
+            "kraken_print_signed_share_5s",
+            "kraken_print_signed_share_30s",
+            "kraken_print_signed_share_60s",
+            "kraken_log_trade_count_30s",
+            "kraken_log_trade_count_60s",
+            "kraken_binance_basis_bps",
+            "kraken_binance_return_agreement_30s",
+            "kraken_binance_flow_agreement_30s"
+          ],
+          "open_interest": [
+            "binance_oi_change_5m_bps",
+            "binance_oi_change_15m_bps",
+            "binance_oi_change_30m_bps",
+            "binance_oi_change_60m_bps",
+            "binance_oi_value_change_15m_bps",
+            "binance_oi_value_change_60m_bps",
+            "binance_oi_acceleration_5_vs_30_bps",
+            "binance_oi_path_agreement_15m",
+            "binance_oi_path_agreement_60m"
+          ],
+          "oracle": [
+            "oracle_return_from_window_open_bps",
+            "oracle_round_age_seconds_scaled",
+            "oracle_update_count_since_open_scaled",
+            "binance_oracle_basis_bps"
+          ],
+          "refprice": [
+            "chainlink_ref_return_1s_bps",
+            "chainlink_ref_return_5s_bps",
+            "chainlink_ref_return_15s_bps",
+            "chainlink_ref_return_30s_bps",
+            "chainlink_ref_return_60s_bps",
+            "chainlink_ref_binance_basis_bps",
+            "chainlink_ref_boundary_gap_bps",
+            "chainlink_ref_spread_bps",
+            "chainlink_ref_spread_change_30s_bps",
+            "chainlink_ref_binance_direction_agreement_30s",
+            "chainlink_ref_return_90s_bps",
+            "chainlink_ref_return_120s_bps",
+            "chainlink_ref_momentum_alignment_5_30",
+            "chainlink_ref_reversal_5_vs_30",
+            "chainlink_ref_reversal_15_vs_60",
+            "chainlink_ref_boundary_velocity_5s_bps",
+            "chainlink_ref_realized_volatility_5s_bps",
+            "chainlink_ref_realized_volatility_15s_bps",
+            "chainlink_ref_realized_volatility_30s_bps",
+            "chainlink_ref_realized_volatility_60s_bps",
+            "chainlink_ref_realized_volatility_90s_bps",
+            "chainlink_ref_realized_volatility_120s_bps",
+            "chainlink_ref_range_15s_bps",
+            "chainlink_ref_range_30s_bps",
+            "chainlink_ref_range_60s_bps",
+            "chainlink_ref_range_90s_bps",
+            "chainlink_ref_range_120s_bps",
+            "chainlink_ref_path_efficiency_30s",
+            "chainlink_ref_path_efficiency_60s",
+            "chainlink_ref_range_position_60s",
+            "chainlink_ref_boundary_cross_count_60s",
+            "chainlink_ref_direction_changes_60s",
+            "chainlink_ref_age_seconds",
+            "chainlink_ref_reports_60s",
+            "chainlink_ref_max_gap_60s",
+            "chainlink_ref_binance_basis_velocity_5s_bps",
+            "chainlink_ref_binance_disagreement_30s",
+            "chainlink_ref_source_skew_seconds"
+          ]
+        },
+        "kraken_l2_included": false,
+        "label_contract": "official resolved up/down outcome for every retained historical market",
+        "markets": 45738,
+        "new_tables": false,
+        "optional_missingness_preserves_rows": true,
+        "rows": 1692306,
+        "schema_version": "btc-multivenue-early-entry-data-v1",
+        "sha256": "52c3b666a8b0fc3b04f64c3538ab1d5dab88c4de00a42f3b8f3056863350a345",
+        "source_markets": 45740
+      },
+      "coverage": {
+        "binance_prints": {
+          "markets": 10302,
+          "rows": 190777
+        },
+        "candles": {
+          "markets": 45738,
+          "rows": 1692306
+        },
+        "core": {
+          "markets": 45738,
+          "rows": 1692306
+        },
+        "kraken": {
+          "markets": 42563,
+          "rows": 766254
+        },
+        "open_interest": {
+          "markets": 15786,
+          "rows": 584082
+        },
+        "oracle": {
+          "markets": 45738,
+          "rows": 1692306
+        },
+        "refprice": {
+          "markets": 22997,
+          "rows": 844888
+        },
+        "spot_l2": {
+          "markets": 23052,
+          "rows": 834908
+        }
+      },
+      "database_mutations": false,
+      "feature_groups": {
+        "binance_prints": [
+          "binance_print_return_5s_bps",
+          "binance_print_signed_share_5s",
+          "binance_print_log_quote_volume_5s",
+          "binance_print_log_trade_count_5s",
+          "binance_print_return_15s_bps",
+          "binance_print_signed_share_15s",
+          "binance_print_log_quote_volume_15s",
+          "binance_print_log_trade_count_15s",
+          "binance_print_return_30s_bps",
+          "binance_print_signed_share_30s",
+          "binance_print_log_quote_volume_30s",
+          "binance_print_log_trade_count_30s",
+          "binance_print_return_60s_bps",
+          "binance_print_signed_share_60s",
+          "binance_print_log_quote_volume_60s",
+          "binance_print_log_trade_count_60s"
+        ],
+        "candles": [
+          "chainlink_candle_return_5m_bps",
+          "chainlink_candle_return_15m_bps",
+          "chainlink_candle_return_30m_bps",
+          "chainlink_candle_return_60m_bps",
+          "chainlink_candle_realized_volatility_15m_bps",
+          "chainlink_candle_realized_volatility_60m_bps",
+          "chainlink_candle_range_15m_bps",
+          "chainlink_candle_range_60m_bps"
+        ],
+        "core": [
+          "seconds_elapsed_scaled",
+          "seconds_remaining_scaled",
+          "btc_path_from_window_open_bps",
+          "btc_cross_venue_boundary_gap_bps",
+          "btc_window_open_cross_venue_basis_bps",
+          "btc_return_1s_bps",
+          "btc_return_5s_bps",
+          "btc_return_15s_bps",
+          "btc_return_30s_bps",
+          "btc_return_60s_bps",
+          "btc_return_90s_bps",
+          "btc_return_120s_bps",
+          "btc_return_180s_bps",
+          "btc_realized_volatility_5s_bps",
+          "btc_realized_volatility_15s_bps",
+          "btc_realized_volatility_30s_bps",
+          "btc_realized_volatility_60s_bps",
+          "btc_realized_volatility_90s_bps",
+          "btc_realized_volatility_120s_bps",
+          "btc_realized_volatility_180s_bps",
+          "btc_range_5s_bps",
+          "btc_range_30s_bps",
+          "btc_range_60s_bps",
+          "btc_path_efficiency_30s",
+          "btc_path_efficiency_60s",
+          "btc_range_position_30s",
+          "btc_range_position_60s",
+          "btc_signed_flow_5s",
+          "btc_signed_flow_30s",
+          "btc_signed_flow_60s",
+          "btc_signed_flow_90s",
+          "btc_signed_flow_120s",
+          "btc_signed_flow_180s",
+          "btc_path_cross_count",
+          "btc_boundary_cross_count",
+          "btc_seconds_since_path_cross",
+          "btc_seconds_since_boundary_cross",
+          "btc_path_terminal_volatility_z",
+          "btc_boundary_terminal_volatility_z",
+          "btc_boundary_distance_velocity_5s_bps",
+          "btc_boundary_momentum_alignment_5s",
+          "btc_momentum_multihorizon_score",
+          "btc_momentum_acceleration_5_vs_30",
+          "btc_momentum_acceleration_15_vs_60",
+          "btc_reversal_5_vs_30",
+          "btc_path_max_favorable_excursion_bps",
+          "btc_path_max_adverse_excursion_bps",
+          "btc_path_pullback_from_favorable_extreme_bps",
+          "btc_path_recovery_from_adverse_extreme_bps",
+          "btc_seconds_since_path_high_scaled",
+          "btc_seconds_since_path_low_scaled",
+          "btc_volatility_shock_30_vs_120",
+          "btc_volatility_shock_60_vs_180",
+          "btc_path_sign_normalized_return_5s_bps",
+          "btc_path_sign_normalized_return_30s_bps",
+          "btc_path_sign_normalized_return_60s_bps",
+          "btc_path_sign_normalized_return_90s_bps",
+          "btc_path_sign_normalized_return_120s_bps",
+          "btc_path_sign_normalized_flow_5s",
+          "btc_path_sign_normalized_flow_30s",
+          "btc_path_sign_normalized_flow_60s",
+          "btc_path_sign_normalized_flow_90s",
+          "btc_path_sign_normalized_flow_120s",
+          "hour_sin",
+          "hour_cos",
+          "weekday_sin",
+          "weekday_cos"
+        ],
+        "execution": [
+          "up_ask_vwap_5",
+          "up_ask_vwap_10",
+          "up_ask_vwap_15",
+          "up_ask_vwap_20",
+          "up_ask_vwap_25",
+          "up_ask_vwap_30",
+          "up_ask_vwap_40",
+          "up_ask_vwap_50",
+          "up_ask_vwap_75",
+          "up_ask_vwap_100",
+          "up_ask_vwap_125",
+          "up_ask_vwap_150",
+          "up_ask_vwap_175",
+          "up_ask_vwap_200",
+          "down_ask_vwap_5",
+          "down_ask_vwap_10",
+          "down_ask_vwap_15",
+          "down_ask_vwap_20",
+          "down_ask_vwap_25",
+          "down_ask_vwap_30",
+          "down_ask_vwap_40",
+          "down_ask_vwap_50",
+          "down_ask_vwap_75",
+          "down_ask_vwap_100",
+          "down_ask_vwap_125",
+          "down_ask_vwap_150",
+          "down_ask_vwap_175",
+          "down_ask_vwap_200",
+          "pm_vwap5_overround",
+          "pm_vwap50_overround",
+          "pm_vwap200_overround",
+          "pm_up_slope_5_25",
+          "pm_up_slope_25_100",
+          "pm_up_slope_100_200",
+          "pm_down_slope_5_25",
+          "pm_down_slope_25_100",
+          "pm_down_slope_100_200",
+          "pm_up_depth_log",
+          "pm_down_depth_log",
+          "pm_depth_imbalance",
+          "pm_up_book_age_seconds",
+          "pm_down_book_age_seconds",
+          "pm_yes_cost_per_share",
+          "pm_no_cost_per_share",
+          "pm_yes_vwap_slippage",
+          "pm_no_vwap_slippage",
+          "pm_yes_depth_log",
+          "pm_no_depth_log",
+          "pm_yes_book_age_seconds",
+          "pm_no_book_age_seconds",
+          "pm_yes_cost_logit",
+          "pm_no_cost_logit",
+          "pm_cost_overround",
+          "pm_yes_minus_no_cost"
+        ],
+        "kraken": [
+          "kraken_return_5s_bps",
+          "kraken_return_15s_bps",
+          "kraken_return_30s_bps",
+          "kraken_return_60s_bps",
+          "kraken_return_120s_bps",
+          "kraken_realized_volatility_30s_bps",
+          "kraken_realized_volatility_60s_bps",
+          "kraken_log_quote_volume_30s",
+          "kraken_log_quote_volume_60s",
+          "kraken_print_signed_share_5s",
+          "kraken_print_signed_share_30s",
+          "kraken_print_signed_share_60s",
+          "kraken_log_trade_count_30s",
+          "kraken_log_trade_count_60s",
+          "kraken_binance_basis_bps",
+          "kraken_binance_return_agreement_30s",
+          "kraken_binance_flow_agreement_30s"
+        ],
+        "open_interest": [
+          "binance_oi_change_5m_bps",
+          "binance_oi_change_15m_bps",
+          "binance_oi_change_30m_bps",
+          "binance_oi_change_60m_bps",
+          "binance_oi_value_change_15m_bps",
+          "binance_oi_value_change_60m_bps",
+          "binance_oi_acceleration_5_vs_30_bps",
+          "binance_oi_path_agreement_15m",
+          "binance_oi_path_agreement_60m"
+        ],
+        "oracle": [
+          "oracle_return_from_window_open_bps",
+          "oracle_round_age_seconds_scaled",
+          "oracle_update_count_since_open_scaled",
+          "binance_oracle_basis_bps"
+        ],
+        "refprice": [
+          "chainlink_ref_return_1s_bps",
+          "chainlink_ref_return_5s_bps",
+          "chainlink_ref_return_15s_bps",
+          "chainlink_ref_return_30s_bps",
+          "chainlink_ref_return_60s_bps",
+          "chainlink_ref_binance_basis_bps",
+          "chainlink_ref_boundary_gap_bps",
+          "chainlink_ref_spread_bps",
+          "chainlink_ref_spread_change_30s_bps",
+          "chainlink_ref_binance_direction_agreement_30s",
+          "chainlink_ref_return_90s_bps",
+          "chainlink_ref_return_120s_bps",
+          "chainlink_ref_momentum_alignment_5_30",
+          "chainlink_ref_reversal_5_vs_30",
+          "chainlink_ref_reversal_15_vs_60",
+          "chainlink_ref_boundary_velocity_5s_bps",
+          "chainlink_ref_realized_volatility_5s_bps",
+          "chainlink_ref_realized_volatility_15s_bps",
+          "chainlink_ref_realized_volatility_30s_bps",
+          "chainlink_ref_realized_volatility_60s_bps",
+          "chainlink_ref_realized_volatility_90s_bps",
+          "chainlink_ref_realized_volatility_120s_bps",
+          "chainlink_ref_range_15s_bps",
+          "chainlink_ref_range_30s_bps",
+          "chainlink_ref_range_60s_bps",
+          "chainlink_ref_range_90s_bps",
+          "chainlink_ref_range_120s_bps",
+          "chainlink_ref_path_efficiency_30s",
+          "chainlink_ref_path_efficiency_60s",
+          "chainlink_ref_range_position_60s",
+          "chainlink_ref_boundary_cross_count_60s",
+          "chainlink_ref_direction_changes_60s",
+          "chainlink_ref_age_seconds",
+          "chainlink_ref_reports_60s",
+          "chainlink_ref_max_gap_60s",
+          "chainlink_ref_binance_basis_velocity_5s_bps",
+          "chainlink_ref_binance_disagreement_30s",
+          "chainlink_ref_source_skew_seconds"
+        ],
+        "spot_l2": [
+          "spot_l2_midpoint_to_kline_close_bps",
+          "spot_l2_microprice_to_midpoint_bps",
+          "spot_l2_spread_bps",
+          "spot_l2_bid_depth_5_log",
+          "spot_l2_ask_depth_5_log",
+          "spot_l2_imbalance_5",
+          "spot_l2_bid_depth_10_log",
+          "spot_l2_ask_depth_10_log",
+          "spot_l2_imbalance_10",
+          "spot_l2_bid_depth_20_log",
+          "spot_l2_ask_depth_20_log",
+          "spot_l2_imbalance_20",
+          "spot_l2_bid_depth_slope_20",
+          "spot_l2_ask_depth_slope_20",
+          "spot_l2_bid_depth_concentration_20",
+          "spot_l2_ask_depth_concentration_20",
+          "spot_l2_bid_quote_replenishment_1s_log",
+          "spot_l2_ask_quote_replenishment_1s_log",
+          "spot_l2_bid_quote_churn_1s_log",
+          "spot_l2_ask_quote_churn_1s_log",
+          "spot_l2_midpoint_change_1s_bps",
+          "spot_l2_spread_change_1s_bps",
+          "spot_l2_depth_20_change_1s_bps",
+          "spot_l2_imbalance_20_change_1s",
+          "spot_l2_midpoint_change_5s_bps",
+          "spot_l2_spread_change_5s_bps",
+          "spot_l2_depth_20_change_5s_bps",
+          "spot_l2_imbalance_20_change_5s",
+          "spot_l2_midpoint_change_15s_bps",
+          "spot_l2_spread_change_15s_bps",
+          "spot_l2_depth_20_change_15s_bps",
+          "spot_l2_imbalance_20_change_15s",
+          "spot_l2_midpoint_change_30s_bps",
+          "spot_l2_spread_change_30s_bps",
+          "spot_l2_depth_20_change_30s_bps",
+          "spot_l2_imbalance_20_change_30s",
+          "spot_l2_midpoint_change_60s_bps",
+          "spot_l2_spread_change_60s_bps",
+          "spot_l2_depth_20_change_60s_bps",
+          "spot_l2_imbalance_20_change_60s"
+        ]
+      },
+      "kraken_l2_included": false,
+      "markets": 45738,
+      "new_ingesters": false,
+      "new_sources": false,
+      "new_tables": false,
+      "optional_missingness_preserves_rows": true,
+      "range_end": "2026-08-29T00:00:00+00:00",
+      "range_start": "2026-03-21T00:00:00+00:00",
+      "rows": 1692306,
+      "schema_version": "btc-middle-strategy-data-v1",
+      "sha256": "193829741fb7e379b45984c6517435aa7a065709f7f6a35182ba654ab082e531",
+      "spot_l2_source": {
+        "contract": {
+          "database_mutations": false,
+          "maximum_causal_age_seconds": 2,
+          "new_table": false,
+          "query_sha256": "d9916a426bbcab8fe3c2e51857aec5480cb0cc148df43d74d13631d4bf03a041",
+          "range_end": "2026-08-29T00:00:00+00:00",
+          "range_start": "2026-03-21T00:00:00+00:00",
+          "read_only": true,
+          "schema_version": "btc-middle-strategy-data-v1",
+          "source_relation": "polymarket.binance_spot_btcusdt_l2_training_features"
+        },
+        "created_at": "2026-08-31T15:53:11.753828+00:00",
+        "partitions": [
+          {
+            "path": "spot-l2/2026-03-21.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-22.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-23.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-24.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-25.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-26.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-27.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-28.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-29.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-30.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-03-31.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-01.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-02.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-03.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-04.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-05.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-06.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-07.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-08.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-09.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-10.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-11.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-12.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-13.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-14.parquet",
+            "rows": 84009,
+            "sha256": "62e2dc2e215c96df41d506454cc4bb397c0191e68e0b57d0e090b8da6718b973"
+          },
+          {
+            "path": "spot-l2/2026-04-15.parquet",
+            "rows": 25130,
+            "sha256": "150d4cf586cb69ee38dc4c99787b7bb949b44135023797bdb7c5a7659dcd94db"
+          },
+          {
+            "path": "spot-l2/2026-04-16.parquet",
+            "rows": 43605,
+            "sha256": "cb4f88f192c16abc987ce1c9745e0f03575a6eb122bfcf0b51e2a4391693f031"
+          },
+          {
+            "path": "spot-l2/2026-04-17.parquet",
+            "rows": 10562,
+            "sha256": "90b221cb02cd705acbf05be1e83d165a7487b76388ea866538205449ff314e1f"
+          },
+          {
+            "path": "spot-l2/2026-04-18.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-19.parquet",
+            "rows": 61727,
+            "sha256": "38007411946080a08688cb98de683eac8777b003f949bb29c82ce941f2384566"
+          },
+          {
+            "path": "spot-l2/2026-04-20.parquet",
+            "rows": 66616,
+            "sha256": "7f6295dde7e6d91917383d0542d7c45701e833c41721092b652051eeb99832de"
+          },
+          {
+            "path": "spot-l2/2026-04-21.parquet",
+            "rows": 62872,
+            "sha256": "ce4d968fb6601be32790bdcbb960091dfd9848ab873b91af597aa5663a7d1f0b"
+          },
+          {
+            "path": "spot-l2/2026-04-22.parquet",
+            "rows": 61382,
+            "sha256": "e05cab871700b81af958d0b9773b04934f55941af0a2658b3a0e7405fd921ddb"
+          },
+          {
+            "path": "spot-l2/2026-04-23.parquet",
+            "rows": 52923,
+            "sha256": "b1dfb0a13e90268252cf3257e29bb931ee3c6c1b52da6a3c664cc7cb98857cca"
+          },
+          {
+            "path": "spot-l2/2026-04-24.parquet",
+            "rows": 14677,
+            "sha256": "eb451d72279226a6a84aa81df5484013f41679dc1254e3e5179a77e22d0ed0b6"
+          },
+          {
+            "path": "spot-l2/2026-04-25.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-26.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-27.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-04-28.parquet",
+            "rows": 10076,
+            "sha256": "2420b4f1d0bfa8106d4e7a28e31dd437b058c0612d3135abc88cbed1ab558ef2"
+          },
+          {
+            "path": "spot-l2/2026-04-29.parquet",
+            "rows": 86336,
+            "sha256": "12e5a75c9b8d0927e7e73e89bc7e761e5bcb6b9d1150db87a0d86459444287b4"
+          },
+          {
+            "path": "spot-l2/2026-04-30.parquet",
+            "rows": 86340,
+            "sha256": "737e743d083c140c734a49d347f84d8274245b6feffd5f92d621d588ae69df9b"
+          },
+          {
+            "path": "spot-l2/2026-05-01.parquet",
+            "rows": 10988,
+            "sha256": "ac798efcf2734708305282e64ac891dea4d6337bb0c464d749fcf85244d99c6b"
+          },
+          {
+            "path": "spot-l2/2026-05-02.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-03.parquet",
+            "rows": 72896,
+            "sha256": "4496a9ca2acb5539692443a31223f5c70ffd674f65772316ab0a00f762febed4"
+          },
+          {
+            "path": "spot-l2/2026-05-04.parquet",
+            "rows": 86402,
+            "sha256": "39e87a294f8747eaa32b21ad406eef140b5b2c09e53f3ce6ace7d11e559af24c"
+          },
+          {
+            "path": "spot-l2/2026-05-05.parquet",
+            "rows": 86339,
+            "sha256": "43c3d9529232588bf060d0aa70cfeb6c3238165cea2acb63ef0eabb6083461c3"
+          },
+          {
+            "path": "spot-l2/2026-05-06.parquet",
+            "rows": 86326,
+            "sha256": "06d7258c2b28c8b27daefda7c47a81f67a88912bbd853699bb0a5c5f53107cb4"
+          },
+          {
+            "path": "spot-l2/2026-05-07.parquet",
+            "rows": 86208,
+            "sha256": "51a09f9c5117af8f7519111f38d56d44e9cb435eab224cf98591897975932042"
+          },
+          {
+            "path": "spot-l2/2026-05-08.parquet",
+            "rows": 10901,
+            "sha256": "5615b69281f658cb1c989da6da05a9fbd9c15cf7d69c8160629e5260a8a3e862"
+          },
+          {
+            "path": "spot-l2/2026-05-09.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-10.parquet",
+            "rows": 74097,
+            "sha256": "a854e465ed0e9ddef84466b23a2c220ffe0bd14637c60b3c60dd9dc9e52e5b3f"
+          },
+          {
+            "path": "spot-l2/2026-05-11.parquet",
+            "rows": 86402,
+            "sha256": "c03f1fed523f03b66f2234e7ba21aca6e0935aedfa3b58cc998f66f44147f16b"
+          },
+          {
+            "path": "spot-l2/2026-05-12.parquet",
+            "rows": 86143,
+            "sha256": "8810d46f9627fcdfce7c9edcda7970c14b6ad4f75387febcef331e3d2f41311d"
+          },
+          {
+            "path": "spot-l2/2026-05-13.parquet",
+            "rows": 86402,
+            "sha256": "1037af7aacfd6bc58945cc73b08ee821c0db4313b4d93718e57bea4c14e639c4"
+          },
+          {
+            "path": "spot-l2/2026-05-14.parquet",
+            "rows": 86208,
+            "sha256": "457b7274a13c8111c352ebd0f808dd8db571affe39b7cdf5bd95052a63b1eae0"
+          },
+          {
+            "path": "spot-l2/2026-05-15.parquet",
+            "rows": 10941,
+            "sha256": "4ddb380f61ed33d5351637e00c154f462dc94c6790ff63f1a5b4a1d68ca1b167"
+          },
+          {
+            "path": "spot-l2/2026-05-16.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-17.parquet",
+            "rows": 75116,
+            "sha256": "e5a14b30eb4115fc03ecd769d6d1c01dccfa9b1aea15e2750b23ffc9d5fa15fa"
+          },
+          {
+            "path": "spot-l2/2026-05-18.parquet",
+            "rows": 84709,
+            "sha256": "d2dd1f692d492e81e8b89c5f8aea267589b96b6718b16322e5a633205f6a2911"
+          },
+          {
+            "path": "spot-l2/2026-05-19.parquet",
+            "rows": 85781,
+            "sha256": "d73dfaaef99cd7b3111f8a42ece057d7f5525d65124337362fd042158bf8af26"
+          },
+          {
+            "path": "spot-l2/2026-05-20.parquet",
+            "rows": 84484,
+            "sha256": "e49d0afa559966e28aea4bb3bee4f708e49301bd757a46b5b23b218ba4d13488"
+          },
+          {
+            "path": "spot-l2/2026-05-21.parquet",
+            "rows": 83528,
+            "sha256": "c56f68a0fe58cea87c4edf90a1ceea9f2a365ac4e89beb5ac8d29102eadc34a7"
+          },
+          {
+            "path": "spot-l2/2026-05-22.parquet",
+            "rows": 10819,
+            "sha256": "1ac152b868004c905ef2cf6c0c96266a02525e3304661abd3f7ff1e1f2778c33"
+          },
+          {
+            "path": "spot-l2/2026-05-23.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-24.parquet",
+            "rows": 31725,
+            "sha256": "1267fbde226eaa7333013a3378735ed3c989c6a9c206cd9bab5e2d055c3342c9"
+          },
+          {
+            "path": "spot-l2/2026-05-25.parquet",
+            "rows": 3594,
+            "sha256": "52d155faa0c9d4dd2e02d776fc57d916acf7cb07b00775cf18988d37d0f2896d"
+          },
+          {
+            "path": "spot-l2/2026-05-26.parquet",
+            "rows": 1029,
+            "sha256": "5cc31102e05b8ba7f6ed849ce4e1e48e243c1bc497b74abcfbf5d933ab8a5b10"
+          },
+          {
+            "path": "spot-l2/2026-05-27.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-28.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-29.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-30.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-05-31.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-06-01.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-06-02.parquet",
+            "rows": 83686,
+            "sha256": "3a1d84c6a2e8f1f80b7e6e3fedfabf68bf6d1cb8a021205d8234acb39f297108"
+          },
+          {
+            "path": "spot-l2/2026-06-03.parquet",
+            "rows": 22594,
+            "sha256": "9c5df617d074bee8390e2627a5b4973d2b32b7a2c0986f3efe013a4dc55be4e0"
+          },
+          {
+            "path": "spot-l2/2026-06-04.parquet",
+            "rows": 52385,
+            "sha256": "7e9e7d64b758c796fb7b1146c0ec361dff44699ec9f4066c64214202418447ee"
+          },
+          {
+            "path": "spot-l2/2026-06-05.parquet",
+            "rows": 86216,
+            "sha256": "b49943c23f8b8adf39e173bb05f19cc6ed0731e1bdff0b50d648ac13cbc9a15d"
+          },
+          {
+            "path": "spot-l2/2026-06-06.parquet",
+            "rows": 86271,
+            "sha256": "9137d980274dbe6f1182936cbbb976ee2bd1a3e94bc688dc0ebc45d17547639d"
+          },
+          {
+            "path": "spot-l2/2026-06-07.parquet",
+            "rows": 86340,
+            "sha256": "0bc9f5e7b97330e62ff31e5de1762220c2e19b5054777a943d34073d68e8398f"
+          },
+          {
+            "path": "spot-l2/2026-06-08.parquet",
+            "rows": 86340,
+            "sha256": "1418a88ea3f72a39b429cb3ecb382f47362609d8e785cddbdbc59a9537207cf8"
+          },
+          {
+            "path": "spot-l2/2026-06-09.parquet",
+            "rows": 86294,
+            "sha256": "e94c97198562cc5b70528c75e5bf9f1cb85d4616650d268ae3bb0c6b5fd451af"
+          },
+          {
+            "path": "spot-l2/2026-06-10.parquet",
+            "rows": 86272,
+            "sha256": "88ae52123a33f30a1295d53910865b6982ee01dc82b4fe623af2b805fdf413b3"
+          },
+          {
+            "path": "spot-l2/2026-06-11.parquet",
+            "rows": 86269,
+            "sha256": "8aafdcc104e0f961f01b867fbdfd3b4b7eea973a6e511d2df9d044ea0fe6e028"
+          },
+          {
+            "path": "spot-l2/2026-06-12.parquet",
+            "rows": 10738,
+            "sha256": "54260ea92b040ce03922da83c2186fc33f79f0990d91957d2a5d3e9295da7f49"
+          },
+          {
+            "path": "spot-l2/2026-06-13.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-06-14.parquet",
+            "rows": 43793,
+            "sha256": "85c1163575f57aa06acff7fd6cb5ef613815e2af78f690f71b3a67bae1bd0a3f"
+          },
+          {
+            "path": "spot-l2/2026-06-15.parquet",
+            "rows": 86402,
+            "sha256": "32c8a5ed703579073057bac7ac0a611e7ea338437cbca83d798ba7caaddecf56"
+          },
+          {
+            "path": "spot-l2/2026-06-16.parquet",
+            "rows": 86276,
+            "sha256": "232cf8c7ba8f7bd4256d188244d6d4f9a6655b0493b10a76296d3200add97804"
+          },
+          {
+            "path": "spot-l2/2026-06-17.parquet",
+            "rows": 86322,
+            "sha256": "3497cec99b31a7ec7c110df750c2fd1894366d3206c792aec84af4000d2ca912"
+          },
+          {
+            "path": "spot-l2/2026-06-18.parquet",
+            "rows": 86258,
+            "sha256": "ba62fcf1d873fd8d64821dc948632c63b85acb2259b0f6785f447e506ccb244a"
+          },
+          {
+            "path": "spot-l2/2026-06-19.parquet",
+            "rows": 10814,
+            "sha256": "a81491b63cbb0965044a0724eb9f0e5fdf1ec70eafa6b0d213421a2410d5e870"
+          },
+          {
+            "path": "spot-l2/2026-06-20.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-06-21.parquet",
+            "rows": 73015,
+            "sha256": "d9700216a0a49e03e56d529c5eb71d21499287243808f2b4984d0de3c7723d61"
+          },
+          {
+            "path": "spot-l2/2026-06-22.parquet",
+            "rows": 86402,
+            "sha256": "a393d09351ccba1515d5acabfcb707f8bbc0ea03b37a0c3a3bd14dab62805dbf"
+          },
+          {
+            "path": "spot-l2/2026-06-23.parquet",
+            "rows": 86277,
+            "sha256": "22dfa1bf1e993d80ae8fa7c16c523f0f081c85aa3279af5d78126d71ea28e8ad"
+          },
+          {
+            "path": "spot-l2/2026-06-24.parquet",
+            "rows": 86402,
+            "sha256": "eb3fb633398933eb4769eadd43ab8a0af37f93340138de697e6e8a5daba704a2"
+          },
+          {
+            "path": "spot-l2/2026-06-25.parquet",
+            "rows": 86341,
+            "sha256": "682c23e2df3dafe0a0085e49217435998e3afc3c488088a64cf345a6044c98b8"
+          },
+          {
+            "path": "spot-l2/2026-06-26.parquet",
+            "rows": 86334,
+            "sha256": "909ac788558560cd34897c26e9c78352f01ed7fe1e0010f687df5e27df1c5883"
+          },
+          {
+            "path": "spot-l2/2026-06-27.parquet",
+            "rows": 86231,
+            "sha256": "c218539cb6f05f4ab63e7672598b0edbd4a13c2a2007eaae2c321003d7d6f75f"
+          },
+          {
+            "path": "spot-l2/2026-06-28.parquet",
+            "rows": 86156,
+            "sha256": "15c8eb94255c7036bcef4d3e1d11060751a9de06a34b3dc1475a619a1306d0b0"
+          },
+          {
+            "path": "spot-l2/2026-06-29.parquet",
+            "rows": 86340,
+            "sha256": "d5525fc8601382bd74a6e2d8473c0bbc49db9acc4b6cabe380b79c28670830bb"
+          },
+          {
+            "path": "spot-l2/2026-06-30.parquet",
+            "rows": 86402,
+            "sha256": "3558e70761f40b708e1e87bef1bd4cd86d80788ea945a01959645675acfd4675"
+          },
+          {
+            "path": "spot-l2/2026-07-01.parquet",
+            "rows": 76781,
+            "sha256": "87eadcdbd5643d5fcd49a272b2d0472ed2afad02d443aa53b9e6467b0eb3a6be"
+          },
+          {
+            "path": "spot-l2/2026-07-02.parquet",
+            "rows": 86278,
+            "sha256": "69997385e3e5c52c6775a6c3dd20106e331f6eff087fa439d19abab5bce8f3b0"
+          },
+          {
+            "path": "spot-l2/2026-07-03.parquet",
+            "rows": 86340,
+            "sha256": "fec91dd946f764e74c82b2a15573a60cb9887560d6649dbaf05d6c184d8fa0a6"
+          },
+          {
+            "path": "spot-l2/2026-07-04.parquet",
+            "rows": 86402,
+            "sha256": "c673ec4b1273949ad1dd82fee4a56f6760cf72f77609c27ad4efc5e246f79641"
+          },
+          {
+            "path": "spot-l2/2026-07-05.parquet",
+            "rows": 86278,
+            "sha256": "9393ca616286ce5ad0e80056a23def2be2f3a9ed40affc1e4626d9ffe7dd6ab0"
+          },
+          {
+            "path": "spot-l2/2026-07-06.parquet",
+            "rows": 86402,
+            "sha256": "910dc874ba4cdea85978b61e5eb33341aa9ba0d09f8d7d45f64215fca9799f49"
+          },
+          {
+            "path": "spot-l2/2026-07-07.parquet",
+            "rows": 86139,
+            "sha256": "b16fcfcb34e11aaec564c5763f04e8f3de6ff79050336742fa4d6b8d78d9db2a"
+          },
+          {
+            "path": "spot-l2/2026-07-08.parquet",
+            "rows": 86402,
+            "sha256": "cec9848a6f6a127ff0d98b5dfc2afae8bdc9bd962c036135f71ad436d6a8503c"
+          },
+          {
+            "path": "spot-l2/2026-07-09.parquet",
+            "rows": 86337,
+            "sha256": "f2aebe86c82b082a8f3bc19451e70199fd57ec8cb5ffdfe015d1deddb282afd6"
+          },
+          {
+            "path": "spot-l2/2026-07-10.parquet",
+            "rows": 86402,
+            "sha256": "02807898d8303794a51855512c2be64736a1efb6970b32e91afd50e3d789711c"
+          },
+          {
+            "path": "spot-l2/2026-07-11.parquet",
+            "rows": 86208,
+            "sha256": "6858045eece44ff2dc8c7b131c262165b170c7045c283d933f62c52f9f97f6fe"
+          },
+          {
+            "path": "spot-l2/2026-07-12.parquet",
+            "rows": 85982,
+            "sha256": "4d4118671ed646feaf05cf81a66b7df636a20f7e8fc1d36573b92bc89fb5b355"
+          },
+          {
+            "path": "spot-l2/2026-07-13.parquet",
+            "rows": 86402,
+            "sha256": "81ea61c23df453ff5406b792d7b2191d56eac8628adc9d615d9137cb570aa8c6"
+          },
+          {
+            "path": "spot-l2/2026-07-14.parquet",
+            "rows": 86092,
+            "sha256": "6cd72f7c47e3b7297e9c5feed9ba604c8bea55d90e44bdd8f805f65ea58d6280"
+          },
+          {
+            "path": "spot-l2/2026-07-15.parquet",
+            "rows": 85134,
+            "sha256": "342c59a59d6658d42eb723aa2c73fd79a9427e799c96746d858be3c2503d5134"
+          },
+          {
+            "path": "spot-l2/2026-07-16.parquet",
+            "rows": 86270,
+            "sha256": "bd6004cca3d59ed7a65e2276b96723e6afc2e32c45169ba0c6f7ecd68768b979"
+          },
+          {
+            "path": "spot-l2/2026-07-17.parquet",
+            "rows": 86078,
+            "sha256": "184953d70091b8383730012a502bc12cb3d7b0f6a38200cfb0b85991cc6fb124"
+          },
+          {
+            "path": "spot-l2/2026-07-18.parquet",
+            "rows": 86402,
+            "sha256": "29f02f907bf57b9021654a94c7ebfbfa0a72850024f2e6b0b001b42f6d5d6bed"
+          },
+          {
+            "path": "spot-l2/2026-07-19.parquet",
+            "rows": 86279,
+            "sha256": "7b3ab7454c079a2618ae32983deeb3d46093fc1979085f37ce11055f5d56b9d9"
+          },
+          {
+            "path": "spot-l2/2026-07-20.parquet",
+            "rows": 86402,
+            "sha256": "a0208ca7156a2ea673e089d9348566b706f93997f6b4d89cc2173fcffa3825d2"
+          },
+          {
+            "path": "spot-l2/2026-07-21.parquet",
+            "rows": 86033,
+            "sha256": "b02624636808d8618417b88c9b194e7a5ed59efb7a0c96c8f34734b313e47ee5"
+          },
+          {
+            "path": "spot-l2/2026-07-22.parquet",
+            "rows": 86254,
+            "sha256": "525b732e26bc2de37d69df8e1a81e85f1845aeb92bb21818dfb5dd4b527837c3"
+          },
+          {
+            "path": "spot-l2/2026-07-23.parquet",
+            "rows": 86209,
+            "sha256": "91479859a4c367f93a74054cac534fc1ecd79b8d2797f3fdbca523428d5c222a"
+          },
+          {
+            "path": "spot-l2/2026-07-24.parquet",
+            "rows": 86230,
+            "sha256": "4d048e09fedac080e9bf0f390d7a366c52fa5021fb0a30e41ae1e33ff471675d"
+          },
+          {
+            "path": "spot-l2/2026-07-25.parquet",
+            "rows": 86150,
+            "sha256": "8b15119e1b42866dfb142d583c264b1df35719e8ebaec7e78d0da79a1987dada"
+          },
+          {
+            "path": "spot-l2/2026-07-26.parquet",
+            "rows": 86402,
+            "sha256": "4c4dfc8cf214444e998668086af7fb28cf7f6757e8c754c3b49715aac35b66f7"
+          },
+          {
+            "path": "spot-l2/2026-07-27.parquet",
+            "rows": 86057,
+            "sha256": "a1fb3c70f95189c454391ddae7adb738bc6187d265fbc1a960c67ea2a516962f"
+          },
+          {
+            "path": "spot-l2/2026-07-28.parquet",
+            "rows": 86076,
+            "sha256": "e28c299db695e4c30e2eac7fa2feb1910f245e1489c29048cb938773b103bc23"
+          },
+          {
+            "path": "spot-l2/2026-07-29.parquet",
+            "rows": 86331,
+            "sha256": "fc259cd8019fac7837067ad7a7eb85536dac15e73ace73a175c29c568eac4977"
+          },
+          {
+            "path": "spot-l2/2026-07-30.parquet",
+            "rows": 86340,
+            "sha256": "e90949b2d02d0a86610aefb96a528bc7664a296fc6d7b2583cc0cba204c376ae"
+          },
+          {
+            "path": "spot-l2/2026-07-31.parquet",
+            "rows": 86402,
+            "sha256": "93e5e9a5c1f079de8f114fda45ed0474e8e62a8bd8028ae850e1b30f113d73ac"
+          },
+          {
+            "path": "spot-l2/2026-08-01.parquet",
+            "rows": 86094,
+            "sha256": "277fa0a1f24f7ee8c0dff127af69f9a134daf24976646336f8f2e273d3107aa6"
+          },
+          {
+            "path": "spot-l2/2026-08-02.parquet",
+            "rows": 2,
+            "sha256": "2bef405c9bd3bd4c4853ea74fab39a3198b53f293253370d02b39b7c8d2c3f27"
+          },
+          {
+            "path": "spot-l2/2026-08-03.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-04.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-05.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-06.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-07.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-08.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-09.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-10.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-11.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-12.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-13.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-14.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-15.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-16.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-17.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-18.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-19.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-20.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-21.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-22.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-23.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-24.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-25.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-26.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-27.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          },
+          {
+            "path": "spot-l2/2026-08-28.parquet",
+            "rows": 0,
+            "sha256": "85dd02742120b0a6cb5a1fb333e246aebdace517b00ede95e6005e72c5ba1262"
+          }
+        ],
+        "rows": 6770053
+      },
+      "twap_inference_feature": false
+    },
+    "bridge_calibration": {
+      "binance_to_exact": {
+        "location_bps": 0.012139720462760906,
+        "mae_bps": 0.3615354528103826,
+        "p95_absolute_bps": 0.9612219123967793,
+        "p99_absolute_bps": 1.346423713287536,
+        "paired_markets": 1983,
+        "scale_bps": 0.4741786271415441
+      },
+      "end_exclusive": "2026-08-08T00:00:00+00:00",
+      "refprice_to_exact": {
+        "location_bps": -3.334263964660522e-05,
+        "mae_bps": 0.10835883422172046,
+        "p95_absolute_bps": 0.348774292105125,
+        "p99_absolute_bps": 0.6126626632389912,
+        "paired_markets": 1983,
+        "scale_bps": 0.16393576044409458
+      },
+      "sealed_rows_used": false,
+      "start_inclusive": "2026-08-01T02:40:00+00:00"
+    },
+    "bridge_validation": {
+      "binance_to_exact": {
+        "location_bps": 0.016138801515106938,
+        "mae_bps": 0.37676768112582976,
+        "p95_absolute_bps": 1.0156764808685983,
+        "p99_absolute_bps": 1.593022576693676,
+        "paired_markets": 1440,
+        "scale_bps": 0.5172389560648623
+      },
+      "end_exclusive": "2026-08-14T00:00:00+00:00",
+      "parameters_refitted": false,
+      "refprice_to_exact": {
+        "location_bps": -0.0007291971536874664,
+        "mae_bps": 0.08233701376678842,
+        "p95_absolute_bps": 0.27559686102724673,
+        "p99_absolute_bps": 0.5332819177965165,
+        "paired_markets": 1440,
+        "scale_bps": 0.13888992493558916
+      },
+      "start_inclusive": "2026-08-08T00:00:00+00:00"
+    },
+    "coverage": {
+      "binance_prints": {
+        "markets": 10302,
+        "rows": 190777
+      },
+      "candles": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "core": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "kraken": {
+        "markets": 42563,
+        "rows": 766254
+      },
+      "open_interest": {
+        "markets": 15786,
+        "rows": 584082
+      },
+      "oracle": {
+        "markets": 45738,
+        "rows": 1692306
+      },
+      "refprice": {
+        "markets": 22997,
+        "rows": 844888
+      },
+      "spot_l2": {
+        "markets": 23052,
+        "rows": 834908
+      }
+    },
+    "database_mutations": false,
+    "feature_groups": {
+      "binance_prints": [
+        "binance_print_return_5s_bps",
+        "binance_print_signed_share_5s",
+        "binance_print_log_quote_volume_5s",
+        "binance_print_log_trade_count_5s",
+        "binance_print_return_15s_bps",
+        "binance_print_signed_share_15s",
+        "binance_print_log_quote_volume_15s",
+        "binance_print_log_trade_count_15s",
+        "binance_print_return_30s_bps",
+        "binance_print_signed_share_30s",
+        "binance_print_log_quote_volume_30s",
+        "binance_print_log_trade_count_30s",
+        "binance_print_return_60s_bps",
+        "binance_print_signed_share_60s",
+        "binance_print_log_quote_volume_60s",
+        "binance_print_log_trade_count_60s"
+      ],
+      "candles": [
+        "chainlink_candle_return_5m_bps",
+        "chainlink_candle_return_15m_bps",
+        "chainlink_candle_return_30m_bps",
+        "chainlink_candle_return_60m_bps",
+        "chainlink_candle_realized_volatility_15m_bps",
+        "chainlink_candle_realized_volatility_60m_bps",
+        "chainlink_candle_range_15m_bps",
+        "chainlink_candle_range_60m_bps"
+      ],
+      "core": [
+        "seconds_elapsed_scaled",
+        "seconds_remaining_scaled",
+        "btc_path_from_window_open_bps",
+        "btc_cross_venue_boundary_gap_bps",
+        "btc_window_open_cross_venue_basis_bps",
+        "btc_return_1s_bps",
+        "btc_return_5s_bps",
+        "btc_return_15s_bps",
+        "btc_return_30s_bps",
+        "btc_return_60s_bps",
+        "btc_return_90s_bps",
+        "btc_return_120s_bps",
+        "btc_return_180s_bps",
+        "btc_realized_volatility_5s_bps",
+        "btc_realized_volatility_15s_bps",
+        "btc_realized_volatility_30s_bps",
+        "btc_realized_volatility_60s_bps",
+        "btc_realized_volatility_90s_bps",
+        "btc_realized_volatility_120s_bps",
+        "btc_realized_volatility_180s_bps",
+        "btc_range_5s_bps",
+        "btc_range_30s_bps",
+        "btc_range_60s_bps",
+        "btc_path_efficiency_30s",
+        "btc_path_efficiency_60s",
+        "btc_range_position_30s",
+        "btc_range_position_60s",
+        "btc_signed_flow_5s",
+        "btc_signed_flow_30s",
+        "btc_signed_flow_60s",
+        "btc_signed_flow_90s",
+        "btc_signed_flow_120s",
+        "btc_signed_flow_180s",
+        "btc_path_cross_count",
+        "btc_boundary_cross_count",
+        "btc_seconds_since_path_cross",
+        "btc_seconds_since_boundary_cross",
+        "btc_path_terminal_volatility_z",
+        "btc_boundary_terminal_volatility_z",
+        "btc_boundary_distance_velocity_5s_bps",
+        "btc_boundary_momentum_alignment_5s",
+        "btc_momentum_multihorizon_score",
+        "btc_momentum_acceleration_5_vs_30",
+        "btc_momentum_acceleration_15_vs_60",
+        "btc_reversal_5_vs_30",
+        "btc_path_max_favorable_excursion_bps",
+        "btc_path_max_adverse_excursion_bps",
+        "btc_path_pullback_from_favorable_extreme_bps",
+        "btc_path_recovery_from_adverse_extreme_bps",
+        "btc_seconds_since_path_high_scaled",
+        "btc_seconds_since_path_low_scaled",
+        "btc_volatility_shock_30_vs_120",
+        "btc_volatility_shock_60_vs_180",
+        "btc_path_sign_normalized_return_5s_bps",
+        "btc_path_sign_normalized_return_30s_bps",
+        "btc_path_sign_normalized_return_60s_bps",
+        "btc_path_sign_normalized_return_90s_bps",
+        "btc_path_sign_normalized_return_120s_bps",
+        "btc_path_sign_normalized_flow_5s",
+        "btc_path_sign_normalized_flow_30s",
+        "btc_path_sign_normalized_flow_60s",
+        "btc_path_sign_normalized_flow_90s",
+        "btc_path_sign_normalized_flow_120s",
+        "hour_sin",
+        "hour_cos",
+        "weekday_sin",
+        "weekday_cos"
+      ],
+      "execution": [
+        "up_ask_vwap_5",
+        "up_ask_vwap_10",
+        "up_ask_vwap_15",
+        "up_ask_vwap_20",
+        "up_ask_vwap_25",
+        "up_ask_vwap_30",
+        "up_ask_vwap_40",
+        "up_ask_vwap_50",
+        "up_ask_vwap_75",
+        "up_ask_vwap_100",
+        "up_ask_vwap_125",
+        "up_ask_vwap_150",
+        "up_ask_vwap_175",
+        "up_ask_vwap_200",
+        "down_ask_vwap_5",
+        "down_ask_vwap_10",
+        "down_ask_vwap_15",
+        "down_ask_vwap_20",
+        "down_ask_vwap_25",
+        "down_ask_vwap_30",
+        "down_ask_vwap_40",
+        "down_ask_vwap_50",
+        "down_ask_vwap_75",
+        "down_ask_vwap_100",
+        "down_ask_vwap_125",
+        "down_ask_vwap_150",
+        "down_ask_vwap_175",
+        "down_ask_vwap_200",
+        "pm_vwap5_overround",
+        "pm_vwap50_overround",
+        "pm_vwap200_overround",
+        "pm_up_slope_5_25",
+        "pm_up_slope_25_100",
+        "pm_up_slope_100_200",
+        "pm_down_slope_5_25",
+        "pm_down_slope_25_100",
+        "pm_down_slope_100_200",
+        "pm_up_depth_log",
+        "pm_down_depth_log",
+        "pm_depth_imbalance",
+        "pm_up_book_age_seconds",
+        "pm_down_book_age_seconds",
+        "pm_yes_cost_per_share",
+        "pm_no_cost_per_share",
+        "pm_yes_vwap_slippage",
+        "pm_no_vwap_slippage",
+        "pm_yes_depth_log",
+        "pm_no_depth_log",
+        "pm_yes_book_age_seconds",
+        "pm_no_book_age_seconds",
+        "pm_yes_cost_logit",
+        "pm_no_cost_logit",
+        "pm_cost_overround",
+        "pm_yes_minus_no_cost"
+      ],
+      "kraken": [
+        "kraken_return_5s_bps",
+        "kraken_return_15s_bps",
+        "kraken_return_30s_bps",
+        "kraken_return_60s_bps",
+        "kraken_return_120s_bps",
+        "kraken_realized_volatility_30s_bps",
+        "kraken_realized_volatility_60s_bps",
+        "kraken_log_quote_volume_30s",
+        "kraken_log_quote_volume_60s",
+        "kraken_print_signed_share_5s",
+        "kraken_print_signed_share_30s",
+        "kraken_print_signed_share_60s",
+        "kraken_log_trade_count_30s",
+        "kraken_log_trade_count_60s",
+        "kraken_binance_basis_bps",
+        "kraken_binance_return_agreement_30s",
+        "kraken_binance_flow_agreement_30s"
+      ],
+      "open_interest": [
+        "binance_oi_change_5m_bps",
+        "binance_oi_change_15m_bps",
+        "binance_oi_change_30m_bps",
+        "binance_oi_change_60m_bps",
+        "binance_oi_value_change_15m_bps",
+        "binance_oi_value_change_60m_bps",
+        "binance_oi_acceleration_5_vs_30_bps",
+        "binance_oi_path_agreement_15m",
+        "binance_oi_path_agreement_60m"
+      ],
+      "oracle": [
+        "oracle_return_from_window_open_bps",
+        "oracle_round_age_seconds_scaled",
+        "oracle_update_count_since_open_scaled",
+        "binance_oracle_basis_bps"
+      ],
+      "refprice": [
+        "chainlink_ref_return_1s_bps",
+        "chainlink_ref_return_5s_bps",
+        "chainlink_ref_return_15s_bps",
+        "chainlink_ref_return_30s_bps",
+        "chainlink_ref_return_60s_bps",
+        "chainlink_ref_binance_basis_bps",
+        "chainlink_ref_boundary_gap_bps",
+        "chainlink_ref_spread_bps",
+        "chainlink_ref_spread_change_30s_bps",
+        "chainlink_ref_binance_direction_agreement_30s",
+        "chainlink_ref_return_90s_bps",
+        "chainlink_ref_return_120s_bps",
+        "chainlink_ref_momentum_alignment_5_30",
+        "chainlink_ref_reversal_5_vs_30",
+        "chainlink_ref_reversal_15_vs_60",
+        "chainlink_ref_boundary_velocity_5s_bps",
+        "chainlink_ref_realized_volatility_5s_bps",
+        "chainlink_ref_realized_volatility_15s_bps",
+        "chainlink_ref_realized_volatility_30s_bps",
+        "chainlink_ref_realized_volatility_60s_bps",
+        "chainlink_ref_realized_volatility_90s_bps",
+        "chainlink_ref_realized_volatility_120s_bps",
+        "chainlink_ref_range_15s_bps",
+        "chainlink_ref_range_30s_bps",
+        "chainlink_ref_range_60s_bps",
+        "chainlink_ref_range_90s_bps",
+        "chainlink_ref_range_120s_bps",
+        "chainlink_ref_path_efficiency_30s",
+        "chainlink_ref_path_efficiency_60s",
+        "chainlink_ref_range_position_60s",
+        "chainlink_ref_boundary_cross_count_60s",
+        "chainlink_ref_direction_changes_60s",
+        "chainlink_ref_age_seconds",
+        "chainlink_ref_reports_60s",
+        "chainlink_ref_max_gap_60s",
+        "chainlink_ref_binance_basis_velocity_5s_bps",
+        "chainlink_ref_binance_disagreement_30s",
+        "chainlink_ref_source_skew_seconds"
+      ],
+      "spot_l2": [
+        "spot_l2_midpoint_to_kline_close_bps",
+        "spot_l2_microprice_to_midpoint_bps",
+        "spot_l2_spread_bps",
+        "spot_l2_bid_depth_5_log",
+        "spot_l2_ask_depth_5_log",
+        "spot_l2_imbalance_5",
+        "spot_l2_bid_depth_10_log",
+        "spot_l2_ask_depth_10_log",
+        "spot_l2_imbalance_10",
+        "spot_l2_bid_depth_20_log",
+        "spot_l2_ask_depth_20_log",
+        "spot_l2_imbalance_20",
+        "spot_l2_bid_depth_slope_20",
+        "spot_l2_ask_depth_slope_20",
+        "spot_l2_bid_depth_concentration_20",
+        "spot_l2_ask_depth_concentration_20",
+        "spot_l2_bid_quote_replenishment_1s_log",
+        "spot_l2_ask_quote_replenishment_1s_log",
+        "spot_l2_bid_quote_churn_1s_log",
+        "spot_l2_ask_quote_churn_1s_log",
+        "spot_l2_midpoint_change_1s_bps",
+        "spot_l2_spread_change_1s_bps",
+        "spot_l2_depth_20_change_1s_bps",
+        "spot_l2_imbalance_20_change_1s",
+        "spot_l2_midpoint_change_5s_bps",
+        "spot_l2_spread_change_5s_bps",
+        "spot_l2_depth_20_change_5s_bps",
+        "spot_l2_imbalance_20_change_5s",
+        "spot_l2_midpoint_change_15s_bps",
+        "spot_l2_spread_change_15s_bps",
+        "spot_l2_depth_20_change_15s_bps",
+        "spot_l2_imbalance_20_change_15s",
+        "spot_l2_midpoint_change_30s_bps",
+        "spot_l2_spread_change_30s_bps",
+        "spot_l2_depth_20_change_30s_bps",
+        "spot_l2_imbalance_20_change_30s",
+        "spot_l2_midpoint_change_60s_bps",
+        "spot_l2_spread_change_60s_bps",
+        "spot_l2_depth_20_change_60s_bps",
+        "spot_l2_imbalance_20_change_60s"
+      ]
+    },
+    "historical_official_label_preserved": true,
+    "label_coverage": [
+      {
+        "different_from_historical_official": 3335,
+        "first_market": "2026-03-21 00:05:00+00:00",
+        "label_source": "binance_twap60_bridge",
+        "last_market": "2026-06-07 05:45:00+00:00",
+        "markets": 22533,
+        "mean_weight": 0.9588041280175658
+      },
+      {
+        "different_from_historical_official": 2366,
+        "first_market": "2026-06-07 05:50:00+00:00",
+        "label_source": "refprice_twap60_bridge",
+        "last_market": "2026-08-08 23:55:00+00:00",
+        "markets": 16090,
+        "mean_weight": 0.9813014548481829
+      },
+      {
+        "different_from_historical_official": 368,
+        "first_market": "2026-08-01 02:40:00+00:00",
+        "label_source": "exact_twap60_bridge",
+        "last_market": "2026-08-13 23:55:00+00:00",
+        "markets": 3423,
+        "mean_weight": 1.0
+      },
+      {
+        "different_from_historical_official": 0,
+        "first_market": "2026-08-14 00:00:00+00:00",
+        "label_source": "official_twap60_exact",
+        "last_market": "2026-08-26 23:55:00+00:00",
+        "markets": 3668,
+        "mean_weight": 1.0
+      },
+      {
+        "different_from_historical_official": 0,
+        "first_market": "2026-08-19 00:00:00+00:00",
+        "label_source": "official_twap60_source_gap",
+        "last_market": "2026-08-20 20:55:00+00:00",
+        "markets": 24,
+        "mean_weight": 1.0
+      }
+    ],
+    "markets": 45738,
+    "new_ingesters": false,
+    "new_sources": false,
+    "new_tables": false,
+    "probabilistic_proxy_supervision": true,
+    "range_end": "2026-08-29T00:00:00+00:00",
+    "range_start": "2026-03-21T00:00:00+00:00",
+    "rows": 1692306,
+    "schema_version": "btc-source-preserving-settlement-bridge-data-v1",
+    "settlement_source_ledger": {
+      "contract": {
+        "columns_used": [
+          "market_id",
+          "window_start",
+          "window_end",
+          "official_outcome",
+          "legacy_open_price",
+          "legacy_close_price",
+          "proxy_label_up",
+          "proxy_margin_bps",
+          "binance_raw_label_up",
+          "binance_raw_margin_bps",
+          "binance_label_complete",
+          "authentic_label_up",
+          "authentic_margin_bps"
+        ],
+        "database_mutations": false,
+        "read_only": true,
+        "schema_version": "btc-source-preserving-settlement-bridge-data-v1",
+        "source_manifest_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/source-manifest.json",
+        "source_manifest_sha256": "b64ffe757e535053f9c16c0757a36b15d6d5090dd157010029d85de8788862d4",
+        "source_path": "/Users/gunnermadsen/development/polymarket-bot/target/worktrees/btc-causal-twap-attribution/packages/btc-directional-model/data/btc-causal-twap-attribution-20260607-20260828/label-audit.parquet",
+        "source_sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130",
+        "source_values_remain_distinct": true
+      },
+      "local_path": "settlement-source-ledger.parquet",
+      "rows": 46027,
+      "sha256": "08a6684b49d8d20350d09d79c01e665f36421bbd5618a5f6bc0a04d938521130"
+    },
+    "sha256": "a4accfd61247b24ff50981de704aac698e561c87ef27094f3323f1b6b86436fe",
+    "source_values_remain_distinct": true,
+    "twap_inference_feature": false
+  },
+  "split_manifest": {
+    "development_end_exclusive": "2026-08-21T00:00:00Z",
+    "development_start_inclusive": "2026-08-14T00:00:00Z",
+    "economic_seconds": [
+      60,
+      180
+    ],
+    "entry_seconds": [
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95,
+      100,
+      105,
+      110,
+      115,
+      120,
+      125,
+      130,
+      135,
+      140,
+      145,
+      150,
+      155,
+      160,
+      165,
+      170,
+      175,
+      180
+    ],
+    "fit_end_exclusive": "2026-08-14T00:00:00+00:00",
+    "folds": [
+      {
+        "name": "april",
+        "test_end": "2026-05-01T00:00:00Z",
+        "test_start": "2026-04-01T00:00:00Z"
+      },
+      {
+        "name": "may",
+        "test_end": "2026-06-01T00:00:00Z",
+        "test_start": "2026-05-01T00:00:00Z"
+      },
+      {
+        "name": "june",
+        "test_end": "2026-07-01T00:00:00Z",
+        "test_start": "2026-06-01T00:00:00Z"
+      },
+      {
+        "name": "july",
+        "test_end": "2026-08-01T00:00:00Z",
+        "test_start": "2026-07-01T00:00:00Z"
+      },
+      {
+        "name": "august_bridge_validation",
+        "test_end": "2026-08-14T00:00:00Z",
+        "test_start": "2026-08-08T00:00:00Z"
+      }
+    ],
+    "market_disjoint": true,
+    "policy_development_excludes_sealed": true,
+    "predictive_fit_excludes_development_and_sealed": true,
+    "sealed_end_exclusive": "2026-08-29T00:00:00+00:00",
+    "sealed_replay_epistemically_untouched": false,
+    "sealed_start_inclusive": "2026-08-21T00:00:00+00:00",
+    "source_start": "2026-03-21T00:00:00+00:00"
+  }
+}

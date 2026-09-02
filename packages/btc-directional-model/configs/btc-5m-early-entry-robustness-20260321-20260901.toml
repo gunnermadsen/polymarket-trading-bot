@@ -1,0 +1,127 @@
+[training]
+profile = "btc_5m_early_entry_robustness"
+model_family = "btc-5m-early-entry-robustness"
+training_only = true
+paper_only = true
+live_capital_allowed = false
+random_seed = 20260902
+
+[windows]
+source_start = "2026-03-21T00:00:00Z"
+fit_end = "2026-08-14T00:00:00Z"
+development_start = "2026-08-14T00:00:00Z"
+development_end = "2026-08-20T00:00:00Z"
+sealed_start = "2026-08-20T00:00:00Z"
+sealed_end = "2026-09-01T00:00:00Z"
+prospective_start = "2026-09-01T00:00:00Z"
+prospective_end = "2026-09-02T00:00:00Z"
+kraken_l2_tail_start = "2026-08-20T00:00:00Z"
+kraken_l2_tail_end = "2026-09-01T00:00:00Z"
+temporal_fit_ends = ["2026-06-01T00:00:00Z", "2026-07-01T00:00:00Z", "2026-08-01T00:00:00Z"]
+
+[entry]
+economic_start_second = 60
+economic_end_second_inclusive = 180
+primary_band = [60, 89]
+competition_bands = [[60, 89], [90, 119], [120, 149], [150, 180]]
+
+[model]
+learning_rate = 0.06
+max_iter = 90
+max_leaf_nodes = 31
+min_samples_leaf = 100
+l2_regularization = 2.0
+max_bins = 127
+calibration_fraction = 0.20
+hard_negative_multiplier = 4.0
+
+[residual]
+learning_rate = 0.04
+max_iter = 100
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 5.0
+maximum_absolute_correction = 0.15
+
+[admission]
+learning_rate = 0.05
+max_iter = 100
+max_leaf_nodes = 15
+min_samples_leaf = 100
+l2_regularization = 5.0
+probability_thresholds = [0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
+stress_edge_thresholds = [-0.05, -0.02, 0.00, 0.02, 0.05]
+maximum_loss_thresholds = [0.15, 0.25, 0.40, 0.60, 0.90]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+
+[execution]
+quantity = 5
+freshness_seconds = 2
+execution_reserve_per_share = 0.005
+stress_slippage_per_share = 0.01
+minimum_edges = [0.00, 0.01, 0.02, 0.03, 0.05, 0.075, 0.10, 0.125]
+minimum_confidences = [0.50, 0.52, 0.55, 0.58, 0.60, 0.62, 0.65, 0.70, 0.75, 0.80, 0.85]
+maximum_share_costs = [0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+recovery_soft_target = 2.5
+recovery_penalty = 0.01
+development_shrinkage_trades = 25.0
+development_stability_penalty = 0.5
+
+[temporal]
+maximum_probability_std = [0.02, 0.04, 0.06, 0.08, 0.12, 0.20]
+minimum_direction_agreement = [0.50, 0.75, 1.00]
+
+[l2_veto]
+minimum_confirmation = [-0.50, -0.25, 0.00, 0.10, 0.25, 0.40]
+
+[paths]
+panel = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel.parquet"
+panel_manifest = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel-manifest.json"
+bridge_panel = "data/btc-hybrid-payoff-admission-20260321-20260827/middle-panel.parquet"
+bridge_manifest = "data/btc-hybrid-payoff-admission-20260321-20260827/panel-manifest.json"
+prior_kraken_l2_manifest = "data/btc-hybrid-payoff-admission-20260321-20260827/kraken-l2-manifest.json"
+kraken_l2_raw_root = "/Volumes/docker-data/kraken-data/spot-l2/cryptohftdata/kraken_spot"
+kraken_l2_tail_cache = "data/btc-early-entry-robustness-20260321-20260901"
+directional_artifact = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/tournament.joblib"
+directional_metrics = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/metrics.json"
+official_oof = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/ledgers/specialist-oof-predictions.parquet"
+development_predictions = "training-results/btc-5m-extended-specialist-strategy-tournament-20260321-20260826/20260901T231526Z/ledgers/development-predictions.parquet"
+bridge_oof = "training-results/btc-5m-champion-admission-tournament-20260321-20260901/20260902T025934Z/ledgers/bridge-oof-predictions.parquet"
+prior_admission_artifact = "training-results/btc-5m-champion-admission-tournament-20260321-20260901/20260902T025934Z/tournament.joblib"
+prior_admission_metrics = "training-results/btc-5m-champion-admission-tournament-20260321-20260901/20260902T025934Z/metrics.json"
+committed_results = "training-results/btc-5m-early-entry-robustness-20260321-20260901"
+
+[[candidates]]
+name = "official_early_control"
+kind = "frozen_programmatic"
+base = "extended_specialist_official"
+
+[[candidates]]
+name = "bridge_early_control"
+kind = "frozen_programmatic"
+base = "bridge_aware_specialist"
+
+[[candidates]]
+name = "official_dualvenue_l2_residual"
+kind = "l2_residual"
+base = "extended_specialist_official"
+
+[[candidates]]
+name = "official_high_precision_loss_veto"
+kind = "learned_loss_veto"
+base = "extended_specialist_official"
+
+[[candidates]]
+name = "official_capacity_aware_admission"
+kind = "learned_capacity_admission"
+base = "extended_specialist_official"
+
+[[candidates]]
+name = "official_temporal_consensus"
+kind = "temporal_consensus"
+base = "extended_specialist_official"
+
+[[candidates]]
+name = "official_dualvenue_l2_veto"
+kind = "l2_confirmation_veto"
+base = "extended_specialist_official"
