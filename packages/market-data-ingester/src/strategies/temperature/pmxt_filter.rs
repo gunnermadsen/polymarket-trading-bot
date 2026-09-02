@@ -54,15 +54,18 @@ pub fn filter_archive(
         let batch = batch.map_err(integrity)?;
         let mask = (0..batch.num_rows())
             .map(|row| {
-                let condition = text_value(batch.column(market_index).as_ref(), row)?;
-                let token = text_value(batch.column(asset_index).as_ref(), row)?;
-                let event = text_value(batch.column(event_index).as_ref(), row)?;
-                let timestamp = timestamp_value(batch.column(timestamp_index).as_ref(), row)?;
-                Ok(condition_ids.contains(condition)
-                    && token_ids.contains(token)
-                    && matches!(event, "book" | "price_change")
-                    && timestamp >= range_start
-                    && timestamp < range_end)
+                row_matches(
+                    &batch,
+                    row,
+                    market_index,
+                    asset_index,
+                    event_index,
+                    timestamp_index,
+                    &condition_ids,
+                    &token_ids,
+                    range_start,
+                    range_end,
+                )
             })
             .collect::<Result<Vec<_>, BackfillExecutionError>>()?;
         let mask = arrow_array::BooleanArray::from(mask);
@@ -85,6 +88,80 @@ pub fn filter_archive(
         checksum,
         bytes,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row_matches(
+    batch: &RecordBatch,
+    row: usize,
+    market_index: usize,
+    asset_index: usize,
+    event_index: usize,
+    timestamp_index: usize,
+    condition_ids: &HashSet<String>,
+    token_ids: &HashSet<String>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+) -> Result<bool, BackfillExecutionError> {
+    let condition = text_value(batch.column(market_index).as_ref(), row)?;
+    let token = text_value(batch.column(asset_index).as_ref(), row)?;
+    let event = text_value(batch.column(event_index).as_ref(), row)?;
+    let timestamp = timestamp_value(batch.column(timestamp_index).as_ref(), row)?;
+    Ok(condition_ids.contains(condition)
+        && token_ids.contains(token)
+        && matches!(event, "book" | "price_change")
+        && timestamp >= range_start
+        && timestamp < range_end)
+}
+
+pub fn validate_archive(
+    path: &Path,
+    condition_ids: &HashSet<String>,
+    token_ids: &HashSet<String>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    expected_records: i64,
+) -> Result<(), BackfillExecutionError> {
+    let input = File::open(path).map_err(integrity)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input).map_err(integrity)?;
+    let schema = builder.schema();
+    let indexes = (
+        schema.index_of("market").map_err(integrity)?,
+        schema.index_of("asset_id").map_err(integrity)?,
+        schema.index_of("event_type").map_err(integrity)?,
+        schema.index_of("timestamp").map_err(integrity)?,
+    );
+    let mut records = 0i64;
+    for batch in builder.with_batch_size(8_192).build().map_err(integrity)? {
+        let batch = batch.map_err(integrity)?;
+        for row in 0..batch.num_rows() {
+            if !row_matches(
+                &batch,
+                row,
+                indexes.0,
+                indexes.1,
+                indexes.2,
+                indexes.3,
+                condition_ids,
+                token_ids,
+                range_start,
+                range_end,
+            )? {
+                return Err(integrity(
+                    "filtered PMXT artifact contained an out-of-scope row",
+                ));
+            }
+        }
+        records = records
+            .checked_add(i64::try_from(batch.num_rows()).map_err(integrity)?)
+            .ok_or_else(|| integrity("validated PMXT row count overflow"))?;
+    }
+    if records != expected_records {
+        return Err(integrity(format!(
+            "filtered PMXT artifact contained {records} rows; expected {expected_records}"
+        )));
+    }
+    Ok(())
 }
 
 fn update_bounds(

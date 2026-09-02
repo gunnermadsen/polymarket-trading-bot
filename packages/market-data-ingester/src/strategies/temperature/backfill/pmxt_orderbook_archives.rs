@@ -138,6 +138,14 @@ impl BackfillWorkerStrategy for PmxtPolymarketOrderbookArchivesBackfill {
                 "PMXT archive contained no rows for the authoritative NYC temperature markets",
             ));
         }
+        pmxt_filter::validate_archive(
+            &output_partial,
+            &scope.condition_ids,
+            &scope.token_ids,
+            s.range_start,
+            s.range_end,
+            filtered.records,
+        )?;
         fs::rename(&output_partial, &final_path)
             .await
             .map_err(storage)?;
