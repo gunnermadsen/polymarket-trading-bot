@@ -10,6 +10,7 @@ use crate::{
 mod backfill_support;
 pub mod binance;
 pub mod chainlink;
+pub mod kraken;
 pub mod pmdata;
 pub mod polygon;
 pub mod polymarket;
@@ -83,6 +84,74 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
+            kraken::KrakenInstrumentsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenFeeSchedulesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenTradeCandlesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenMarkCandlesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenSpotCandlesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenOpenInterestBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenFutureBasisBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenAggressorDifferentialBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenTradeVolumeBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenTradeCountBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenCvdBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenLiquidationVolumeBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenSpreadsBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenLiquidityBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenSlippageBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenFundingRatesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            kraken::KrakenSpotBtcusdTradePrintsOneSecondOhlcvBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
             polymarket::PolymarketBtcMarketContractsBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
@@ -131,6 +200,23 @@ mod tests {
             "pmdata_chainlink_btcusd_refprice_backfill",
             "pmdata_chainlink_btcusd_twap_30s_backfill",
             "pmdata_chainlink_btcusd_twap_60s_backfill",
+            "kraken_instruments_backfill",
+            "kraken_fee_schedules_backfill",
+            "kraken_trade_candles_backfill",
+            "kraken_mark_candles_backfill",
+            "kraken_spot_candles_backfill",
+            "kraken_open_interest_backfill",
+            "kraken_future_basis_backfill",
+            "kraken_aggressor_differential_backfill",
+            "kraken_trade_volume_backfill",
+            "kraken_trade_count_backfill",
+            "kraken_cvd_backfill",
+            "kraken_liquidation_volume_backfill",
+            "kraken_spreads_backfill",
+            "kraken_liquidity_backfill",
+            "kraken_slippage_backfill",
+            "kraken_funding_rates_backfill",
+            "kraken_spot_btcusd_trade_prints_one_second_ohlcv_backfill",
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
         }

@@ -66,6 +66,42 @@ fn compose_exposes_only_standard_ingester_roles() {
         .exists());
 }
 
+#[test]
+fn kraken_backfills_are_one_strategy_per_file() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/strategies/kraken");
+    for file in [
+        "instruments_backfill.rs",
+        "fee_schedules_backfill.rs",
+        "trade_candles_backfill.rs",
+        "mark_candles_backfill.rs",
+        "spot_candles_backfill.rs",
+        "open_interest_backfill.rs",
+        "future_basis_backfill.rs",
+        "aggressor_differential_backfill.rs",
+        "trade_volume_backfill.rs",
+        "trade_count_backfill.rs",
+        "cvd_backfill.rs",
+        "liquidation_volume_backfill.rs",
+        "spreads_backfill.rs",
+        "liquidity_backfill.rs",
+        "slippage_backfill.rs",
+        "funding_rates_backfill.rs",
+        "spot_trade_prints_one_second_ohlcv_backfill.rs",
+    ] {
+        let source = std::fs::read_to_string(root.join(file)).unwrap();
+        assert_eq!(
+            source.matches("impl BackfillWorkerStrategy for").count()
+                + source.matches("define_kraken_futures_strategy!").count(),
+            1,
+            "{file} must define exactly one backfill strategy"
+        );
+        assert!(
+            !source.contains("RealtimeWorkerStrategy"),
+            "{file} must remain backfill-only"
+        );
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
