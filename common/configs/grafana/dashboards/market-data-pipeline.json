@@ -83,7 +83,7 @@
   "schemaVersion": 41,
   "tags": ["market-data", "pipeline", "grpc", "trading-critical"],
   "templating": {"list": []},
-  "time": {"from": "now-3h", "to": "now"},
+  "time": {"from": "now-15m", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
   "title": "Market Data Pipeline",
