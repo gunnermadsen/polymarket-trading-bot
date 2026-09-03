@@ -625,7 +625,9 @@ impl MarketDataStreamRuntime {
                     source_event_id: Some(event.source_event_id.clone()),
                     raw_payload: serde_json::from_slice(&event.payload_json)?,
                 };
-                self.state.write().await.update_reference_price(tick);
+                let mut state = self.state.write().await;
+                state.directional_external.observe_rtds_chainlink(&tick)?;
+                state.update_reference_price(tick);
             }
             PRODUCT_TWAP => {
                 let payload: TwapPayload = serde_json::from_slice(&event.payload_json)?;
