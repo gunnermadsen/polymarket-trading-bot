@@ -1181,6 +1181,101 @@ mod tests {
     }
 
     #[test]
+    fn canonical_stream_snapshot_accepts_validated_tick_transition_for_exact_market_identity() {
+        let window_start = Utc.with_ymd_and_hms(2026, 9, 3, 19, 45, 0).unwrap();
+        let market = market("rollover", window_start, true, false, true);
+        let connection_id = Uuid::new_v4();
+        let mut books = BookRegistry::new(connection_id);
+        books
+            .try_register_market(&market)
+            .expect("Gamma market registration");
+        let sampled_at = window_start + chrono::Duration::minutes(4);
+
+        let applied = books
+            .apply_canonical_snapshot_for_market_identity(
+                connection_id,
+                &market.market_id,
+                &market.condition_id,
+                &market.up_token_id,
+                &market.down_token_id,
+                &market.up_token_id,
+                BtcOutcome::Up,
+                Decimal::new(1, 3),
+                sampled_at,
+                sampled_at + chrono::Duration::milliseconds(2),
+                42,
+                Some("sha256:book".to_owned()),
+                vec![(Decimal::new(499, 3), Decimal::new(10, 0))],
+                vec![(Decimal::new(501, 3), Decimal::new(10, 0))],
+            )
+            .expect("validated canonical tick transition");
+
+        assert!(applied.applied);
+        assert_eq!(
+            books
+                .checkpoint(&market.up_token_id)
+                .expect("canonical checkpoint")
+                .tick_size,
+            Decimal::new(1, 3)
+        );
+
+        let stale = books
+            .apply_canonical_snapshot_for_market_identity(
+                connection_id,
+                &market.market_id,
+                &market.condition_id,
+                &market.up_token_id,
+                &market.down_token_id,
+                &market.up_token_id,
+                BtcOutcome::Up,
+                Decimal::new(1, 2),
+                sampled_at - chrono::Duration::seconds(1),
+                sampled_at + chrono::Duration::milliseconds(3),
+                41,
+                None,
+                vec![],
+                vec![],
+            )
+            .expect("stale canonical snapshot is ignored");
+        assert_eq!(
+            stale.integrity_status,
+            crate::btc::FeedIntegrityStatus::OutOfOrder
+        );
+        assert_eq!(
+            books
+                .checkpoint(&market.up_token_id)
+                .expect("newer tick remains authoritative")
+                .tick_size,
+            Decimal::new(1, 3)
+        );
+
+        let conflicting = books.apply_canonical_snapshot_for_market_identity(
+            connection_id,
+            "different-market",
+            "different-condition",
+            &market.up_token_id,
+            "different-down-token",
+            &market.up_token_id,
+            BtcOutcome::Up,
+            Decimal::new(1, 3),
+            sampled_at,
+            sampled_at + chrono::Duration::milliseconds(3),
+            43,
+            None,
+            vec![],
+            vec![],
+        );
+        assert!(conflicting.is_err());
+        assert_eq!(
+            books
+                .checkpoint(&market.up_token_id)
+                .expect("original identity remains")
+                .market_id,
+            market.market_id
+        );
+    }
+
+    #[test]
     fn canonical_stream_timestamp_preserves_subsecond_sample_time() {
         let sampled_at = Utc.with_ymd_and_hms(2026, 9, 3, 18, 30, 1).unwrap()
             + chrono::Duration::microseconds(234_567);

@@ -399,9 +399,11 @@ impl BookRegistry {
         if book.outcome != outcome
             || book.market_id != market_id
             || book.wire_market_id != condition_id
-            || book.tick_size != tick_size
         {
             bail!("canonical snapshot market identity mismatch");
+        }
+        if tick_size <= Decimal::ZERO || tick_size >= Decimal::ONE || tick_size.scale() > 8 {
+            bail!("canonical snapshot tick size is invalid");
         }
         if book
             .source_timestamp
@@ -415,6 +417,11 @@ impl BookRegistry {
                 FeedIntegrityStatus::OutOfOrder,
             ));
         }
+        // The ingester validates venue tick-size transitions before emitting
+        // canonical snapshots. Gamma discovery can therefore legitimately
+        // register this exact market identity at an older tick before the
+        // current CLOB snapshot arrives.
+        book.tick_size = tick_size;
         book.bids = bids
             .into_iter()
             .filter(|(_, size)| !size.is_zero())
