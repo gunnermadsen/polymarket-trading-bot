@@ -18,7 +18,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
@@ -27,11 +27,12 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
-        StrategyError, StrategyErrorKind,
+        BinanceAggregateTradeRecord, CaptureArtifact, IngesterProfile, IngesterStrategyKey,
+        RealtimeWorkerStrategy, StrategyError, StrategyErrorKind,
     },
     persistence::{
-        ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
+        insert_binance_aggregate_trades, ArtifactBatch, ArtifactRepository,
+        BinanceAggregateTradeWrite, GapRepository, NewCaptureArtifact, NewDataGap,
         ProfileRepository, StrategyDegradation, StrategyProgress,
     },
     runtime::{StrategyFactory, StrategyFactoryError},
@@ -42,7 +43,6 @@ pub const STRATEGY_KEY: IngesterStrategyKey =
 pub const CONFIG_SCHEMA_VERSION: i32 = 1;
 pub const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 
-const SOURCE: &str = "binance_spot";
 const SYMBOL: &str = "BTCUSDT";
 const DEFAULT_WEBSOCKET_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@aggTrade";
 const DEFAULT_REST_BASE_URL: &str = "https://data-api.binance.vision";
@@ -275,17 +275,17 @@ struct AggregateRunState {
 
 #[derive(Debug, Clone, PartialEq)]
 struct AggregateTrade {
-    aggregate_trade_id: i64,
-    trade_timestamp: DateTime<Utc>,
+    facts: BinanceAggregateTradeRecord,
     provider_available_at: Option<DateTime<Utc>>,
     received_at: DateTime<Utc>,
-    price: Decimal,
-    quantity: Decimal,
-    first_trade_id: i64,
-    last_trade_id: i64,
-    buyer_maker: bool,
-    best_match: bool,
-    payload_sha256: String,
+}
+
+impl std::ops::Deref for AggregateTrade {
+    type Target = BinanceAggregateTradeRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.facts
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -421,35 +421,23 @@ impl AggregateTrade {
         let price = positive_decimal(price, "price")?;
         let quantity = positive_decimal(quantity, "quantity")?;
         let mut trade = Self {
-            aggregate_trade_id,
-            trade_timestamp,
+            facts: BinanceAggregateTradeRecord {
+                symbol: SYMBOL.to_owned(),
+                aggregate_trade_id,
+                trade_timestamp,
+                price,
+                quantity,
+                first_trade_id,
+                last_trade_id,
+                buyer_maker,
+                best_match,
+                payload_sha256: String::new(),
+            },
             provider_available_at,
             received_at,
-            price,
-            quantity,
-            first_trade_id,
-            last_trade_id,
-            buyer_maker,
-            best_match,
-            payload_sha256: String::new(),
         };
-        trade.payload_sha256 = trade.factual_payload_sha256();
+        trade.facts.payload_sha256 = trade.facts.canonical_payload_sha256();
         Ok(trade)
-    }
-
-    fn factual_payload_sha256(&self) -> String {
-        let canonical = format!(
-            "v1|source={SOURCE}|symbol={SYMBOL}|aggregate_trade_id={}|trade_timestamp_ms={}|price={}|quantity={}|first_trade_id={}|last_trade_id={}|buyer_maker={}|best_match={}",
-            self.aggregate_trade_id,
-            self.trade_timestamp.timestamp_millis(),
-            canonical_decimal(&self.price),
-            canonical_decimal(&self.quantity),
-            self.first_trade_id,
-            self.last_trade_id,
-            self.buyer_maker,
-            self.best_match,
-        );
-        sha256_hex(canonical.as_bytes())
     }
 
     fn factual_eq(&self, existing: &StoredAggregateTrade) -> bool {
@@ -1233,40 +1221,16 @@ impl BinanceSpotAggregateTradesStrategy {
         if missing.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let mut builder = QueryBuilder::<Postgres>::new(
-            r#"
-            INSERT INTO market_data.binance_spot_btcusdt_aggregate_trades (
-              source, symbol, aggregate_trade_id, trade_timestamp,
-              provider_available_at, received_at, price, quantity,
-              first_trade_id, last_trade_id, buyer_maker, best_match,
-              payload_sha256, strategy_key, capture_artifact_id
-            )
-            "#,
-        );
-        builder.push_values(missing, |mut row, trade| {
-            row.push_bind(SOURCE)
-                .push_bind(SYMBOL)
-                .push_bind(trade.aggregate_trade_id)
-                .push_bind(trade.trade_timestamp)
-                .push_bind(trade.provider_available_at)
-                .push_bind(trade.received_at)
-                .push_bind(trade.price)
-                .push_bind(trade.quantity)
-                .push_bind(trade.first_trade_id)
-                .push_bind(trade.last_trade_id)
-                .push_bind(trade.buyer_maker)
-                .push_bind(trade.best_match)
-                .push_bind(&trade.payload_sha256)
-                .push_bind(STRATEGY_KEY.as_str())
-                .push_bind(artifact_id);
-        });
-        builder.push(
-            " ON CONFLICT (symbol, trade_timestamp, aggregate_trade_id) DO NOTHING \
-             RETURNING aggregate_trade_id",
-        );
-        let inserted = builder
-            .build_query_scalar::<i64>()
-            .fetch_all(&mut **transaction)
+        let writes = missing
+            .iter()
+            .map(|trade| BinanceAggregateTradeWrite {
+                record: &trade.facts,
+                provider_available_at: trade.provider_available_at,
+                received_at: trade.received_at,
+                capture_artifact_id: artifact_id,
+            })
+            .collect::<Vec<_>>();
+        let inserted = insert_binance_aggregate_trades(transaction, STRATEGY_KEY.as_str(), &writes)
             .await
             .map_err(|error| database_error("binance_aggregate_trade_fact_insert_failed", error))?;
         Ok(inserted.into_iter().collect())
@@ -1853,10 +1817,6 @@ fn canonical_decimal(value: &Decimal) -> String {
 fn hash_field(hasher: &mut Sha256, value: &str) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value.as_bytes());
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    digest_hex(Sha256::digest(bytes))
 }
 
 fn digest_hex(digest: impl AsRef<[u8]>) -> String {

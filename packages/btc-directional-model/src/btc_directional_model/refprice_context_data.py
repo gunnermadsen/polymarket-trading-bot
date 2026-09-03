@@ -61,7 +61,6 @@ SOURCE_RELATIONS = {
         "market_data.binance_futures_btcusdt_open_interest",
     ),
     "aggregate_trades": (
-        "polymarket.binance_aggregate_trades",
         "market_data.binance_spot_btcusdt_aggregate_trades",
     ),
     "spot_l2": ("polymarket.binance_spot_btcusdt_l2_training_features",),

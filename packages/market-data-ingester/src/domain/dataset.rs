@@ -2,6 +2,7 @@ use std::fmt;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceAggregateTradeRecord {
@@ -14,6 +15,25 @@ pub struct BinanceAggregateTradeRecord {
     pub trade_timestamp: DateTime<Utc>,
     pub buyer_maker: bool,
     pub best_match: bool,
+    pub payload_sha256: String,
+}
+
+impl BinanceAggregateTradeRecord {
+    pub fn canonical_payload_sha256(&self) -> String {
+        let payload = format!(
+            "v1|source=binance_spot|symbol={}|aggregate_trade_id={}|trade_timestamp_ms={}|price={}|quantity={}|first_trade_id={}|last_trade_id={}|buyer_maker={}|best_match={}",
+            self.symbol,
+            self.aggregate_trade_id,
+            self.trade_timestamp.timestamp_millis(),
+            self.price.normalize(),
+            self.quantity.normalize(),
+            self.first_trade_id,
+            self.last_trade_id,
+            self.buyer_maker,
+            self.best_match,
+        );
+        format!("{:x}", Sha256::digest(payload.as_bytes()))
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceOneSecondKlineRecord {

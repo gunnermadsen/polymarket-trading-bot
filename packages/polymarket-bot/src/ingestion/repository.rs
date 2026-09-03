@@ -2237,82 +2237,11 @@ impl IngestionRepository {
 
     pub async fn insert_aggregate_trade_batch(
         &self,
-        claim: &ClaimedJob,
-        artifact_id: Uuid,
-        records: &[BinanceAggregateTradeRecord],
+        _claim: &ClaimedJob,
+        _artifact_id: Uuid,
+        _records: &[BinanceAggregateTradeRecord],
     ) -> Result<BatchWriteResult> {
-        if records.is_empty() {
-            return Ok(BatchWriteResult::default());
-        }
-        if records.len() > MAX_DATABASE_BATCH_ROWS {
-            bail!("aggregate-trade batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
-        }
-        validate_aggregate_trade_batch(records)?;
-        let mut tx = self.pool.begin().await?;
-        require_active_lease(&mut tx, claim).await?;
-        require_writable_artifact(&mut tx, claim, artifact_id).await?;
-
-        let ids = records
-            .iter()
-            .map(|record| record.aggregate_trade_id)
-            .collect::<Vec<_>>();
-        let existing = sqlx::query_as::<_, ExistingAggregateTradeRow>(
-            r#"
-            SELECT symbol, trade_timestamp, aggregate_trade_id, price, quantity,
-              first_trade_id, last_trade_id, buyer_maker, best_match, artifact_id
-            FROM polymarket.binance_aggregate_trades
-            WHERE symbol = 'BTCUSDT' AND aggregate_trade_id = ANY($1)
-            "#,
-        )
-        .bind(&ids)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to inspect existing Binance aggregate trades")?;
-        for stored in &existing {
-            let candidate = records
-                .iter()
-                .find(|record| record.aggregate_trade_id == stored.aggregate_trade_id)
-                .context("stored aggregate-trade identity was absent from its candidate batch")?;
-            if !stored.same_as(candidate, artifact_id) {
-                bail!(
-                    "immutable Binance aggregate-trade conflict for {}:{}",
-                    stored.symbol,
-                    stored.aggregate_trade_id
-                );
-            }
-        }
-
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.binance_aggregate_trades (symbol, trade_timestamp, \
-             aggregate_trade_id, price, quantity, first_trade_id, last_trade_id, buyer_maker, \
-             best_match, artifact_id) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(&record.symbol)
-                .push_bind(record.trade_timestamp)
-                .push_bind(record.aggregate_trade_id)
-                .push_bind(record.price)
-                .push_bind(record.quantity)
-                .push_bind(record.first_trade_id)
-                .push_bind(record.last_trade_id)
-                .push_bind(record.buyer_maker)
-                .push_bind(record.best_match)
-                .push_bind(artifact_id);
-        });
-        query.push(" ON CONFLICT (symbol, trade_timestamp, aggregate_trade_id) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist Binance aggregate-trade batch")?
-            .rows_affected();
-        tx.commit().await?;
-        let input = u64::try_from(records.len()).context("aggregate-trade batch size overflow")?;
-        Ok(BatchWriteResult {
-            input_records: input,
-            inserted_records: inserted,
-            duplicate_records: input.saturating_sub(inserted),
-        })
+        bail!("legacy aggregate-trade persistence is retired; schedule the canonical ingester strategy")
     }
 
     pub async fn insert_one_second_kline_batch(
@@ -3382,8 +3311,10 @@ impl IngestionRepository {
               SELECT m.market_id,
                 EXISTS (
                   SELECT 1
-                  FROM polymarket.binance_aggregate_trades t
-                  JOIN polymarket.backfill_artifacts a USING (artifact_id)
+                  FROM market_data.binance_spot_btcusdt_aggregate_trades t
+                  JOIN ingester.capture_artifacts a
+                    ON a.strategy_key = t.strategy_key
+                   AND a.artifact_id = t.capture_artifact_id
                   WHERE t.symbol = 'BTCUSDT'
                     AND t.trade_timestamp >= m.window_start
                     AND t.trade_timestamp < m.window_end
@@ -3453,10 +3384,10 @@ impl IngestionRepository {
                   AND COALESCE(f.final_price, false)
                   AND c.kline_covered AND c.orderbook_covered
               )::bigint AS usable_markets,
-              (SELECT min(trade_timestamp) FROM polymarket.binance_aggregate_trades
+              (SELECT min(trade_timestamp) FROM market_data.binance_spot_btcusdt_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
                 AS aggregate_trade_min_timestamp,
-              (SELECT max(trade_timestamp) FROM polymarket.binance_aggregate_trades
+              (SELECT max(trade_timestamp) FROM market_data.binance_spot_btcusdt_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
                 AS aggregate_trade_max_timestamp,
               (SELECT min(open_timestamp) FROM polymarket.binance_one_second_klines
@@ -3770,35 +3701,6 @@ impl TryFrom<BtcResolutionCandidateRow> for BtcResolutionCandidate {
             official_winning_token_id: row.official_winning_token_id,
             official_resolved_at: row.official_resolved_at,
         })
-    }
-}
-
-#[derive(Debug, FromRow)]
-struct ExistingAggregateTradeRow {
-    symbol: String,
-    trade_timestamp: DateTime<Utc>,
-    aggregate_trade_id: i64,
-    price: Decimal,
-    quantity: Decimal,
-    first_trade_id: i64,
-    last_trade_id: i64,
-    buyer_maker: bool,
-    best_match: bool,
-    artifact_id: Uuid,
-}
-
-impl ExistingAggregateTradeRow {
-    fn same_as(&self, row: &BinanceAggregateTradeRecord, artifact_id: Uuid) -> bool {
-        self.symbol == row.symbol
-            && self.trade_timestamp == row.trade_timestamp
-            && self.aggregate_trade_id == row.aggregate_trade_id
-            && self.price == row.price
-            && self.quantity == row.quantity
-            && self.first_trade_id == row.first_trade_id
-            && self.last_trade_id == row.last_trade_id
-            && self.buyer_maker == row.buyer_maker
-            && self.best_match == row.best_match
-            && self.artifact_id == artifact_id
     }
 }
 
@@ -4384,26 +4286,6 @@ fn integer_json_field(value: &Value, keys: &[&str]) -> Option<i32> {
 
 fn bool_json_field(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| value.get(*key)?.as_bool())
-}
-
-fn validate_aggregate_trade_batch(records: &[BinanceAggregateTradeRecord]) -> Result<()> {
-    let mut previous_id = None;
-    for record in records {
-        if record.symbol != "BTCUSDT"
-            || record.aggregate_trade_id < 0
-            || record.first_trade_id < 0
-            || record.last_trade_id < record.first_trade_id
-            || record.price <= Decimal::ZERO
-            || record.quantity <= Decimal::ZERO
-        {
-            bail!("invalid Binance aggregate-trade record");
-        }
-        if previous_id.is_some_and(|previous| record.aggregate_trade_id <= previous) {
-            bail!("aggregate-trade batch identifiers must be strictly increasing");
-        }
-        previous_id = Some(record.aggregate_trade_id);
-    }
-    Ok(())
 }
 
 fn validate_kline_batch(records: &[BinanceOneSecondKlineRecord]) -> Result<()> {

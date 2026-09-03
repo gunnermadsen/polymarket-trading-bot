@@ -7,13 +7,14 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, QueryBuilder, Row, Transaction};
+use sqlx::{Postgres, Row, Transaction};
 
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRequest,
-    BackfillShard, BackfillWorkerStrategy, StrategyCapability, StrategyDescriptor,
-    ValidatedBackfillRequest,
+    BackfillShard, BackfillWorkerStrategy, BinanceAggregateTradeRecord, StrategyCapability,
+    StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::persistence::{insert_binance_aggregate_trades, BinanceAggregateTradeWrite};
 
 pub const STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades_backfill";
 const REALTIME_STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades";
@@ -282,17 +283,7 @@ struct WireTrade {
     best_match: bool,
 }
 
-struct Trade {
-    aggregate_trade_id: i64,
-    trade_timestamp: DateTime<Utc>,
-    price: Decimal,
-    quantity: Decimal,
-    first_trade_id: i64,
-    last_trade_id: i64,
-    buyer_maker: bool,
-    best_match: bool,
-    payload_sha256: String,
-}
+type Trade = BinanceAggregateTradeRecord;
 
 impl TryFrom<WireTrade> for Trade {
     type Error = BackfillExecutionError;
@@ -319,12 +310,8 @@ impl TryFrom<WireTrade> for Trade {
                 "invalid aggregate-trade values",
             ));
         }
-        let canonical = format!(
-            "v1|source={SOURCE}|symbol={SYMBOL}|aggregate_trade_id={}|trade_timestamp_ms={}|price={}|quantity={}|first_trade_id={}|last_trade_id={}|buyer_maker={}|best_match={}",
-            value.aggregate_trade_id, value.trade_time_ms, price.normalize(), quantity.normalize(),
-            value.first_trade_id, value.last_trade_id, value.buyer_maker, value.best_match,
-        );
-        Ok(Self {
+        let mut trade = Self {
+            symbol: SYMBOL.to_owned(),
             aggregate_trade_id: value.aggregate_trade_id,
             trade_timestamp,
             price,
@@ -333,8 +320,10 @@ impl TryFrom<WireTrade> for Trade {
             last_trade_id: value.last_trade_id,
             buyer_maker: value.buyer_maker,
             best_match: value.best_match,
-            payload_sha256: format!("{:x}", Sha256::digest(canonical.as_bytes())),
-        })
+            payload_sha256: String::new(),
+        };
+        trade.payload_sha256 = trade.canonical_payload_sha256();
+        Ok(trade)
     }
 }
 
@@ -408,30 +397,16 @@ async fn persist(
     .await
     .map_err(database_error)?;
     for chunk in trades.chunks(1_000) {
-        let mut builder = QueryBuilder::<Postgres>::new(
-            "INSERT INTO market_data.binance_spot_btcusdt_aggregate_trades (source,symbol,aggregate_trade_id,trade_timestamp,provider_available_at,received_at,price,quantity,first_trade_id,last_trade_id,buyer_maker,best_match,payload_sha256,strategy_key,capture_artifact_id) ",
-        );
-        builder.push_values(chunk, |mut row, trade| {
-            row.push_bind(SOURCE)
-                .push_bind(SYMBOL)
-                .push_bind(trade.aggregate_trade_id)
-                .push_bind(trade.trade_timestamp)
-                .push_bind(Option::<DateTime<Utc>>::None)
-                .push_bind(received_at)
-                .push_bind(trade.price)
-                .push_bind(trade.quantity)
-                .push_bind(trade.first_trade_id)
-                .push_bind(trade.last_trade_id)
-                .push_bind(trade.buyer_maker)
-                .push_bind(trade.best_match)
-                .push_bind(&trade.payload_sha256)
-                .push_bind(REALTIME_STRATEGY_KEY)
-                .push_bind(capture_artifact_id);
-        });
-        builder.push(" ON CONFLICT (symbol,trade_timestamp,aggregate_trade_id) DO NOTHING");
-        builder
-            .build()
-            .execute(&mut *tx)
+        let writes = chunk
+            .iter()
+            .map(|record| BinanceAggregateTradeWrite {
+                record,
+                provider_available_at: None,
+                received_at,
+                capture_artifact_id,
+            })
+            .collect::<Vec<_>>();
+        insert_binance_aggregate_trades(&mut tx, REALTIME_STRATEGY_KEY, &writes)
             .await
             .map_err(database_error)?;
     }

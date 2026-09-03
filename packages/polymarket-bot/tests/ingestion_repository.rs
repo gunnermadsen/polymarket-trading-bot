@@ -5,9 +5,9 @@ use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use polymarket_bot::ingestion::{
     job::{
         ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifactStatus,
-        BackfillJobStatus, BackfillJobSummary, BackfillRequest, BinanceAggregateTradeRecord,
-        BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, IngesterKey,
-        ValidatedBackfillRequest, WorkerControl, BACKFILL_REQUEST_VERSION,
+        BackfillJobStatus, BackfillJobSummary, BackfillRequest, BinanceL2OneSecondFeature,
+        BinanceOneSecondKlineRecord, IngesterKey, ValidatedBackfillRequest, WorkerControl,
+        BACKFILL_REQUEST_VERSION,
     },
     repository::IngestionRepository,
 };
@@ -214,70 +214,6 @@ async fn database_batches_are_bounded_and_idempotent() -> Result<()> {
     let outcome = async {
         assert_no_runnable_jobs(&pool).await?;
         let day_start = unique_day_start();
-
-        let aggregate_job = repository
-            .enqueue(&request(
-                IngesterKey::BinanceBtcusdtAggTrades,
-                day_start,
-                day_start + ChronoDuration::days(1),
-                format!("{tag}aggregate-job"),
-            )?)
-            .await?;
-        let aggregate_claim = repository
-            .claim_next(&format!("{tag}aggregate-worker"), ACTIVE_LEASE)
-            .await?
-            .context("worker did not claim the aggregate-trade test job")?;
-        ensure!(aggregate_claim.job.job_id == aggregate_job.job_id);
-        let aggregate_artifact = prepare_ingesting_artifact(
-            &repository,
-            &aggregate_claim,
-            IngesterKey::BinanceBtcusdtAggTrades,
-            &tag,
-            "aggregate",
-            day_start.date_naive(),
-        )
-        .await?;
-
-        let aggregate_id = unique_positive_i64();
-        let aggregate_records = vec![
-            aggregate_trade(aggregate_id, day_start + ChronoDuration::seconds(1)),
-            aggregate_trade(aggregate_id + 1, day_start + ChronoDuration::seconds(2)),
-        ];
-        let oversized = vec![aggregate_records[0].clone(); 4_001];
-        let oversized_error = repository
-            .insert_aggregate_trade_batch(
-                &aggregate_claim,
-                aggregate_artifact.artifact.artifact_id,
-                &oversized,
-            )
-            .await
-            .expect_err("a batch over the memory-boundary limit must fail");
-        ensure!(
-            oversized_error.to_string().contains("exceeds 4000 rows"),
-            "unexpected oversized-batch error: {oversized_error:#}"
-        );
-
-        let first_aggregate_write = repository
-            .insert_aggregate_trade_batch(
-                &aggregate_claim,
-                aggregate_artifact.artifact.artifact_id,
-                &aggregate_records,
-            )
-            .await?;
-        ensure!(first_aggregate_write.input_records == 2);
-        ensure!(first_aggregate_write.inserted_records == 2);
-        ensure!(first_aggregate_write.duplicate_records == 0);
-
-        let repeated_aggregate_write = repository
-            .insert_aggregate_trade_batch(
-                &aggregate_claim,
-                aggregate_artifact.artifact.artifact_id,
-                &aggregate_records,
-            )
-            .await?;
-        ensure!(repeated_aggregate_write.input_records == 2);
-        ensure!(repeated_aggregate_write.inserted_records == 0);
-        ensure!(repeated_aggregate_write.duplicate_records == 2);
 
         let kline_job = repository
             .enqueue(&request(
@@ -892,20 +828,6 @@ async fn prepare_spot_l2_ingesting_artifact(
         )
         .await?;
     Ok(prepared)
-}
-
-fn aggregate_trade(id: i64, timestamp: DateTime<Utc>) -> BinanceAggregateTradeRecord {
-    BinanceAggregateTradeRecord {
-        symbol: "BTCUSDT".to_string(),
-        aggregate_trade_id: id,
-        price: dec!(50000.25),
-        quantity: dec!(0.125),
-        first_trade_id: id,
-        last_trade_id: id,
-        trade_timestamp: timestamp,
-        buyer_maker: false,
-        best_match: true,
-    }
 }
 
 fn one_second_kline(open_timestamp: DateTime<Utc>) -> BinanceOneSecondKlineRecord {
