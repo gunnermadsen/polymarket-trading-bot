@@ -1064,13 +1064,29 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
             .get_mut("runtime")
             .and_then(serde_json::Value::as_object_mut)
         {
-            runtime.remove("clob_heartbeat_interval");
-            runtime.remove("rtds_heartbeat_interval");
-            runtime.remove("binance_heartbeat_interval");
-            runtime.remove("binance_ws_url");
-            runtime.remove("binance_spot_l2_enabled");
-            runtime.remove("binance_spot_l2_ws_url");
-            runtime.remove("binance_rest_base_url");
+            for retired_system_field in [
+                "gamma_base_url",
+                "clob_rest_base_url",
+                "clob_ws_url",
+                "rtds_ws_url",
+                "binance_ws_url",
+                "binance_rest_base_url",
+                "discovery_interval",
+                "reconnect_initial_delay",
+                "reconnect_max_delay",
+                "checkpoint_interval",
+                "boundary_tick_max_delay",
+                "official_resolution_audit_grace",
+                "official_resolution_watch_retention",
+                "writer_capacity",
+                "clob_heartbeat_interval",
+                "rtds_heartbeat_interval",
+                "binance_heartbeat_interval",
+                "binance_spot_l2_enabled",
+                "binance_spot_l2_ws_url",
+            ] {
+                runtime.remove(retired_system_field);
+            }
         }
         raw.remove("playbook_version");
         raw.remove("sources");
@@ -5937,6 +5953,10 @@ mod lifecycle_tests {
         ] {
             let mut durable = current.clone();
             for field in [
+                "gamma_base_url",
+                "clob_rest_base_url",
+                "clob_ws_url",
+                "rtds_ws_url",
                 "clob_heartbeat_interval",
                 "rtds_heartbeat_interval",
                 "binance_heartbeat_interval",
@@ -5944,6 +5964,14 @@ mod lifecycle_tests {
                 "binance_spot_l2_enabled",
                 "binance_spot_l2_ws_url",
                 "binance_rest_base_url",
+                "discovery_interval",
+                "reconnect_initial_delay",
+                "reconnect_max_delay",
+                "checkpoint_interval",
+                "boundary_tick_max_delay",
+                "official_resolution_audit_grace",
+                "official_resolution_watch_retention",
+                "writer_capacity",
             ] {
                 durable["raw"]["runtime"][field] = historical_value.clone();
             }
@@ -5962,7 +5990,8 @@ mod lifecycle_tests {
         durable["raw"]["runtime"]["clob_heartbeat_interval"] = serde_json::json!("ignored");
         durable["raw"]["runtime"]["rtds_heartbeat_interval"] = serde_json::json!(5);
         durable["raw"]["runtime"]["binance_heartbeat_interval"] = serde_json::json!(20);
-        durable["raw"]["runtime"]["writer_capacity"] = serde_json::json!(1);
+        durable["raw"]["runtime"]["strategy_interval"] =
+            serde_json::to_value(Duration::from_secs(1)).unwrap();
 
         assert_ne!(
             resume_process_contract_projection(current),
