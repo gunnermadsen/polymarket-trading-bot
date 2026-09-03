@@ -3323,133 +3323,12 @@
       "type": "barchart"
     },
     {
-      "datasource": {
-        "type": "datasource",
-        "uid": "grafana"
-      },
-      "description": "Lifetime net realized PnL for every BTC five-minute realtime-paper process, reusing the Process PnL, Runtime, and Settlement Status query result without another PostgreSQL query.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisLabel": "Net PnL (USD)",
-            "axisPlacement": "bottom",
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 15,
-        "w": 24,
-        "x": 0,
-        "y": 62
-      },
-      "id": 20,
-      "options": {
-        "barRadius": 0,
-        "barWidth": 0.9,
-        "fullHighlight": false,
-        "groupWidth": 0.7,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "showValue": "always",
-        "stacking": "none",
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        },
-        "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 0
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "datasource",
-            "uid": "grafana"
-          },
-          "panelId": 2,
-          "refId": "A"
-        }
-      ],
-      "title": "Lifetime Net Realized PnL by Trading Process",
-      "type": "barchart",
-      "transformations": [
-        {
-          "id": "filterFieldsByName",
-          "options": {
-            "include": {
-              "names": [
-                "Process Ranking",
-                "Lifetime Net Realized PnL"
-              ]
-            }
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {},
-            "includeByName": {},
-            "indexByName": {
-              "Process Ranking": 0,
-              "Lifetime Net Realized PnL": 1
-            },
-            "renameByName": {
-              "Process Ranking": "Process"
-            }
-          }
-        }
-      ]
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 62
       },
       "id": 28,
       "panels": [],
@@ -3544,7 +3423,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 63
       },
       "id": 29,
       "options": {
@@ -3676,7 +3555,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 63
       },
       "id": 30,
       "options": {
@@ -3826,7 +3705,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 63
       },
       "id": 31,
       "options": {
