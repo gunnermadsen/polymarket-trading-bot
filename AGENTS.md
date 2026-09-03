@@ -49,6 +49,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 ## Golden Image Admission and Promotion
 
 - The user may explicitly authorize minting a golden image from an exact integration commit and immutable image at any time. That instruction is sufficient promotion authorization and must not be delayed or refused because of an undefined waiting period, elapsed-time requirement, or missing operational evidence.
+- always deploy the golden images to containers after minting.
 - Operational validation may be performed and recorded when requested, but it is not a mandatory time-based gate unless the user explicitly defines one.
 - Before minting, verify the selected Git commit, immutable Docker image ID or registry digest, embedded source revision, and clean committed state. Record which tests and operational checks were performed and disclose known limitations.
 - Track the exact candidate tuple that was evaluated: Git commit, immutable Docker image ID or registry digest, embedded source revision, migration state, material runtime configuration, and model identity when applicable.
