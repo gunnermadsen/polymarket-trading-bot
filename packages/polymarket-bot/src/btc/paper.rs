@@ -1353,7 +1353,6 @@ mod tests {
                 BTC_DIRECTIONAL_MODEL_EXECUTION_GUARD_VERSION,
                 BTC_REFERENCE_EXECUTION_GUARD_VERSION,
             },
-            feeds::ClobMessage,
             strategy::{BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY, BTC_FEATURE_LINEAGE_VERSION},
             types::{BtcIntervalMarket, BtcOutcome, OrderbookLevel},
         },
@@ -1401,20 +1400,22 @@ mod tests {
     ) -> Arc<RwLock<BookRegistry>> {
         let mut registry = BookRegistry::new(Uuid::from_u128(100));
         registry.register_market(&market());
-        registry.apply(
-            ClobMessage::Book {
-                market_id: "market".to_string(),
-                token_id: "up".to_string(),
-                bids: vec![OrderbookLevel {
-                    price: dec!(0.39),
-                    size: dec!(100),
-                }],
-                asks,
-                source_timestamp: source_at,
-                source_hash: Some("book-hash".to_string()),
-            },
-            received_at,
-        );
+        registry
+            .apply_canonical_snapshot(
+                registry.connection_id(),
+                &market(),
+                "up",
+                BtcOutcome::Up,
+                source_at,
+                received_at,
+                1,
+                Some("book-hash".to_string()),
+                vec![(dec!(0.39), Decimal::from(100))],
+                asks.into_iter()
+                    .map(|level| (level.price, level.size))
+                    .collect(),
+            )
+            .unwrap();
         Arc::new(RwLock::new(registry))
     }
 

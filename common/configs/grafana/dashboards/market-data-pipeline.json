@@ -1,0 +1,92 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {"title": "Ingester health", "type": "link", "url": "/d/market-data-ingester-health", "targetBlank": false},
+    {"title": "Directional runtime", "type": "link", "url": "/d/directional-runtime-health", "targetBlank": false}
+  ],
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Data Pipeline Connection", "description": "Active direct gRPC connections from the bot to the worker that owns the selected products.", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max(polymarket_market_data_grpc_connections)", "instant": true, "legendFormat": "Active worker connections"}],
+      "fieldConfig": {"defaults": {"min": 0, "max": 8, "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Core Realtime Delivery Latency", "description": "Time from worker publication to application in the shared bot runtime. Source cadence is intentionally excluded.", "gridPos": {"x": 6, "y": 0, "w": 9, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"} * 1000", "instant": true, "legendFormat": "Polymarket order book"},
+        {"refId": "B", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"} * 1000", "instant": true, "legendFormat": "Chainlink reference price"},
+        {"refId": "C", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"} * 1000", "instant": true, "legendFormat": "Chainlink 60-second TWAP"},
+        {"refId": "D", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"} * 1000", "instant": true, "legendFormat": "Binance BTC/USDT 1-second candle"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 50}]}}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 3, "type": "stat", "title": "Integrity · Last Hour", "gridPos": {"x": 15, "y": 0, "w": 9, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))", "instant": true, "legendFormat": "Sequence gaps"},
+        {"refId": "B", "expr": "sum(increase(ingester_stream_dropped_total[1h]))", "instant": true, "legendFormat": "Dropped events"},
+        {"refId": "C", "expr": "sum(increase(polymarket_market_data_decode_errors_total[1h]))", "instant": true, "legendFormat": "Contract errors"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Pipeline Throughput", "gridPos": {"x": 0, "y": 5, "w": 14, "h": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (product) (rate(ingester_stream_published_total[2m]))", "legendFormat": "published · {{product}}"},
+        {"refId": "B", "expr": "sum by (product) (rate(polymarket_market_data_product_events_applied_total[2m]))", "legendFormat": "applied · {{product}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops", "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "mean"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Core Realtime Latency Trend", "description": "Worker publication to shared-runtime application latency for continuous model inputs.", "gridPos": {"x": 14, "y": 5, "w": 10, "h": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"} * 1000", "legendFormat": "Polymarket order book"},
+        {"refId": "B", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"} * 1000", "legendFormat": "Chainlink reference price"},
+        {"refId": "C", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"} * 1000", "legendFormat": "Chainlink 60-second TWAP"},
+        {"refId": "D", "expr": "polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"} * 1000", "legendFormat": "Binance BTC/USDT 1-second candle"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms", "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 50}]}, "custom": {"lineWidth": 2, "fillOpacity": 16, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "single", "sort": "none"}}
+    },
+    {
+      "id": 6, "type": "state-timeline", "title": "Product Demand and Delivery", "gridPos": {"x": 0, "y": 14, "w": 14, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "ingester_stream_subscribers", "legendFormat": "{{product}}"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Unused", "color": "gray"}, "1": {"text": "Subscribed", "color": "green"}}}], "custom": {"fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+      "options": {"alignValue": "left", "legend": {"displayMode": "list", "placement": "right", "showLegend": true}, "mergeValues": true, "rowHeight": 0.8, "showValue": "never", "tooltip": {"mode": "single", "sort": "none"}}
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Connection Stability", "gridPos": {"x": 14, "y": 14, "w": 10, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])", "legendFormat": "Reconnects / 15m"},
+        {"refId": "B", "expr": "increase(polymarket_market_data_duplicates_total[15m])", "legendFormat": "Deduplicated / 15m"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["market-data", "pipeline", "grpc", "trading-critical"],
+  "templating": {"list": []},
+  "time": {"from": "now-15m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Market Data Pipeline",
+  "uid": "market-data-pipeline",
+  "version": 2
+}

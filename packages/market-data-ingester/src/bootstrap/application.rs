@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
+use axum::{routing::get, Router};
 use sqlx::postgres::PgPoolOptions;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -10,6 +11,7 @@ use crate::{
     control::{ControlApi, ControlReadiness},
     persistence::ProfileRepository,
     runtime::{BackfillWorkerRuntime, StrategyRegistry, StrategySupervisor, SupervisorSettings},
+    streaming::Publisher,
 };
 
 use super::{shutdown_signal, BootstrapSettings, IngesterMode};
@@ -155,6 +157,7 @@ impl Application {
         let backfills =
             BackfillWorkerRuntime::from_environment(self.registry, self.strategy_pool.clone())?;
         let shutdown = CancellationToken::new();
+        let publisher = Publisher::install(self.settings.service_instance.clone());
         info!(service_instance=%self.settings.service_instance, "ingester worker starting");
         let mut components = JoinSet::new();
         let realtime_shutdown = shutdown.clone();
@@ -166,6 +169,42 @@ impl Application {
                     .await
                     .context("ingester realtime supervisor stopped"),
             )
+        });
+        let stream_shutdown = shutdown.clone();
+        let grpc_bind = self.settings.grpc_bind;
+        let stream_token = Arc::<str>::from(self.settings.admin_token.clone());
+        let stream_publisher = publisher.clone();
+        components.spawn(async move {
+            (
+                "market-data gRPC server",
+                stream_publisher
+                    .serve(grpc_bind, stream_token, stream_shutdown)
+                    .await
+                    .context("ingester market-data gRPC server stopped"),
+            )
+        });
+        let metrics_shutdown = shutdown.clone();
+        let metrics_bind = self.settings.worker_metrics_bind;
+        components.spawn(async move {
+            let metrics_publisher = publisher.clone();
+            let app = Router::new()
+                .route("/health/live", get(|| async { "ok\n" }))
+                .route(
+                    "/prometheus/metrics",
+                    get(move || {
+                        let publisher = metrics_publisher.clone();
+                        async move { publisher.render_metrics() }
+                    }),
+                );
+            let result = async {
+                let listener = tokio::net::TcpListener::bind(metrics_bind).await?;
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(metrics_shutdown.cancelled_owned())
+                    .await?;
+                Ok(())
+            }
+            .await;
+            ("worker telemetry API", result)
         });
         let backfill_shutdown = shutdown.clone();
         components.spawn(async move {

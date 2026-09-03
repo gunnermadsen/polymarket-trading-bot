@@ -4,7 +4,7 @@ Rust microservice for Polymarket negative-risk arbitrage scanning, execution-sta
 
 ## v1 scope
 
-- Direct Gamma/CLOB REST and CLOB WebSocket integration.
+- Selector-driven market data streamed directly from ingester workers over gRPC.
 - Dedicated BTC realtime-paper execution through `btc::paper::PaperVenue`.
 - Preserved authenticated Polymarket live-execution and reconciliation foundation.
 - Postgres persistence in the `polymarket` schema.

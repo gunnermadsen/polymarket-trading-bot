@@ -1,19 +1,15 @@
 use std::{env, fmt, time::Duration};
 
-use crate::btc::{BtcHeartbeatConfig, DirectionalExternalRuntimeConfig};
 use anyhow::{bail, Result};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub live: LiveExecutionConfig,
-    pub gamma_base_url: String,
     pub clob_base_url: String,
-    pub clob_ws_url: String,
     pub data_api_base_url: String,
     pub health_interval: Duration,
     pub postgres: PostgresConfig,
     pub http: HttpConfig,
-    pub btc: BtcConfig,
     pub grafana_live: GrafanaLiveConfig,
 }
 
@@ -45,15 +41,6 @@ impl fmt::Debug for GrafanaLiveConfig {
             )
             .finish()
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct BtcConfig {
-    pub rtds_ws_url: String,
-    pub binance_ws_url: String,
-    pub binance_rest_base_url: String,
-    pub data_source_heartbeat: BtcHeartbeatConfig,
-    pub directional_external: DirectionalExternalRuntimeConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -118,40 +105,6 @@ impl AppConfig {
             live.validate_for_live()?;
         }
 
-        let heartbeat_defaults = BtcHeartbeatConfig::default();
-        let btc = BtcConfig {
-            rtds_ws_url: env_or(
-                "POLYMARKET_BTC_RTDS_WS_URL",
-                "wss://ws-live-data.polymarket.com",
-            ),
-            binance_ws_url: env_or(
-                "POLYMARKET_BTC_BINANCE_WS_URL",
-                "wss://stream.binance.com/ws/btcusdt@aggTrade",
-            ),
-            binance_rest_base_url: env_or(
-                "POLYMARKET_BTC_BINANCE_REST_BASE_URL",
-                "https://data-api.binance.vision",
-            ),
-            data_source_heartbeat: BtcHeartbeatConfig {
-                clob_interval: parse_positive_duration_secs(
-                    "POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS",
-                    heartbeat_defaults.clob_interval.as_secs(),
-                )?,
-                clob_pong_timeout: parse_clob_pong_timeout_secs(
-                    "POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS",
-                    heartbeat_defaults.clob_pong_timeout.as_secs(),
-                )?,
-                rtds_interval: parse_positive_duration_secs(
-                    "POLYMARKET_BTC_RTDS_HEARTBEAT_INTERVAL_SECS",
-                    heartbeat_defaults.rtds_interval.as_secs(),
-                )?,
-                binance_interval: parse_positive_duration_secs(
-                    "POLYMARKET_BTC_BINANCE_HEARTBEAT_INTERVAL_SECS",
-                    heartbeat_defaults.binance_interval.as_secs(),
-                )?,
-            },
-            directional_external: DirectionalExternalRuntimeConfig::from_env()?,
-        };
         let grafana_live = GrafanaLiveConfig {
             enabled: parse_bool("POLYMARKET_GRAFANA_LIVE_ENABLED", false),
             push_url: env_or(
@@ -193,15 +146,7 @@ impl AppConfig {
         }
         Ok(Self {
             live,
-            gamma_base_url: env_or(
-                "POLYMARKET_GAMMA_BASE_URL",
-                "https://gamma-api.polymarket.com",
-            ),
             clob_base_url,
-            clob_ws_url: env_or(
-                "POLYMARKET_CLOB_WS_URL",
-                "wss://ws-subscriptions-clob.polymarket.com/ws/market",
-            ),
             data_api_base_url: env_or(
                 "POLYMARKET_DATA_API_BASE_URL",
                 "https://data-api.polymarket.com",
@@ -221,7 +166,6 @@ impl AppConfig {
                 bind: env_or("POLYMARKET_HTTP_BIND", "0.0.0.0:8097"),
                 admin_token: env_or("POLYMARKET_HTTP_ADMIN_TOKEN", "dev-polymarket-admin"),
             },
-            btc,
             grafana_live,
         })
     }
@@ -346,76 +290,4 @@ fn parse_u64(key: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-}
-
-fn parse_positive_duration_secs(key: &str, default: u64) -> Result<Duration> {
-    let value = env::var(key).ok().filter(|value| !value.trim().is_empty());
-    positive_duration_secs(key, value.as_deref(), default)
-}
-
-fn positive_duration_secs(key: &str, value: Option<&str>, default: u64) -> Result<Duration> {
-    bounded_positive_duration_secs(key, value, default, BtcHeartbeatConfig::MAX_INTERVAL_SECS)
-}
-
-fn parse_clob_pong_timeout_secs(key: &str, default: u64) -> Result<Duration> {
-    bounded_positive_duration_secs(
-        key,
-        env::var(key).ok().as_deref(),
-        default,
-        BtcHeartbeatConfig::MAX_CLOB_PONG_TIMEOUT_SECS,
-    )
-}
-
-fn bounded_positive_duration_secs(
-    key: &str,
-    value: Option<&str>,
-    default: u64,
-    maximum: u64,
-) -> Result<Duration> {
-    let seconds = match value {
-        Some(value) => match value.parse::<u64>() {
-            Ok(seconds) => seconds,
-            Err(_) => bail!("{key} must be a positive integer number of seconds"),
-        },
-        None => default,
-    };
-    if seconds == 0 || seconds > maximum {
-        bail!("{key} must be an integer between 1 and {maximum} seconds");
-    }
-    Ok(Duration::from_secs(seconds))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn heartbeat_intervals_parse_strictly_without_silent_fallbacks() {
-        let key = "POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS";
-        assert_eq!(
-            positive_duration_secs(key, None, 5).unwrap(),
-            Duration::from_secs(5)
-        );
-        assert_eq!(
-            positive_duration_secs(key, Some("7"), 5).unwrap(),
-            Duration::from_secs(7)
-        );
-        assert!(positive_duration_secs(key, Some("0"), 5).is_err());
-        assert!(positive_duration_secs(key, Some("invalid"), 5).is_err());
-        assert!(positive_duration_secs(key, Some("-1"), 5).is_err());
-        assert!(
-            positive_duration_secs(key, Some("31"), BtcHeartbeatConfig::MAX_INTERVAL_SECS).is_err()
-        );
-        assert_eq!(
-            parse_clob_pong_timeout_secs("POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS", 25).unwrap(),
-            Duration::from_secs(25)
-        );
-        assert!(bounded_positive_duration_secs(
-            "POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS",
-            Some("61"),
-            25,
-            BtcHeartbeatConfig::MAX_CLOB_PONG_TIMEOUT_SECS,
-        )
-        .is_err());
-    }
 }

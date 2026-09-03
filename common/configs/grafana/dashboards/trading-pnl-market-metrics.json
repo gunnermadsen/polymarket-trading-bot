@@ -189,6 +189,7 @@
           "refId": "A"
         }
       ],
+      "hideTimeOverride": true,
       "timeFrom": "5m",
       "title": "BTC 5-Minute Realtime Market",
       "type": "timeseries"
@@ -465,7 +466,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH resolved_decisions AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.outcome AS forecast_outcome,d.fair_probability,\n         m.official_outcome,m.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id=d.market_id\n  JOIN polymarket.orders o ON o.process_id=d.process_id\n   AND (o.client_order_id=COALESCE(d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',d.metadata#>>'{order_plan,orders,0,request,client_order_id}')::uuid\n     OR o.raw_payload#>>'{request,metadata,decision_id}'=d.decision_id::text)\n  WHERE d.process_id=(${process_id:sqlstring})::uuid AND d.execution_mode IN ('paper','live') AND d.action='buy'\n    AND d.outcome IN ('up','down') AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND EXISTS (SELECT 1 FROM polymarket.fills f WHERE f.order_id=o.order_id AND f.process_id=o.process_id\n      AND f.source IN ('paper','live') LIMIT 1)\n  ORDER BY d.decision_at DESC LIMIT 20\n), filled_orders AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n         d.fair_probability,d.official_outcome,d.official_winning_token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,BOOL_AND(f.source='live') AS is_live\n  FROM resolved_decisions d JOIN polymarket.fills f\n    ON f.order_id=d.order_id AND f.process_id=d.process_id AND f.source IN ('paper','live')\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,d.forecast_outcome,\n           d.fair_probability,d.official_outcome,d.official_winning_token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       CASE WHEN forecast_outcome='up' THEN fair_probability::double precision END AS \"UP\",\n       CASE WHEN forecast_outcome='down' THEN -fair_probability::double precision END AS \"DOWN\"\nFROM presentation ORDER BY decision_at DESC;",
+          "rawSql": "WITH candidate_decisions AS MATERIALIZED (\n  SELECT d.decision_at,\n         d.decision_id,\n         d.process_id,\n         d.outcome AS forecast_outcome,\n         d.fair_probability,\n         m.official_outcome,\n         m.official_winning_token_id,\n         COALESCE(\n           d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',\n           d.metadata#>>'{order_plan,orders,0,request,client_order_id}'\n         )::uuid AS client_order_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id = d.market_id\n  WHERE d.process_id = (${process_id:sqlstring})::uuid\n    AND d.execution_mode IN ('paper','live')\n    AND d.action = 'buy'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n), matched_orders AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id AND o.client_order_id = d.client_order_id\n  UNION\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id\n   AND o.raw_payload#>>'{request,metadata,decision_id}' = d.decision_id::text\n), filled_candidates AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n         d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees,\n         BOOL_AND(f.source='live') AS is_live\n  FROM matched_orders d\n  JOIN polymarket.fills f\n    ON f.order_id=d.order_id\n   AND f.process_id=d.process_id\n   AND f.source IN ('paper','live')\n   AND f.timestamp_utc >= $__timeFrom()::timestamptz\n   AND f.timestamp_utc >= d.decision_at\n   AND f.timestamp_utc <= $__timeTo()::timestamptz\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n           d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id\n), filled_orders AS MATERIALIZED (\n  SELECT * FROM filled_candidates ORDER BY decision_at DESC LIMIT 20\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e\n  JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       CASE WHEN forecast_outcome='up' THEN fair_probability::double precision END AS \"UP\",\n       CASE WHEN forecast_outcome='down' THEN -fair_probability::double precision END AS \"DOWN\"\nFROM presentation ORDER BY decision_at DESC;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2085,6 +2086,8 @@
           "refId": "A"
         }
       ],
+      "hideTimeOverride": true,
+      "timeFrom": "5m",
       "title": "5-Minute Market Countdown",
       "type": "stat"
     },
@@ -2282,7 +2285,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS time FROM bounds\n  UNION SELECT to_ts FROM bounds\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL AND m.official_resolution_received_at<=(SELECT to_ts FROM bounds)\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\nSELECT b.time,p.name||' ['||left(p.process_id::text,8)||']' AS metric,\n       COALESCE(SUM(r.net_pnl) FILTER(WHERE r.realized_at<=b.time),0)::double precision AS value\nFROM selected_process p JOIN buckets b ON b.time>=p.created_at\nLEFT JOIN realized r ON r.process_id=p.process_id AND r.realized_at<=b.time\nGROUP BY b.time,p.process_id,p.name ORDER BY b.time,metric;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), buckets AS MATERIALIZED (\n  SELECT generate_series(date_bin('5 minutes',from_ts,timestamptz '1970-01-01'),to_ts,interval '5 minutes') AS time FROM bounds\n  UNION SELECT to_ts FROM bounds\n), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL AND m.official_resolution_received_at<=(SELECT to_ts FROM bounds)\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), opening_balance AS (\n  SELECT r.process_id,SUM(r.net_pnl)::numeric AS opening_pnl\n  FROM realized r CROSS JOIN bounds b\n  WHERE r.realized_at<=date_bin('5 minutes',b.from_ts,timestamptz '1970-01-01')\n  GROUP BY r.process_id\n), bucket_deltas AS (\n  SELECT r.process_id,LEAST(\n           date_bin('5 minutes',r.realized_at,timestamptz '1970-01-01')\n           + CASE WHEN r.realized_at=date_bin('5 minutes',r.realized_at,timestamptz '1970-01-01')\n                  THEN interval '0' ELSE interval '5 minutes' END,\n           b.to_ts) AS time,\n         SUM(r.net_pnl)::numeric AS net_pnl\n  FROM realized r CROSS JOIN bounds b\n  WHERE r.realized_at>date_bin('5 minutes',b.from_ts,timestamptz '1970-01-01')\n    AND r.realized_at<=b.to_ts\n  GROUP BY r.process_id,2\n), series AS (\n  SELECT p.process_id,p.name,b.time,\n         COALESCE(o.opening_pnl,0::numeric)\n         + SUM(COALESCE(d.net_pnl,0::numeric)) OVER (\n             PARTITION BY p.process_id ORDER BY b.time ROWS UNBOUNDED PRECEDING\n           ) AS value\n  FROM selected_process p JOIN buckets b ON b.time>=p.created_at\n  LEFT JOIN opening_balance o USING(process_id)\n  LEFT JOIN bucket_deltas d ON d.process_id=p.process_id AND d.time=b.time\n)\nSELECT time,name||' ['||left(process_id::text,8)||']' AS metric,value::double precision\nFROM series ORDER BY time,metric;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2388,7 +2391,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH clock AS MATERIALIZED (SELECT now() AS at), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n),\ncurrent_entries AS MATERIALIZED (\n  SELECT e.* FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id CROSS JOIN clock c\n  WHERE m.window_start<=c.at AND m.window_end>c.at AND m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id=e.token_id AND checkpoint.integrity_status='ok' AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n            ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::double precision\n         AS \"Current Fresh Unrealized PnL\",COUNT(*) AS \"Current Market Entry Orders\" FROM marked;",
+          "rawSql": "WITH clock AS NOT MATERIALIZED (SELECT $__timeTo()::timestamptz AS at), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n),\ncurrent_entries AS MATERIALIZED (\n  SELECT e.* FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id CROSS JOIN clock c\n  WHERE m.window_start<=c.at AND m.window_end>c.at AND m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid FROM market_data.polymarket_btc_five_minute_orderbook_snapshots checkpoint\n    WHERE checkpoint.market_id=e.market_id AND checkpoint.token_id=e.token_id AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.sampled_at BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n            ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::double precision\n         AS \"Current Fresh Unrealized PnL\",COUNT(*) AS \"Current Market Entry Orders\" FROM marked;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2476,7 +2479,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\nSELECT COALESCE(SUM(net_pnl),0::numeric)::double precision AS \"Lifetime Net Realized PnL\" FROM realized;",
+          "rawSql": "WITH selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\nSELECT COALESCE(SUM(net_pnl),0::numeric)::double precision AS \"Lifetime Net Realized PnL\" FROM realized;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -2501,248 +2504,62 @@
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
+      "id": 21,
+      "type": "stat",
+      "title": "Data Pipeline Connection",
+      "description": "Current direct gRPC connection from the trading runtime to its owning ingester worker.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 41
       },
-      "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch, age of the most recent inbound frame, and source-to-receive market-data lag.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(polymarket_market_data_grpc_connections)",
+          "instant": true,
+          "legendFormat": "Active worker connections"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
+          "min": 0,
+          "max": 8,
           "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "red",
-                "value": 0
+                "value": null
               },
               {
                 "color": "green",
                 "value": 1
               }
             ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Socket Connection Epoch"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Socket"
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "from": 0,
-                      "result": {
-                        "color": "red",
-                        "index": 0,
-                        "text": "Disconnected"
-                      },
-                      "to": 0
-                    },
-                    "type": "range"
-                  },
-                  {
-                    "options": {
-                      "from": 1,
-                      "result": {
-                        "color": "green",
-                        "index": 1,
-                        "text": "Connected"
-                      },
-                      "to": 2147483647
-                    },
-                    "type": "range"
-                  }
-                ]
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Last Inbound Frame Age"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Inbound age"
-              },
-              {
-                "id": "unit",
-                "value": "ms"
-              },
-              {
-                "id": "mappings",
-                "value": []
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "orange",
-                      "value": 5000
-                    },
-                    {
-                      "color": "red",
-                      "value": 15000
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "noValue",
-                "value": "No inbound frame"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Source-to-Receive Lag"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Market-data lag"
-              },
-              {
-                "id": "unit",
-                "value": "ms"
-              },
-              {
-                "id": "mappings",
-                "value": []
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "orange",
-                      "value": 1000
-                    },
-                    {
-                      "color": "red",
-                      "value": 2000
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "noValue",
-                "value": "No book frame"
-              }
-            ]
           }
-        ]
+        },
+        "overrides": []
       },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 40
-      },
-      "id": 21,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
+        "colorMode": "background",
+        "graphMode": "none",
         "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
-              "text": "CLOB Socket Connection Epoch",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
-              "text": "CLOB Last Inbound Frame Age",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
-              "text": "CLOB Source-to-Receive Lag",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Socket Health",
-      "type": "stat"
+      }
     },
     {
       "datasource": {
@@ -2961,10 +2778,10 @@
         ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 19,
-        "x": 5,
-        "y": 41
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 46
       },
       "id": 2,
       "options": {
@@ -2972,12 +2789,33 @@
         "showHeader": true,
         "sortBy": [
           {
-            "desc": true,
-            "displayName": "Last Updated"
+            "desc": false,
+            "displayName": "Process"
           }
         ]
       },
       "pluginVersion": "12.4.2",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Enabled": true,
+              "Filled Orders": true,
+              "Freshly Priced Current Entries": true,
+              "Gross Realized PnL": true,
+              "Heartbeat Age": true,
+              "Last Heartbeat": true,
+              "Last Updated": true,
+              "ROI": true,
+              "Realized Fees": true,
+              "Resolved Positions": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -2987,7 +2825,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH clock AS MATERIALIZED (SELECT now() AS at), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.status,p.enabled,p.config,p.created_at,p.updated_at,p.heartbeat_at,p.stopped_at\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), fill_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS filled_orders,SUM(entry_cost)::numeric AS entry_notional,\n         SUM(entry_fees)::numeric AS entry_fees,MAX(filled_at) AS last_fill_at\n  FROM filled_orders GROUP BY process_id\n), realized_positions AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.exit_price*x.exit_size-e.entry_cost)::numeric AS gross_pnl,\n         (e.entry_fees+(x.exit_price*x.exit_size-x.net_proceeds))::numeric AS realized_fees,\n         (x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost)::numeric,\n         e.entry_fees,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), resolved_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS resolved_positions,SUM(gross_pnl)::numeric AS gross_realized_pnl,\n         SUM(realized_fees)::numeric AS realized_fees,SUM(net_pnl)::numeric AS realized_pnl,MAX(realized_at) AS last_realized_at\n  FROM realized_positions GROUP BY process_id\n), unresolved_entries AS MATERIALIZED (\n  SELECT e.*,m.window_start,m.window_end FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), current_entries AS MATERIALIZED (\n  SELECT u.* FROM unresolved_entries u CROSS JOIN clock c WHERE u.window_start<=c.at AND u.window_end>c.at\n), pending_settlements AS MATERIALIZED (\n  SELECT u.process_id,COUNT(*) AS awaiting_official_settlement,MIN(u.window_end) AS oldest_pending_settlement_at\n  FROM unresolved_entries u CROSS JOIN clock c WHERE u.window_end<=c.at GROUP BY u.process_id\n), marked_current AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid,checkpoint.source_timestamp FROM polymarket.orderbook_checkpoints checkpoint\n    WHERE checkpoint.token_id=e.token_id AND checkpoint.integrity_status='ok' AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), current_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS current_market_entries,COUNT(best_bid) AS current_freshly_priced,\n         COUNT(*)-COUNT(best_bid) AS current_unpriced_entries,\n         CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n              ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::numeric AS current_fresh_unrealized_pnl,\n         MAX(mark_at) AS latest_mark_at FROM marked_current GROUP BY process_id\n), metrics AS (\n  SELECT p.*,COALESCE(f.filled_orders,0) AS filled_orders,COALESCE(r.resolved_positions,0) AS resolved_positions,\n         COALESCE(x.current_market_entries,0) AS current_market_entries,COALESCE(x.current_freshly_priced,0) AS current_freshly_priced,\n         COALESCE(x.current_unpriced_entries,0) AS current_unpriced_entries,COALESCE(s.awaiting_official_settlement,0) AS awaiting_official_settlement,\n         CASE WHEN s.oldest_pending_settlement_at IS NULL THEN NULL ELSE EXTRACT(epoch FROM c.at-s.oldest_pending_settlement_at)::bigint END AS oldest_pending_settlement_age_seconds,\n         COALESCE(r.gross_realized_pnl,0)::numeric AS gross_realized_pnl,COALESCE(r.realized_fees,0)::numeric AS realized_fees,\n         COALESCE(r.realized_pnl,0)::numeric AS realized_pnl,\n         CASE WHEN COALESCE(x.current_market_entries,0)=0 THEN 0::numeric ELSE x.current_fresh_unrealized_pnl END::numeric AS current_fresh_unrealized_pnl,\n         x.latest_mark_at,GREATEST(p.updated_at,COALESCE(f.last_fill_at,p.updated_at),COALESCE(r.last_realized_at,p.updated_at),\n           COALESCE(x.latest_mark_at,p.updated_at)) AS last_updated,\n         CASE WHEN p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}')::numeric END AS starting_collateral\n  FROM selected_process p CROSS JOIN clock c LEFT JOIN fill_stats f USING(process_id) LEFT JOIN resolved_stats r USING(process_id)\n  LEFT JOIN current_pnl x USING(process_id) LEFT JOIN pending_settlements s USING(process_id)\n), presentation AS (\n  SELECT *,CASE WHEN awaiting_official_settlement>0 OR current_unpriced_entries>0 THEN NULL::numeric\n                ELSE realized_pnl+COALESCE(current_fresh_unrealized_pnl,0)::numeric END AS total_pnl FROM metrics\n)\nSELECT name AS \"Process\",left(process_id::text,8) AS \"Process ID\",status AS \"Status\",\n       current_market_entries AS \"Current Market Entries\",awaiting_official_settlement AS \"Awaiting Official Settlement\",\n       current_fresh_unrealized_pnl::double precision AS \"Current Fresh Unrealized PnL\",total_pnl::double precision AS \"Total PnL\",\n       oldest_pending_settlement_age_seconds AS \"Oldest Pending Settlement Age\",current_freshly_priced AS \"Freshly Priced Current Entries\",\n       current_unpriced_entries AS \"Unpriced Current Entries\",realized_pnl::double precision AS \"Lifetime Net Realized PnL\",\n       gross_realized_pnl::double precision AS \"Gross Realized PnL\",realized_fees::double precision AS \"Realized Fees\",\n       CASE WHEN starting_collateral>0 AND total_pnl IS NOT NULL THEN (total_pnl/starting_collateral)::double precision END AS \"ROI\",\n       enabled AS \"Enabled\",heartbeat_at AS \"Last Heartbeat\",EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,updated_at))::bigint AS \"Heartbeat Age\",\n       last_updated AS \"Last Updated\",filled_orders AS \"Filled Orders\",resolved_positions AS \"Resolved Positions\"\nFROM presentation ORDER BY last_updated DESC,name;",
+          "rawSql": "WITH clock AS NOT MATERIALIZED (SELECT $__timeTo()::timestamptz AS at), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.status,p.enabled,p.config,p.created_at,p.updated_at,p.heartbeat_at,p.stopped_at\n  FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), fill_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS filled_orders,SUM(entry_cost)::numeric AS entry_notional,\n         SUM(entry_fees)::numeric AS entry_fees,MAX(filled_at) AS last_fill_at\n  FROM filled_orders GROUP BY process_id\n), realized_positions AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.exit_price*x.exit_size-e.entry_cost)::numeric AS gross_pnl,\n         (e.entry_fees+(x.exit_price*x.exit_size-x.net_proceeds))::numeric AS realized_fees,\n         (x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost)::numeric,\n         e.entry_fees,\n         (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), resolved_stats AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS resolved_positions,SUM(gross_pnl)::numeric AS gross_realized_pnl,\n         SUM(realized_fees)::numeric AS realized_fees,SUM(net_pnl)::numeric AS realized_pnl,MAX(realized_at) AS last_realized_at\n  FROM realized_positions GROUP BY process_id\n), unresolved_entries AS MATERIALIZED (\n  SELECT e.*,m.window_start,m.window_end FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), current_entries AS MATERIALIZED (\n  SELECT u.* FROM unresolved_entries u CROSS JOIN clock c WHERE u.window_start<=c.at AND u.window_end>c.at\n), pending_settlements AS MATERIALIZED (\n  SELECT u.process_id,COUNT(*) AS awaiting_official_settlement,MIN(u.window_end) AS oldest_pending_settlement_at\n  FROM unresolved_entries u CROSS JOIN clock c WHERE u.window_end<=c.at GROUP BY u.process_id\n), marked_current AS MATERIALIZED (\n  SELECT e.*,mark.best_bid,mark.source_timestamp AS mark_at FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid,checkpoint.source_timestamp FROM market_data.polymarket_btc_five_minute_orderbook_snapshots checkpoint\n    WHERE checkpoint.market_id=e.market_id AND checkpoint.token_id=e.token_id AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.sampled_at BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n), current_pnl AS MATERIALIZED (\n  SELECT process_id,COUNT(*) AS current_market_entries,COUNT(best_bid) AS current_freshly_priced,\n         COUNT(*)-COUNT(best_bid) AS current_unpriced_entries,\n         CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n              ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::numeric AS current_fresh_unrealized_pnl,\n         MAX(mark_at) AS latest_mark_at FROM marked_current GROUP BY process_id\n), metrics AS (\n  SELECT p.*,COALESCE(f.filled_orders,0) AS filled_orders,COALESCE(r.resolved_positions,0) AS resolved_positions,\n         COALESCE(x.current_market_entries,0) AS current_market_entries,COALESCE(x.current_freshly_priced,0) AS current_freshly_priced,\n         COALESCE(x.current_unpriced_entries,0) AS current_unpriced_entries,COALESCE(s.awaiting_official_settlement,0) AS awaiting_official_settlement,\n         CASE WHEN s.oldest_pending_settlement_at IS NULL THEN NULL ELSE EXTRACT(epoch FROM c.at-s.oldest_pending_settlement_at)::bigint END AS oldest_pending_settlement_age_seconds,\n         COALESCE(r.gross_realized_pnl,0)::numeric AS gross_realized_pnl,COALESCE(r.realized_fees,0)::numeric AS realized_fees,\n         COALESCE(r.realized_pnl,0)::numeric AS realized_pnl,\n         CASE WHEN COALESCE(x.current_market_entries,0)=0 THEN 0::numeric ELSE x.current_fresh_unrealized_pnl END::numeric AS current_fresh_unrealized_pnl,\n         x.latest_mark_at,GREATEST(p.updated_at,COALESCE(f.last_fill_at,p.updated_at),COALESCE(r.last_realized_at,p.updated_at),\n           COALESCE(x.latest_mark_at,p.updated_at)) AS last_updated,\n         CASE WHEN p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}'~'^[0-9]+([.][0-9]+)?$'\n              THEN (p.config#>>'{raw,btc_realtime_paper,paper,starting_collateral_usd}')::numeric END AS starting_collateral\n  FROM selected_process p CROSS JOIN clock c LEFT JOIN fill_stats f USING(process_id) LEFT JOIN resolved_stats r USING(process_id)\n  LEFT JOIN current_pnl x USING(process_id) LEFT JOIN pending_settlements s USING(process_id)\n), presentation AS (\n  SELECT *,CASE WHEN awaiting_official_settlement>0 OR current_unpriced_entries>0 THEN NULL::numeric\n                ELSE realized_pnl+COALESCE(current_fresh_unrealized_pnl,0)::numeric END AS total_pnl FROM metrics\n)\nSELECT name AS \"Process\",left(process_id::text,8) AS \"Process ID\",status AS \"Status\",\n       current_market_entries AS \"Current Market Entries\",awaiting_official_settlement AS \"Awaiting Official Settlement\",\n       current_fresh_unrealized_pnl::double precision AS \"Current Fresh Unrealized PnL\",total_pnl::double precision AS \"Total PnL\",\n       oldest_pending_settlement_age_seconds AS \"Oldest Pending Settlement Age\",current_freshly_priced AS \"Freshly Priced Current Entries\",\n       current_unpriced_entries AS \"Unpriced Current Entries\",realized_pnl::double precision AS \"Lifetime Net Realized PnL\",\n       gross_realized_pnl::double precision AS \"Gross Realized PnL\",realized_fees::double precision AS \"Realized Fees\",\n       CASE WHEN starting_collateral>0 AND total_pnl IS NOT NULL THEN (total_pnl/starting_collateral)::double precision END AS \"ROI\",\n       enabled AS \"Enabled\",heartbeat_at AS \"Last Heartbeat\",EXTRACT(epoch FROM now()-COALESCE(heartbeat_at,updated_at))::bigint AS \"Heartbeat Age\",\n       last_updated AS \"Last Updated\",filled_orders AS \"Filled Orders\",resolved_positions AS \"Resolved Positions\"\nFROM presentation ORDER BY last_updated DESC,name;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -3012,188 +2850,136 @@
       "type": "table"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
+      "id": 23,
+      "type": "stat",
+      "title": "Pipeline Errors · Last Hour",
+      "description": "Delivery sequence gaps, dropped worker events, and data-contract decode errors observed during the last hour.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 41
       },
-      "description": "Current consecutive CLOB websocket connection failures. Zero is normal; a non-zero value indicates the active connection/recovery cycle is failing repeatedly.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))",
+          "instant": true,
+          "legendFormat": "Sequence gaps"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(ingester_stream_dropped_total[1h]))",
+          "instant": true,
+          "legendFormat": "Dropped events"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(increase(polymarket_market_data_decode_errors_total[1h]))",
+          "instant": true,
+          "legendFormat": "Contract errors"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 1
+                "value": null
               },
               {
                 "color": "red",
-                "value": 3
+                "value": 1
               }
             ]
-          },
-          "unit": "none"
+          }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 0,
-        "y": 45
-      },
-      "id": 23,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
+        "graphMode": "none",
         "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_consecutive_failures",
-              "text": "CLOB Consecutive Failures",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Consecutive Failures",
-      "type": "stat"
+      }
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
+      "id": 22,
+      "type": "stat",
+      "title": "Data Delivery Latency",
+      "description": "Slowest current worker-publish to trading-runtime apply latency across the core realtime trading feeds.",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 41
       },
-      "description": "Most recent correlated ping/pong round-trip time for the Polymarket CLOB websocket. Ordinary inbound market-data frames also prove socket liveness, so a missing value does not mean the socket is disconnected.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1000 * max(polymarket_market_data_product_publish_apply_latency_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"})",
+          "instant": true,
+          "legendFormat": "Slowest core realtime stream"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "No correlated PONG sample",
+          "unit": "ms",
+          "decimals": 1,
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": 0
+                "value": null
               },
               {
-                "color": "orange",
-                "value": 500
+                "color": "yellow",
+                "value": 25
               },
               {
                 "color": "red",
-                "value": 1000
+                "value": 100
               }
             ]
-          },
-          "unit": "ms"
+          }
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 3,
-        "y": 45
-      },
-      "id": 22,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "center",
         "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_pong_round_trip_milliseconds",
-              "text": "CLOB Pong RTT",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Pong RTT",
-      "type": "stat"
+      }
     },
     {
       "datasource": {
@@ -3250,7 +3036,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 55
       },
       "id": 24,
       "options": {
@@ -3285,7 +3071,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), selected_process AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\n, ranged AS (SELECT r.* FROM realized r CROSS JOIN bounds b WHERE r.realized_at BETWEEN b.from_ts AND b.to_ts)\n, realized_by_day AS (\n  SELECT date_trunc('day',realized_at AT TIME ZONE 'UTC') AS utc_day,SUM(net_pnl)::numeric AS net_pnl FROM ranged GROUP BY 1\n)\nSELECT to_char(utc_day,'YYYY-MM-DD') AS \"Day\",net_pnl::double precision AS \"Daily Net Realized PnL\"\nFROM realized_by_day ORDER BY utc_day;",
+          "rawSql": "WITH bounds AS MATERIALIZED (\n  SELECT $__timeFrom()::timestamptz AS from_ts,$__timeTo()::timestamptz AS to_ts\n), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\n, ranged AS (SELECT r.* FROM realized r CROSS JOIN bounds b WHERE r.realized_at BETWEEN b.from_ts AND b.to_ts)\n, realized_by_day AS (\n  SELECT date_trunc('day',realized_at AT TIME ZONE 'UTC') AS utc_day,SUM(net_pnl)::numeric AS net_pnl FROM ranged GROUP BY 1\n)\nSELECT to_char(utc_day,'YYYY-MM-DD') AS \"Day\",net_pnl::double precision AS \"Daily Net Realized PnL\"\nFROM realized_by_day ORDER BY utc_day;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -3311,574 +3097,201 @@
       "type": "barchart"
     },
     {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Lifetime net realized PnL for every BTC five-minute realtime-paper process. Recognized manual live exits use actual net proceeds; other filled entries use official settlement economics.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisLabel": "Net PnL (USD)",
-            "axisPlacement": "bottom",
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 15,
-        "w": 24,
-        "x": 0,
-        "y": 62
-      },
-      "id": 20,
-      "options": {
-        "barRadius": 0,
-        "barWidth": 0.9,
-        "fullHighlight": false,
-        "groupWidth": 0.7,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "showValue": "always",
-        "stacking": "none",
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        },
-        "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 0
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), selected_process AS MATERIALIZED (SELECT * FROM eligible_processes),\nfilled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), realized_by_process AS (\n  SELECT process_id,SUM(net_pnl)::numeric AS net_pnl FROM realized GROUP BY process_id\n)\nSELECT p.name||' ['||left(p.process_id::text,8)||']' AS \"Process\",\n       COALESCE(r.net_pnl,0::numeric)::double precision AS \"Lifetime Net Realized PnL\"\nFROM eligible_processes p LEFT JOIN realized_by_process r USING(process_id)\nORDER BY COALESCE(r.net_pnl,0::numeric) DESC,p.created_at DESC,p.process_id;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Lifetime Net Realized PnL by Trading Process",
-      "type": "barchart"
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 68
       },
       "id": 28,
       "panels": [],
-      "title": "CLOB Failure Diagnostics",
+      "title": "Data Pipeline Diagnostics",
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Backpressure evidence from the single active CLOB market stream. Queue depth and dwell expose local processing delay; overflows prove frame loss at ingress.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 10
-              },
-              {
-                "color": "red",
-                "value": 100
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last queue dwell"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "ms"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Max queue dwell"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "ms"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Ingress overflows"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "red",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
+      "id": 29,
+      "type": "timeseries",
+      "title": "Pipeline Throughput",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 69
       },
-      "id": 29,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "pluginVersion": "12.4.2",
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_ingress_queue_depth",
-              "text": "Queue depth",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_ingress_queue_dwell_milliseconds",
-              "text": "Last queue dwell",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_max_ingress_queue_dwell_milliseconds",
-              "text": "Max queue dwell",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_ingress_overflows",
-              "text": "Ingress overflows",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "sum by (product) (rate(ingester_stream_published_total[2m]))",
+          "legendFormat": "published · {{product}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (product) (rate(polymarket_market_data_product_events_applied_total[2m]))",
+          "legendFormat": "applied · {{product}}"
         }
       ],
-      "title": "CLOB Ingress Backpressure",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Heartbeat scheduling and acknowledgement evidence for the single active CLOB market stream. Scheduler lateness distinguishes local runtime stalls from remote transport behavior.",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 100
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Heartbeat probes"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Heartbeat acknowledgements"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              }
-            ]
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never"
           }
-        ]
+        },
+        "overrides": []
       },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Realtime Delivery Latency",
+      "description": "Latest worker-publish to trading-runtime apply latency for each subscribed realtime product. This measures delivery, not provider update cadence or Prometheus scrape age.",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 69
       },
-      "id": 30,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "pluginVersion": "12.4.2",
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_heartbeat_send_lateness_milliseconds",
-              "text": "Last send lateness",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_max_heartbeat_send_lateness_milliseconds",
-              "text": "Max send lateness",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_heartbeat_probes",
-              "text": "Heartbeat probes",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_heartbeat_acknowledgements",
-              "text": "Heartbeat acknowledgements",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"}",
+          "instant": true,
+          "legendFormat": "Polymarket order book"
+        },
+        {
+          "refId": "B",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"}",
+          "instant": true,
+          "legendFormat": "Chainlink reference price"
+        },
+        {
+          "refId": "C",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"}",
+          "instant": true,
+          "legendFormat": "Chainlink 60-second TWAP"
+        },
+        {
+          "refId": "D",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}",
+          "instant": true,
+          "legendFormat": "Binance BTC/USDT 1-second candle"
         }
       ],
-      "title": "CLOB Heartbeat Scheduling",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Connection lifecycle counters and the most recent disconnect reason for the single active CLOB market stream.",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "No disconnect observed",
+          "unit": "ms",
+          "decimals": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": 0
+                "value": null
               },
               {
-                "color": "orange",
-                "value": 1
+                "color": "yellow",
+                "value": 25
               },
               {
                 "color": "red",
-                "value": 3
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last disconnect reason"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed-color"
-                }
-              },
-              {
-                "id": "color.fixedColor",
-                "value": "orange"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Connection epoch"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
+                "value": 100
               }
             ]
           }
-        ]
+        },
+        "overrides": []
       },
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 78
-      },
-      "id": 31,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
+        "graphMode": "none",
         "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Connection Stability",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 69
       },
-      "pluginVersion": "12.4.2",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
-              "text": "Connection epoch",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_connections_established",
-              "text": "Connections established",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_transport_disconnects",
-              "text": "Transport disconnects",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_consecutive_failures",
-              "text": "Consecutive failures",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_last_disconnect_reason",
-              "text": "Last disconnect reason",
-              "type": "string"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])",
+          "legendFormat": "Reconnects / 15m"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(polymarket_market_data_duplicates_total[15m])",
+          "legendFormat": "Deduplicated / 15m"
         }
       ],
-      "title": "CLOB Connection Failure Evidence",
-      "type": "stat"
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ],
   "preload": false,
@@ -3945,6 +3358,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 174,
+  "version": 177,
   "weekStart": ""
 }

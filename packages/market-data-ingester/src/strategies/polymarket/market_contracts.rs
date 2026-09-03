@@ -172,7 +172,7 @@ pub(super) enum BtcOutcome {
     Down,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct MarketContract {
     pub(super) event_id: String,
     pub(super) event_slug: String,
@@ -643,6 +643,19 @@ impl PolymarketBtcFiveMinuteMarketContractsStrategy {
             transient: transient_gaps,
             absent: absent_gaps,
         };
+        for contract in &contracts {
+            crate::streaming::publish(
+                STRATEGY_KEY.as_str(),
+                contract.market_id.clone(),
+                contract.window_start,
+                contract.received_at,
+                contract.received_at,
+                contract.payload_sha256.clone(),
+                true,
+                contract,
+            )
+            .await;
+        }
         self.persist_cycle(
             state,
             &normal_contracts,

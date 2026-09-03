@@ -211,6 +211,8 @@ services:
     environment:
       <<: *ingester-environment
       INGESTER_MODE: "worker"
+      INGESTER_GRPC_BIND: "0.0.0.0:50051"
+      INGESTER_WORKER_METRICS_BIND: "0.0.0.0:8099"
       MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "1"
       INGESTER_MASTER_URL: "http://ingester-master:8098"
       INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-default}"
@@ -264,9 +266,12 @@ services:
       - *app-env-file
       - *postgres-env-file
       - *grafana-env-file
+      - path: ./.env.market-data-ingester
+        required: true
     environment:
       RUST_LOG: "info"
       TOKIO_WORKER_THREADS: "2"
+      INGESTER_MASTER_URL: "http://ingester-master:8098"
       POSTGRES_HOST: "pgbouncer"
       POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
@@ -279,23 +284,8 @@ services:
       POLYMARKET_LIVE_USER_WS_STALE_SECS: "20"
       POLYMARKET_LIVE_RECONCILE_INTERVAL_SECS: "30"
       POLYMARKET_LIVE_STALE_RECONCILE_SECS: "60"
-      POLYMARKET_BTC_RTDS_WS_URL: "wss://ws-live-data.polymarket.com"
-      POLYMARKET_BTC_BINANCE_WS_URL: "wss://stream.binance.com/ws/btcusdt@aggTrade"
-      POLYMARKET_BTC_BINANCE_REST_BASE_URL: "https://data-api.binance.vision"
-      POLYMARKET_BTC_DIRECTIONAL_EXTERNAL_ENABLED: "true"
-      POLYMARKET_BTC_POLYGON_ORACLE_POLL_MS: "2000"
-      POLYMARKET_BTC_BINANCE_OI_POLL_MS: "60000"
-      POLYMARKET_BINANCE_FUTURES_DATA_BASE_URL: "https://fapi.binance.com"
       POLYMARKET_POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
-      POLYMARKET_POLYGON_RPC_FALLBACK_URL: "${POLYMARKET_POLYGON_RPC_FALLBACK_URL:-https://polygon.drpc.org}"
-      POLYMARKET_POLYGON_CHAINLINK_BTCUSD_PROXY: "0xc907e116054ad103354f2d350fd2514433d57f6f"
-      POLYMARKET_BTC_CLOB_HEARTBEAT_INTERVAL_SECS: "10"
-      POLYMARKET_BTC_CLOB_PONG_TIMEOUT_SECS: "25"
-      POLYMARKET_BTC_RTDS_HEARTBEAT_INTERVAL_SECS: "5"
-      POLYMARKET_BTC_BINANCE_HEARTBEAT_INTERVAL_SECS: "20"
-      POLYMARKET_GAMMA_BASE_URL: "https://gamma-api.polymarket.com"
       POLYMARKET_CLOB_BASE_URL: "https://clob.polymarket.com"
-      POLYMARKET_CLOB_WS_URL: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
       POLYMARKET_DATA_API_BASE_URL: "https://data-api.polymarket.com"
       POLYMARKET_HEALTH_INTERVAL_SECS: "30"
       POLYMARKET_HTTP_ENABLED: "true"

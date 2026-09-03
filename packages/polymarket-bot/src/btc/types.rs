@@ -221,6 +221,23 @@ impl BinanceOneSecondWindow {
         Ok(window)
     }
 
+    pub fn observe_completed(&mut self, kline: BinanceOneSecondKline) -> Result<()> {
+        validate_binance_one_second_kline(&kline)?;
+        if let Some(previous) = self.completed.back() {
+            if kline.open_timestamp == previous.open_timestamp {
+                return Ok(());
+            }
+            if kline.open_timestamp < previous.close_timestamp {
+                bail!("Binance one-second kline regressed");
+            }
+            if kline.open_timestamp > previous.close_timestamp {
+                bail!("Binance one-second kline stream is not contiguous");
+            }
+        }
+        self.current = None;
+        self.push_completed(kline)
+    }
+
     pub fn current(&self) -> Option<&BinanceOneSecondKline> {
         self.current.as_ref()
     }
@@ -652,7 +669,7 @@ pub struct OrderbookCheckpoint {
 pub struct BookReadiness {
     pub market_id: String,
     pub token_id: String,
-    /// Current CLOB websocket epoch. A book is never reusable across epochs.
+    /// Current market-data stream epoch. A book is never reusable across epochs.
     pub connection_id: Uuid,
     pub bootstrapped: bool,
     pub integrity_status: FeedIntegrityStatus,

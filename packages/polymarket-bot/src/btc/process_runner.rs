@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    str::FromStr,
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -1888,18 +1889,18 @@ impl BtcProcessRunner {
                 (observed_at, None, None)
             };
         self.schedule_shadow_predictive_regime_refresh(&market.market_id, observed_at);
-        let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
         let mut inputs = if directional_selection.is_some() {
-            self.repository
-                .load_directional_model_execution_inputs(
-                    market,
-                    observed_at,
-                    chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
-                    chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
-                    clob_connection_id,
-                )
-                .await?
+            let books = self.book_registry.read().await;
+            directional_model_execution_inputs_from_runtime(
+                &observation.state,
+                &books,
+                market,
+                observed_at,
+                chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
+                chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
+            )?
         } else {
+            let clob_connection_id = observation_clob_connection_id(market, &observation.readiness);
             self.repository
                 .load_point_in_time_inputs(
                     market,
@@ -3349,6 +3350,73 @@ fn build_snapshot(
             binance_history: input_window_lineage(&inputs.binance_history),
         },
     }
+}
+
+fn directional_model_execution_inputs_from_runtime(
+    state: &RealtimeState,
+    books: &BookRegistry,
+    market: &BtcIntervalMarket,
+    as_of: DateTime<Utc>,
+    max_reference_age: chrono::Duration,
+    max_book_age: chrono::Duration,
+) -> Result<BtcPointInTimeInputs> {
+    ensure!(
+        max_reference_age > chrono::Duration::zero() && max_book_age > chrono::Duration::zero(),
+        "directional-model runtime input freshness bounds must be positive"
+    );
+    let reference_fresh_since = as_of
+        .checked_sub_signed(max_reference_age)
+        .context("directional-model reference freshness bound is outside the timestamp range")?;
+    let book_fresh_since = as_of
+        .checked_sub_signed(max_book_age)
+        .context("directional-model book freshness bound is outside the timestamp range")?;
+
+    let binance = state
+        .reference_prices
+        .get(&ReferencePriceSource::DirectBinance)
+        .filter(|tick| {
+            tick.source_timestamp >= reference_fresh_since
+                && tick.source_timestamp <= as_of
+                && tick.received_at >= reference_fresh_since
+                && tick.received_at <= as_of
+        })
+        .cloned();
+    let fresh_book = |token_id: &str| {
+        books.checkpoint(token_id).filter(|checkpoint| {
+            checkpoint.market_id == market.market_id
+                && checkpoint.integrity_status == FeedIntegrityStatus::Ok
+                && checkpoint.source_timestamp >= book_fresh_since
+                && checkpoint.source_timestamp <= as_of
+                && checkpoint.received_at >= book_fresh_since
+                && checkpoint.received_at <= as_of
+        })
+    };
+    let fee_rate = market
+        .fees_enabled
+        .then(|| decimal_json_field(&market.fee_schedule, &["rate"]))
+        .flatten();
+
+    Ok(BtcPointInTimeInputs {
+        chainlink_open: None,
+        chainlink_current: None,
+        chainlink_history: Vec::new(),
+        binance_history: binance.into_iter().collect(),
+        up_book: fresh_book(&market.up_token_id),
+        down_book: fresh_book(&market.down_token_id),
+        fee_rate,
+        // The fee schedule is an immutable term of this five-minute market contract. Its
+        // effective boundary is therefore the market open, rather than the arrival time of an
+        // unrelated realtime update.
+        fee_observed_at: fee_rate.map(|_| market.window_start),
+    })
+}
+
+fn decimal_json_field(value: &serde_json::Value, keys: &[&str]) -> Option<Decimal> {
+    keys.iter().find_map(|key| match value.get(*key)? {
+        serde_json::Value::String(value) => Decimal::from_str(value).ok(),
+        serde_json::Value::Number(value) => Decimal::from_str(&value.to_string()).ok(),
+        _ => None,
+    })
 }
 
 fn book_features(
@@ -5435,6 +5503,99 @@ mod tests {
         assert_eq!(snapshot.up_book.executable_ask_vwap, Some(dec!(0.40)));
         assert_eq!(snapshot.down_book.executable_ask_vwap, Some(dec!(0.40)));
         assert_eq!(snapshot.fee_rate, Some(dec!(0.25)));
+    }
+
+    #[test]
+    fn directional_execution_inputs_use_causal_grpc_runtime_state() {
+        let window_start = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let as_of = window_start + chrono::Duration::seconds(30);
+        let market = BtcIntervalMarket {
+            event_id: "event".to_string(),
+            event_slug: "btc-updown-5m".to_string(),
+            series_slug: "btc-up-or-down-5m".to_string(),
+            market_id: "market".to_string(),
+            condition_id: "condition".to_string(),
+            window_start,
+            window_end: window_start + chrono::Duration::minutes(5),
+            up_token_id: "up".to_string(),
+            down_token_id: "down".to_string(),
+            tick_size: dec!(0.01),
+            minimum_order_size: Some(dec!(1)),
+            resolution_source: "chainlink".to_string(),
+            active: true,
+            closed: false,
+            accepting_orders: true,
+            fees_enabled: true,
+            fee_schedule: serde_json::json!({"rate": "0.25"}),
+            raw_payload: serde_json::json!({}),
+        };
+        let epoch = Uuid::from_u128(700);
+        let mut registry = BookRegistry::new(epoch);
+        for (token_id, outcome, sequence) in
+            [("up", BtcOutcome::Up, 1), ("down", BtcOutcome::Down, 2)]
+        {
+            registry
+                .apply_canonical_snapshot(
+                    epoch,
+                    &market,
+                    token_id,
+                    outcome,
+                    as_of - chrono::Duration::milliseconds(20),
+                    as_of - chrono::Duration::milliseconds(10),
+                    sequence,
+                    None,
+                    vec![(dec!(0.49), dec!(10))],
+                    vec![(dec!(0.50), dec!(10))],
+                )
+                .unwrap();
+        }
+        let binance = ReferencePriceTick {
+            tick_id: Uuid::from_u128(701),
+            dedup_key: "binance".to_string(),
+            source: ReferencePriceSource::DirectBinance,
+            symbol: "BTCUSDT".to_string(),
+            price: dec!(118000),
+            source_timestamp: as_of - chrono::Duration::milliseconds(20),
+            envelope_timestamp: None,
+            received_at: as_of - chrono::Duration::milliseconds(10),
+            connection_id: Uuid::from_u128(702),
+            ingest_sequence: 3,
+            source_event_id: Some("kline".to_string()),
+            raw_payload: serde_json::json!({}),
+        };
+        let mut state = RealtimeState::default();
+        state.update_reference_price(binance.clone());
+
+        let inputs = directional_model_execution_inputs_from_runtime(
+            &state,
+            &registry,
+            &market,
+            as_of,
+            chrono::Duration::seconds(2),
+            chrono::Duration::seconds(2),
+        )
+        .unwrap();
+
+        assert_eq!(inputs.binance_history, vec![binance]);
+        assert_eq!(inputs.up_book.as_ref().unwrap().token_id, "up");
+        assert_eq!(inputs.down_book.as_ref().unwrap().token_id, "down");
+        assert_eq!(inputs.up_book.as_ref().unwrap().connection_id, epoch);
+        assert_eq!(inputs.fee_rate, Some(dec!(0.25)));
+        assert_eq!(inputs.fee_observed_at, Some(window_start));
+
+        let future_as_of = as_of - chrono::Duration::milliseconds(15);
+        let filtered = directional_model_execution_inputs_from_runtime(
+            &state,
+            &registry,
+            &market,
+            future_as_of,
+            chrono::Duration::seconds(2),
+            chrono::Duration::seconds(2),
+        )
+        .unwrap();
+        assert!(filtered.binance_history.is_empty());
+        assert!(filtered.up_book.is_none());
+        assert!(filtered.down_book.is_none());
     }
 
     #[test]

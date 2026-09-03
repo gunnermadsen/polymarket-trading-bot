@@ -450,7 +450,6 @@ mod tests {
     use crate::{
         btc::{
             execution_guard::{BtcReferenceExecutionGuard, BTC_REFERENCE_EXECUTION_GUARD_VERSION},
-            feeds::ClobMessage,
             strategy::BTC_FEATURE_LINEAGE_VERSION,
             types::{BtcIntervalMarket, BtcOutcome},
         },
@@ -705,23 +704,31 @@ mod tests {
         ask_price: Decimal,
         ask_size: Decimal,
     ) {
-        registry.apply(
-            ClobMessage::Book {
-                market_id: market_id.to_string(),
-                token_id: token_id.to_string(),
-                bids: vec![OrderbookLevel {
-                    price: bid_price,
-                    size: dec!(10),
-                }],
-                asks: vec![OrderbookLevel {
-                    price: ask_price,
-                    size: ask_size,
-                }],
+        let up_token_id = token_id.strip_suffix("-down").unwrap_or(token_id);
+        let down_token_id = format!("{up_token_id}-down");
+        let outcome = if token_id == down_token_id {
+            BtcOutcome::Down
+        } else {
+            BtcOutcome::Up
+        };
+        registry
+            .apply_canonical_snapshot_for_market_identity(
+                registry.connection_id(),
+                market_id,
+                &format!("condition-{market_id}"),
+                up_token_id,
+                &down_token_id,
+                token_id,
+                outcome,
+                dec!(0.01),
                 source_timestamp,
-                source_hash: Some(format!("book-hash-{token_id}")),
-            },
-            received_at,
-        );
+                received_at,
+                1,
+                Some(format!("book-hash-{token_id}")),
+                vec![(bid_price, dec!(10))],
+                vec![(ask_price, ask_size)],
+            )
+            .unwrap();
     }
 
     fn guarded_request(
@@ -1027,27 +1034,30 @@ mod tests {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
         let fake = Arc::new(FakeVenue::default());
-        let registry = seeded_registry(
+        let stale_at = checked_at - Duration::seconds(10);
+        let mut registry = BookRegistry::new(Uuid::new_v4());
+        registry.register_market(&market("market", "up"));
+        seed_book(
+            &mut registry,
             "market",
             "up",
             checked_at - Duration::milliseconds(100),
             checked_at,
+            dec!(0.39),
+            dec!(0.40),
             dec!(10),
         );
-        let stale_at = checked_at - Duration::seconds(10);
-        {
-            let mut registry = registry.write().await;
-            seed_book(
-                &mut registry,
-                "market",
-                "up-down",
-                stale_at,
-                checked_at,
-                dec!(0.59),
-                dec!(0.60),
-                dec!(10),
-            );
-        }
+        seed_book(
+            &mut registry,
+            "market",
+            "up-down",
+            stale_at,
+            checked_at,
+            dec!(0.59),
+            dec!(0.60),
+            dec!(10),
+        );
+        let registry = Arc::new(RwLock::new(registry));
         let venue = adapter(&fake, registry, process_id);
 
         let order = venue

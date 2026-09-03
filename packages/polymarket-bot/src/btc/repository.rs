@@ -16,6 +16,7 @@ use super::{
         LossRegimeCandidate, ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
         ShadowPredictiveRegimeState, UnsettledEntryExposure,
     },
+    directional_external_runtime::BinanceOpenInterestPoint,
     directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     execution_guard::reference_execution_guard,
     execution_lifecycle::BtcExecutionMode,
@@ -29,8 +30,8 @@ use super::{
         BtcStrategyPrediction, FairValueEstimate,
     },
     types::{
-        BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel,
-        ReferencePriceSource, ReferencePriceTick,
+        BinanceOneSecondKline, BtcIntervalMarket, BtcOutcome, FeedIntegrityStatus,
+        OrderbookCheckpoint, OrderbookLevel, ReferencePriceSource, ReferencePriceTick,
     },
 };
 
@@ -95,21 +96,134 @@ pub struct BtcPointInTimeInputs {
     pub fee_observed_at: Option<DateTime<Utc>>,
 }
 
-const LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL: &str = r#"
-    SELECT tick_id, source_timestamp, received_at, source, symbol, price,
-      envelope_timestamp, connection_id, ingest_sequence, source_event_id,
-      dedup_key, raw_payload
-    FROM polymarket.reference_price_ticks
-    WHERE source = 'direct_binance'
-      AND symbol = 'BTCUSD'
-      AND integrity_status = 'ok'
-      AND source_timestamp >= $1
-      AND source_timestamp <= $2
-      AND received_at >= $1
-      AND received_at <= $2
-    ORDER BY source_timestamp DESC, received_at DESC, ingest_sequence DESC, tick_id DESC
+const LOAD_MARKET_OPENING_REFERENCE_SQL: &str = r#"
+    SELECT t.tick_id, t.source_timestamp, t.received_at, t.source, t.symbol, t.price,
+      t.envelope_timestamp, t.connection_id, t.ingest_sequence, t.source_event_id,
+      t.dedup_key, t.raw_payload
+    FROM polymarket.reference_price_ticks t
+    WHERE t.source = 'rtds_chainlink'
+      AND t.symbol = 'BTCUSD'
+      AND t.integrity_status = 'ok'
+      AND t.source_timestamp >= $2
+      AND t.source_timestamp <= $3
+      AND t.received_at <= $1
+    ORDER BY t.received_at ASC, t.source_timestamp ASC,
+      t.ingest_sequence ASC, t.tick_id ASC
     LIMIT 1
     "#;
+
+const LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL: &str = r#"
+    SELECT source_timestamp, received_at, sum_open_interest, sum_open_interest_value
+    FROM (
+      SELECT source_timestamp, received_at, sum_open_interest, sum_open_interest_value
+      FROM market_data.binance_futures_btcusdt_open_interest
+      WHERE symbol = 'BTCUSDT'
+        AND period_seconds = 300
+        AND source_timestamp >= $1
+        AND source_timestamp <= $2
+        AND received_at <= $2
+      ORDER BY source_timestamp DESC
+      LIMIT 13
+    ) history
+    ORDER BY source_timestamp ASC
+    "#;
+
+const LOAD_BINANCE_ONE_SECOND_HISTORY_SQL: &str = r#"
+    SELECT open_timestamp, close_timestamp, provider_available_at, received_at,
+      open_price, high_price, low_price, close_price, base_volume, quote_volume,
+      trade_count, taker_buy_base_volume, taker_buy_quote_volume
+    FROM (
+      SELECT open_timestamp, close_timestamp, provider_available_at, received_at,
+        open_price, high_price, low_price, close_price, base_volume, quote_volume,
+        trade_count, taker_buy_base_volume, taker_buy_quote_volume
+      FROM market_data.binance_spot_btcusdt_one_second_ohlcv
+      WHERE symbol = 'BTCUSDT'
+        AND open_timestamp >= $1
+        AND open_timestamp <= $2
+        AND received_at <= $2
+      ORDER BY open_timestamp DESC
+      LIMIT 3905
+    ) history
+    ORDER BY open_timestamp ASC
+    "#;
+
+const RECOVER_PROCESS_OFFICIAL_RESOLUTION_WATCHES_SQL: &str = r#"
+INSERT INTO polymarket.btc_official_resolution_watches (
+  market_id, status, watch_started_at, deadline_at,
+  resolution_received_at, resolution_source, expired_at, last_checked_at
+)
+SELECT DISTINCT
+  m.market_id,
+  CASE
+    WHEN m.official_resolution_received_at > m.window_end + interval '1 hour'
+      THEN 'resolved_late'
+    ELSE 'resolved'
+  END,
+  LEAST(m.official_resolution_received_at, m.window_end),
+  m.window_end + interval '1 hour',
+  m.official_resolution_received_at,
+  m.official_resolution_source,
+  CASE
+    WHEN m.official_resolution_received_at > m.window_end + interval '1 hour'
+      THEN m.window_end + interval '1 hour'
+    ELSE NULL
+  END,
+  m.official_resolution_received_at
+FROM polymarket.orders o
+JOIN polymarket.fills f
+  ON f.process_id = $1
+ AND f.order_id = o.order_id
+ AND f.source = $3
+JOIN polymarket.btc_interval_markets m ON m.market_id = o.market_id
+WHERE o.process_id = $1
+  AND m.official_outcome IS NOT NULL
+  AND m.official_winning_token_id IS NOT NULL
+  AND m.official_resolution_received_at IS NOT NULL
+  AND m.official_resolution_source IS NOT NULL
+  AND (
+    ($3 = 'live' AND COALESCE(
+      NULLIF(o.raw_payload #>> '{request,metadata,run_id}', ''),
+      NULLIF(o.raw_payload #>> '{request,metadata,experiment_id}', '')
+    ) IS NOT NULL)
+    OR ($3 <> 'live' AND (
+      o.raw_payload #>> '{request,metadata,run_id}' = $2::text
+      OR o.raw_payload #>> '{request,metadata,experiment_id}' = $2::text
+    ))
+  )
+ON CONFLICT (market_id) DO UPDATE
+SET status = CASE
+      WHEN btc_official_resolution_watches.status IN ('resolved','resolved_late')
+        THEN btc_official_resolution_watches.status
+      WHEN btc_official_resolution_watches.status = 'expired'
+        OR EXCLUDED.resolution_received_at > btc_official_resolution_watches.deadline_at
+        THEN 'resolved_late'
+      ELSE 'resolved'
+    END,
+    resolution_received_at = COALESCE(
+      btc_official_resolution_watches.resolution_received_at,
+      EXCLUDED.resolution_received_at
+    ),
+    resolution_source = COALESCE(
+      btc_official_resolution_watches.resolution_source,
+      EXCLUDED.resolution_source
+    ),
+    expired_at = CASE
+      WHEN btc_official_resolution_watches.status = 'expired'
+        OR EXCLUDED.resolution_received_at > btc_official_resolution_watches.deadline_at
+        THEN COALESCE(
+          btc_official_resolution_watches.expired_at,
+          btc_official_resolution_watches.deadline_at
+        )
+      ELSE btc_official_resolution_watches.expired_at
+    END,
+    last_checked_at = COALESCE(
+      btc_official_resolution_watches.last_checked_at,
+      EXCLUDED.last_checked_at
+    ),
+    last_error = NULL,
+    updated_at = now()
+WHERE btc_official_resolution_watches.status IN ('pending','expired')
+"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct BtcRunManifest {
@@ -186,6 +300,31 @@ struct ReferenceTickRow {
     source_event_id: Option<String>,
     dedup_key: String,
     raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct OpenInterestHistoryRow {
+    source_timestamp: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+    sum_open_interest: Decimal,
+    sum_open_interest_value: Decimal,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct BinanceOneSecondHistoryRow {
+    open_timestamp: DateTime<Utc>,
+    close_timestamp: DateTime<Utc>,
+    provider_available_at: Option<DateTime<Utc>>,
+    received_at: DateTime<Utc>,
+    open_price: Decimal,
+    high_price: Decimal,
+    low_price: Decimal,
+    close_price: Decimal,
+    base_volume: Decimal,
+    quote_volume: Decimal,
+    trade_count: i64,
+    taker_buy_base_volume: Decimal,
+    taker_buy_quote_volume: Decimal,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -2031,30 +2170,79 @@ impl BtcRepository {
         .context("failed to project official BTC resolution onto its local label")?;
         sqlx::query(
             r#"
-            UPDATE polymarket.btc_official_resolution_watches
-            SET status = CASE
-                  WHEN status IN ('resolved','resolved_late') THEN status
-                  WHEN status = 'expired' OR $2 > deadline_at THEN 'resolved_late'
-                  ELSE 'resolved'
-                END,
-                resolution_received_at = COALESCE(resolution_received_at, $2),
-                resolution_source = COALESCE(resolution_source, $3),
-                expired_at = CASE
-                  WHEN status = 'resolved' THEN expired_at
-                  WHEN status = 'resolved_late' THEN COALESCE(expired_at, deadline_at)
-                  WHEN status = 'expired' OR $2 > deadline_at
-                    THEN COALESCE(expired_at, deadline_at)
-                  ELSE expired_at
-                END,
-                last_checked_at = COALESCE(last_checked_at, $2),
-                last_error = NULL,
-                updated_at = now()
+            INSERT INTO polymarket.btc_official_resolution_watches (
+              market_id, status, watch_started_at, deadline_at,
+              resolution_received_at, resolution_source, expired_at, last_checked_at
+            )
+            SELECT
+              market_id,
+              CASE
+                WHEN official_resolution_received_at > window_end + interval '1 hour'
+                  THEN 'resolved_late'
+                ELSE 'resolved'
+              END,
+              LEAST(official_resolution_received_at, window_end),
+              window_end + interval '1 hour',
+              official_resolution_received_at,
+              official_resolution_source,
+              CASE
+                WHEN official_resolution_received_at > window_end + interval '1 hour'
+                  THEN window_end + interval '1 hour'
+                ELSE NULL
+              END,
+              official_resolution_received_at
+            FROM polymarket.btc_interval_markets
             WHERE market_id = $1
+              AND official_resolution_received_at IS NOT NULL
+              AND official_resolution_source IS NOT NULL
+            ON CONFLICT (market_id) DO NOTHING
             "#,
         )
         .bind(&market.market_id)
-        .bind(received_at)
-        .bind(resolution_source)
+        .execute(&mut *tx)
+        .await
+        .context("failed to create durable BTC official-resolution watch")?;
+        sqlx::query(
+            r#"
+            UPDATE polymarket.btc_official_resolution_watches watch
+            SET status = CASE
+                  WHEN watch.status IN ('resolved','resolved_late') THEN watch.status
+                  WHEN watch.status = 'expired'
+                    OR market.official_resolution_received_at > watch.deadline_at
+                    THEN 'resolved_late'
+                  ELSE 'resolved'
+                END,
+                resolution_received_at = COALESCE(
+                  watch.resolution_received_at,
+                  market.official_resolution_received_at
+                ),
+                resolution_source = COALESCE(
+                  watch.resolution_source,
+                  market.official_resolution_source
+                ),
+                expired_at = CASE
+                  WHEN watch.status = 'resolved' THEN watch.expired_at
+                  WHEN watch.status = 'resolved_late'
+                    THEN COALESCE(watch.expired_at, watch.deadline_at)
+                  WHEN watch.status = 'expired'
+                    OR market.official_resolution_received_at > watch.deadline_at
+                    THEN COALESCE(watch.expired_at, watch.deadline_at)
+                  ELSE watch.expired_at
+                END,
+                last_checked_at = COALESCE(
+                  watch.last_checked_at,
+                  market.official_resolution_received_at
+                ),
+                last_error = NULL,
+                updated_at = now()
+            FROM polymarket.btc_interval_markets market
+            WHERE watch.market_id = $1
+              AND market.market_id = watch.market_id
+              AND market.official_resolution_received_at IS NOT NULL
+              AND market.official_resolution_source IS NOT NULL
+            "#,
+        )
+        .bind(&market.market_id)
         .execute(&mut *tx)
         .await
         .context("failed to resolve durable BTC official-resolution watch")?;
@@ -2241,41 +2429,15 @@ impl BtcRepository {
             .window_start
             .checked_add_signed(max_chainlink_open_delay)
             .context("Chainlink opening window exceeds the timestamp range")?;
-        sqlx::query_as::<_, ReferenceTickRow>(
-            r#"
-            SELECT t.tick_id, t.source_timestamp, t.received_at, t.source, t.symbol, t.price,
-              t.envelope_timestamp, t.connection_id, t.ingest_sequence, t.source_event_id,
-              t.dedup_key, t.raw_payload
-            FROM polymarket.btc_interval_markets m
-            JOIN LATERAL (
-              SELECT tick_id, source_timestamp, received_at, source, symbol, price,
-                envelope_timestamp, connection_id, ingest_sequence, source_event_id,
-                dedup_key, raw_payload
-              FROM polymarket.reference_price_ticks
-              WHERE source = 'rtds_chainlink'
-                AND symbol = 'BTCUSD'
-                AND integrity_status = 'ok'
-                AND source_timestamp = m.reference_source_timestamp
-                AND price = m.reference_price
-                AND received_at <= $2
-              ORDER BY received_at ASC, ingest_sequence ASC, tick_id ASC
-              LIMIT 1
-            ) t ON true
-            WHERE m.market_id = $1
-              AND m.reference_price IS NOT NULL
-              AND m.reference_source_timestamp >= $3
-              AND m.reference_source_timestamp <= $4
-            "#,
-        )
-        .bind(&market.market_id)
-        .bind(feature_as_of)
-        .bind(market.window_start)
-        .bind(latest_valid_open)
-        .fetch_optional(&self.pool)
-        .await
-        .context("failed to load market Chainlink opening reference")?
-        .map(reference_tick_from_row)
-        .transpose()
+        sqlx::query_as::<_, ReferenceTickRow>(LOAD_MARKET_OPENING_REFERENCE_SQL)
+            .bind(feature_as_of)
+            .bind(market.window_start)
+            .bind(latest_valid_open)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to load market Chainlink opening reference")?
+            .map(reference_tick_from_row)
+            .transpose()
     }
 
     /// Hydrates the bounded RTDS midpoint history used to construct closed Chainlink candles.
@@ -2324,79 +2486,47 @@ impl BtcRepository {
         rows.into_iter().map(reference_tick_from_row).collect()
     }
 
-    /// Loads only the immutable execution evidence needed after native directional-model
-    /// inference. Model features come from the runtime's bounded one-second Binance window, so
-    /// this path deliberately avoids rebuilding unused reference histories from Postgres.
-    pub(crate) async fn load_directional_model_execution_inputs(
+    /// Loads the latest bounded contiguous hour of immutable five-minute open-interest facts.
+    /// Availability remains the ingester receipt time so model construction cannot observe a row
+    /// before the ingestion layer did.
+    pub(crate) async fn load_directional_external_open_interest_history(
         &self,
-        market: &BtcIntervalMarket,
-        as_of: DateTime<Utc>,
-        max_reference_age: chrono::Duration,
-        max_book_age: chrono::Duration,
-        clob_connection_id: Option<Uuid>,
-    ) -> Result<BtcPointInTimeInputs> {
-        if max_reference_age <= Duration::zero() || max_book_age <= Duration::zero() {
-            bail!("directional-model execution input freshness bounds must be positive");
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BinanceOpenInterestPoint>> {
+        if start >= end || (end - start) > chrono::Duration::hours(2) {
+            bail!("directional open-interest bootstrap range is invalid");
         }
-        let reference_fresh_since = as_of.checked_sub_signed(max_reference_age).context(
-            "directional-model reference freshness bound is outside the timestamp range",
-        )?;
-        let book_fresh_since = as_of
-            .checked_sub_signed(max_book_age)
-            .context("directional-model book freshness bound is outside the timestamp range")?;
-
-        let (binance_current, up_book, down_book, fee) =
-            if let Some(connection_id) = clob_connection_id {
-                let (binance, up, down, fee) = tokio::try_join!(
-                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
-                    self.load_checkpoint_as_of(
-                        &market.up_token_id,
-                        connection_id,
-                        book_fresh_since,
-                        as_of,
-                    ),
-                    self.load_checkpoint_as_of(
-                        &market.down_token_id,
-                        connection_id,
-                        book_fresh_since,
-                        as_of,
-                    ),
-                    self.load_market_fee_as_of(&market.market_id, as_of),
-                )?;
-                (binance, up, down, fee)
-            } else {
-                let (binance, fee) = tokio::try_join!(
-                    self.load_directional_model_binance_tick(reference_fresh_since, as_of),
-                    self.load_market_fee_as_of(&market.market_id, as_of),
-                )?;
-                (binance, None, None, fee)
-            };
-
-        Ok(BtcPointInTimeInputs {
-            chainlink_open: None,
-            chainlink_current: None,
-            chainlink_history: Vec::new(),
-            binance_history: binance_current.into_iter().collect(),
-            up_book,
-            down_book,
-            fee_rate: fee.as_ref().and_then(|(rate, _)| *rate),
-            fee_observed_at: fee.map(|(_, observed_at)| observed_at),
-        })
+        let rows =
+            sqlx::query_as::<_, OpenInterestHistoryRow>(LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL)
+                .bind(start)
+                .bind(end)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to hydrate directional Binance open-interest history")?;
+        Ok(latest_contiguous_open_interest(rows))
     }
 
-    async fn load_directional_model_binance_tick(
+    /// Hydrates the bounded runtime window from the ingester's immutable one-second facts. The
+    /// row receipt clock is retained exactly and bounds what a restarted model may observe.
+    pub(crate) async fn load_binance_one_second_history(
         &self,
-        fresh_since: DateTime<Utc>,
-        as_of: DateTime<Utc>,
-    ) -> Result<Option<ReferencePriceTick>> {
-        sqlx::query_as::<_, ReferenceTickRow>(LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL)
-            .bind(fresh_since)
-            .bind(as_of)
-            .fetch_optional(&self.pool)
-            .await
-            .context("failed to load directional-model point-in-time Binance tick")?
-            .map(reference_tick_from_row)
-            .transpose()
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BinanceOneSecondKline>> {
+        if start >= end || (end - start) > chrono::Duration::minutes(70) {
+            bail!("Binance one-second bootstrap range is invalid");
+        }
+        let rows =
+            sqlx::query_as::<_, BinanceOneSecondHistoryRow>(LOAD_BINANCE_ONE_SECOND_HISTORY_SQL)
+                .bind(start)
+                .bind(end)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to hydrate Binance one-second runtime history")?;
+        rows.into_iter()
+            .map(binance_kline_from_history_row)
+            .collect()
     }
 
     async fn load_market_fee_as_of(
@@ -3064,6 +3194,30 @@ impl BtcRepository {
         Ok(())
     }
 
+    /// Restores a missing durable watch only from exact process-owned fill obligations and an
+    /// already persisted canonical official resolution. This is bounded by process and run on
+    /// restart and leaves the settlement query's provenance joins unchanged.
+    pub async fn recover_process_official_resolution_watches(
+        &self,
+        process_id: Uuid,
+        run_id: Uuid,
+        execution_mode: BtcExecutionMode,
+    ) -> Result<()> {
+        sqlx::query(RECOVER_PROCESS_OFFICIAL_RESOLUTION_WATCHES_SQL)
+            .bind(process_id)
+            .bind(run_id)
+            .bind(execution_mode.as_str())
+            .execute(&self.pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to recover BTC {} settlement resolution watches",
+                    execution_mode.as_str()
+                )
+            })?;
+        Ok(())
+    }
+
     /// Materializes every newly eligible official settlement into a durable, idempotent ledger
     /// and returns records still awaiting venue-specific recognition. Fill selection is exact for
     /// the requested execution source. Eligibility requires the immutable official market fact
@@ -3526,6 +3680,52 @@ fn reference_tick_from_row(row: ReferenceTickRow) -> Result<ReferencePriceTick> 
         ingest_sequence: u64::try_from(row.ingest_sequence).unwrap_or_default(),
         source_event_id: row.source_event_id,
         raw_payload: row.raw_payload,
+    })
+}
+
+fn latest_contiguous_open_interest(
+    rows: Vec<OpenInterestHistoryRow>,
+) -> Vec<BinanceOpenInterestPoint> {
+    let contiguous_start = rows
+        .windows(2)
+        .rposition(|pair| {
+            pair[1].source_timestamp - pair[0].source_timestamp != Duration::minutes(5)
+        })
+        .map_or(0, |gap| gap + 1);
+    rows.into_iter()
+        .skip(contiguous_start)
+        .map(|row| BinanceOpenInterestPoint {
+            source_timestamp: row.source_timestamp,
+            available_at: row.received_at,
+            sum_open_interest: row.sum_open_interest,
+            sum_open_interest_value: row.sum_open_interest_value,
+        })
+        .collect()
+}
+
+fn binance_kline_from_history_row(
+    row: BinanceOneSecondHistoryRow,
+) -> Result<BinanceOneSecondKline> {
+    Ok(BinanceOneSecondKline {
+        open_timestamp: row.open_timestamp,
+        close_timestamp: row.close_timestamp + Duration::milliseconds(1),
+        open_price: row.open_price,
+        high_price: row.high_price,
+        low_price: row.low_price,
+        close_price: row.close_price,
+        base_volume: row.base_volume,
+        quote_volume: row.quote_volume,
+        trade_count: u64::try_from(row.trade_count)
+            .context("Binance one-second trade count is negative")?,
+        taker_buy_base_volume: row.taker_buy_base_volume,
+        taker_buy_quote_volume: row.taker_buy_quote_volume,
+        first_aggregate_trade_id: 0,
+        last_aggregate_trade_id: 0,
+        first_source_timestamp: row.open_timestamp,
+        last_source_timestamp: row.provider_available_at.unwrap_or(row.close_timestamp),
+        max_received_at: row.received_at,
+        source_complete: true,
+        synthetic: false,
     })
 }
 
@@ -4807,27 +5007,107 @@ mod tests {
     }
 
     #[test]
-    fn directional_model_binance_query_is_causal_fresh_and_single_row() {
-        let normalized = LOAD_DIRECTIONAL_MODEL_BINANCE_TICK_SQL
+    fn market_opening_reference_query_is_bounded_causal_and_independent_of_projection_fields() {
+        let normalized = LOAD_MARKET_OPENING_REFERENCE_SQL
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
             .to_ascii_lowercase();
 
-        assert!(normalized.contains("source = 'direct_binance'"));
-        assert!(normalized.contains("symbol = 'btcusd'"));
-        assert!(normalized.contains("integrity_status = 'ok'"));
-        assert!(normalized.contains("source_timestamp >= $1"));
-        assert!(normalized.contains("source_timestamp <= $2"));
-        assert!(normalized.contains("received_at >= $1"));
-        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains("source = 'rtds_chainlink'"));
+        assert!(normalized.contains("source_timestamp >= $2"));
+        assert!(normalized.contains("source_timestamp <= $3"));
+        assert!(normalized.contains("received_at <= $1"));
         assert!(normalized.contains(
-            "order by source_timestamp desc, received_at desc, ingest_sequence desc, tick_id desc"
+            "order by t.received_at asc, t.source_timestamp asc, t.ingest_sequence asc, t.tick_id asc"
         ));
         assert!(normalized.contains("limit 1"));
-        assert!(!normalized.contains("rtds_chainlink"));
-        assert!(!normalized.contains("limit 2000"));
-        assert!(!normalized.contains("limit 20000"));
+        assert!(!normalized.contains("btc_interval_markets"));
+        assert!(!normalized.contains("reference_source_timestamp"));
+        assert!(!normalized.contains("reference_price ="));
+    }
+
+    #[test]
+    fn directional_open_interest_bootstrap_query_is_causal_indexed_and_bounded_to_thirteen() {
+        let normalized = LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("symbol = 'btcusdt'"));
+        assert!(normalized.contains("period_seconds = 300"));
+        assert!(normalized.contains("source_timestamp >= $1"));
+        assert!(normalized.contains("source_timestamp <= $2"));
+        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains("order by source_timestamp desc limit 13"));
+        assert!(normalized.ends_with("order by source_timestamp asc"));
+    }
+
+    #[test]
+    fn directional_open_interest_bootstrap_keeps_only_latest_contiguous_suffix() {
+        let start = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let row = |minutes: i64| OpenInterestHistoryRow {
+            source_timestamp: start + Duration::minutes(minutes),
+            received_at: start + Duration::minutes(minutes) + Duration::seconds(1),
+            sum_open_interest: dec!(100),
+            sum_open_interest_value: dec!(1000),
+        };
+        let points = latest_contiguous_open_interest(vec![row(0), row(5), row(15), row(20)]);
+
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].source_timestamp, start + Duration::minutes(15));
+        assert_eq!(
+            points[0].available_at,
+            start + Duration::minutes(15) + Duration::seconds(1)
+        );
+        assert_eq!(points[1].source_timestamp, start + Duration::minutes(20));
+    }
+
+    #[test]
+    fn binance_one_second_bootstrap_query_is_causal_indexed_and_capacity_bounded() {
+        let normalized = LOAD_BINANCE_ONE_SECOND_HISTORY_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("symbol = 'btcusdt'"));
+        assert!(normalized.contains("open_timestamp >= $1"));
+        assert!(normalized.contains("open_timestamp <= $2"));
+        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains("order by open_timestamp desc limit 3905"));
+        assert!(normalized.ends_with("order by open_timestamp asc"));
+    }
+
+    #[test]
+    fn binance_one_second_bootstrap_preserves_event_and_availability_clocks() {
+        let open = Utc.with_ymd_and_hms(2026, 9, 3, 20, 25, 0).unwrap();
+        let provider_available_at = open + Duration::milliseconds(999);
+        let received_at = open + Duration::milliseconds(1200);
+        let candle = binance_kline_from_history_row(BinanceOneSecondHistoryRow {
+            open_timestamp: open,
+            close_timestamp: open + Duration::milliseconds(999),
+            provider_available_at: Some(provider_available_at),
+            received_at,
+            open_price: dec!(100),
+            high_price: dec!(102),
+            low_price: dec!(99),
+            close_price: dec!(101),
+            base_volume: dec!(2),
+            quote_volume: dec!(201),
+            trade_count: 3,
+            taker_buy_base_volume: dec!(1),
+            taker_buy_quote_volume: dec!(101),
+        })
+        .unwrap();
+
+        assert_eq!(candle.open_timestamp, open);
+        assert_eq!(candle.close_timestamp, open + Duration::seconds(1));
+        assert_eq!(candle.first_source_timestamp, open);
+        assert_eq!(candle.last_source_timestamp, provider_available_at);
+        assert_eq!(candle.max_received_at, received_at);
+        assert!(candle.source_complete);
     }
 
     #[test]
@@ -4982,6 +5262,21 @@ mod tests {
         assert!(discovery.matches("metadata,run_id").count() >= 2);
         assert!(discovery.matches("experiment_id").count() >= 2);
         assert!(!discovery.contains("btc_paper_experiments"));
+
+        let watch_recovery = RECOVER_PROCESS_OFFICIAL_RESOLUTION_WATCHES_SQL.to_ascii_lowercase();
+        assert!(watch_recovery.contains("where o.process_id = $1"));
+        assert!(watch_recovery.contains("on f.process_id = $1"));
+        assert!(watch_recovery.contains("and f.source = $3"));
+        assert!(watch_recovery.contains("m.official_outcome is not null"));
+        assert!(watch_recovery.contains("m.official_winning_token_id is not null"));
+        assert!(watch_recovery.contains("m.official_resolution_received_at is not null"));
+        assert!(watch_recovery.contains("m.official_resolution_source is not null"));
+        assert!(watch_recovery.contains("on conflict (market_id) do update"));
+        assert!(watch_recovery
+            .contains("where btc_official_resolution_watches.status in ('pending','expired')"));
+        assert!(watch_recovery.matches("metadata,run_id").count() >= 2);
+        assert!(watch_recovery.matches("experiment_id").count() >= 2);
+        assert!(!watch_recovery.contains("btc_paper_experiments"));
 
         let pending = LOAD_PENDING_SETTLEMENTS_SQL.to_ascii_lowercase();
         assert!(pending.contains("process_id = $1"));

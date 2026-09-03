@@ -831,9 +831,17 @@ async fn generic_ingestion_admin_routes_require_bearer() {
 async fn retired_backfill_routes_are_not_found_for_authenticated_admin() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     for uri in ["/admin/backfill/ingesters", "/admin/backfill/jobs"] {
-        let response = app.clone().oneshot(
-            Request::builder().uri(uri).header(AUTHORIZATION, "Bearer secret").body(Body::empty()).unwrap(),
-        ).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
     }
 }

@@ -6,6 +6,7 @@ pub mod domain;
 pub mod persistence;
 pub mod runtime;
 pub mod strategies;
+pub mod streaming;
 pub mod telemetry;
 
 #[cfg(test)]

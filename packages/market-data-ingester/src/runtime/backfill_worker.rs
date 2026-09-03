@@ -45,9 +45,13 @@ impl BackfillWorkerRuntime {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let hostname = env::var("HOSTNAME").unwrap_or_else(|_| "ingester-worker".to_owned());
+        let hostname = env::var("INGESTER_ADVERTISE_HOST")
+            .or_else(|_| env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "ingester-worker".to_owned());
         let worker = WorkerRegistration {
-            worker_id: env::var("INGESTER_WORKER_ID").unwrap_or_else(|_| hostname.clone()),
+            worker_id: env::var("INGESTER_WORKER_ID")
+                .or_else(|_| env::var("INGESTER_INSTANCE"))
+                .unwrap_or_else(|_| hostname.clone()),
             hostname,
             worker_contract_version: 1,
             supported_strategies,

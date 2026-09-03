@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package capitonic.marketdata.v1;
+
+service MarketDataStream {
+  rpc Stream(stream SubscriptionCommand) returns (stream MarketDataMessage);
+}
+
+message SubscriptionCommand {
+  string consumer_id = 1;
+  uint64 revision = 2;
+  repeated ProductSelector products = 3;
+}
+
+message ProductSelector {
+  string key = 1;
+  uint32 contract_version = 2;
+  bool required = 3;
+  uint64 maximum_age_ms = 4;
+  bool require_sequence_integrity = 5;
+}
+
+message MarketDataMessage {
+  oneof message {
+    SubscriptionAck subscription_ack = 1;
+    MarketDataEvent event = 2;
+    ProductHealth health = 3;
+  }
+}
+
+message SubscriptionAck {
+  uint64 revision = 1;
+  repeated ProductSelector accepted = 2;
+  repeated ProductRejection rejected = 3;
+  int64 acknowledged_at_micros = 4;
+}
+
+message ProductRejection {
+  ProductSelector product = 1;
+  string reason = 2;
+}
+
+message MarketDataEvent {
+  string product_key = 1;
+  uint32 contract_version = 2;
+  string worker_id = 3;
+  string publisher_epoch = 4;
+  uint64 sequence = 5;
+  string source_event_id = 6;
+  int64 source_timestamp_micros = 7;
+  int64 provider_available_at_micros = 8;
+  int64 received_at_micros = 9;
+  int64 published_at_micros = 10;
+  string payload_sha256 = 11;
+  string integrity = 12;
+  bool persistence_healthy = 13;
+  bytes payload_json = 14;
+}
+
+message ProductHealth {
+  string product_key = 1;
+  uint32 contract_version = 2;
+  string worker_id = 3;
+  string publisher_epoch = 4;
+  bool ready = 5;
+  int64 last_event_at_micros = 6;
+  string detail = 7;
+}

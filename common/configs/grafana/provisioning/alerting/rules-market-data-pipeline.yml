@@ -1,0 +1,101 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: market-data-pipeline-20s
+    folder: Market Data Pipeline
+    interval: 20s
+    rules:
+      - uid: mdp_worker_stream_down
+        title: Required market-data worker stream unavailable
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: '1 - clamp_max(max(polymarket_market_data_grpc_connections), 1)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 1m
+        annotations: {summary: Required bot-to-worker market-data stream is unavailable}
+        labels: {service: polymarket-bot, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_stream_drop
+        title: Market-data stream dropped events
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(ingester_stream_dropped_total[5m]))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations: {summary: A slow consumer or bounded stream queue dropped market data}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_stream_stale
+        title: Selected market-data product is stale
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product=~"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv"}) * on(product) group_left() (ingester_stream_subscribers > 0))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [30], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations: {summary: A selected market-data product has not published within 30 seconds}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false

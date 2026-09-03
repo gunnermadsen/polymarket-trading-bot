@@ -5,7 +5,7 @@ use std::{fmt::Write as _, str::FromStr, time::Duration};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use futures_util::{SinkExt, StreamExt};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -36,6 +36,9 @@ const CONFIG_SCHEMA_VERSION: i32 = 1;
 const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 const DEFAULT_WEBSOCKET_URL: &str = "wss://ws-live-data.polymarket.com";
 const SYMBOL: &str = "btc/usd";
+const PRODUCT_REFERENCE: &str = "polymarket_rtds_chainlink_reference_price";
+const TOPIC_REFERENCE_SNAPSHOT_ALIAS: &str = "crypto_prices";
+const TOPIC_REFERENCE: &str = "crypto_prices_chainlink";
 const TOPIC_THIRTY: &str = "crypto_prices_twap_thirty";
 const TOPIC_SIXTY: &str = "crypto_prices_twap_sixty";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -156,7 +159,30 @@ struct RtdsPayload {
     window_s: i16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RtdsReferencePayload {
+    symbol: String,
+    value: Value,
+    #[serde(rename = "full_accuracy_value")]
+    _full_accuracy_value: Option<String>,
+    timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ReferenceObservation {
+    source_timestamp: DateTime<Utc>,
+    provider_available_at: Option<DateTime<Utc>>,
+    received_at: DateTime<Utc>,
+    price: Decimal,
+    source_payload: Value,
+    payload_sha256: String,
+    source_event_id: String,
+    dedup_key: String,
+    tick_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
 struct TwapObservation {
     source_timestamp: DateTime<Utc>,
     published_at: DateTime<Utc>,
@@ -347,6 +373,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
         let subscription = json!({
             "action": "subscribe",
             "subscriptions": [
+                {"topic": TOPIC_REFERENCE, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"},
                 {"topic": TOPIC_THIRTY, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"},
                 {"topic": TOPIC_SIXTY, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"}
             ]
@@ -448,6 +475,9 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             .thirty_source_timestamp_ms
             .map(|_| Instant::now());
         let mut sixty_seen_at = checkpoint.sixty_source_timestamp_ms.map(|_| Instant::now());
+        let mut reference_seen_at = None;
+        let connection_id = Uuid::new_v4();
+        let mut reference_sequence = 0_u64;
         let mut freshness_tick = tokio::time::interval(Duration::from_secs(1));
         freshness_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -464,12 +494,44 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                     if sixty_seen_at.map_or(now.duration_since(connected_at) > initial, |last| now.duration_since(last) > stale) {
                         return Err(source("polymarket_rtds_sixty_stale", "60-second TWAP stream did not produce a fresh update"));
                     }
+                    if reference_seen_at.map_or(now.duration_since(connected_at) > initial, |last| now.duration_since(last) > Duration::from_secs(10)) {
+                        return Err(source("polymarket_rtds_chainlink_stale", "Chainlink reference stream did not produce a fresh update"));
+                    }
                 }
                 event = events_rx.recv() => match event {
                     Some(IoEvent::Frame { bytes, received_at }) => {
+                        if let Some(observation) = decode_reference_observation(&bytes, received_at)? {
+                            reference_sequence = reference_sequence.saturating_add(1);
+                            self.persist_reference(&observation, connection_id, reference_sequence).await?;
+                            crate::streaming::publish(
+                                PRODUCT_REFERENCE,
+                                observation.source_event_id.clone(),
+                                observation.source_timestamp,
+                                observation.provider_available_at.unwrap_or(observation.received_at),
+                                observation.received_at,
+                                observation.payload_sha256.clone(),
+                                true,
+                                &observation,
+                            ).await;
+                            reference_seen_at = Some(Instant::now());
+                            continue;
+                        }
+                        if is_reference_topic(&bytes) {
+                            continue;
+                        }
                         let Some(observation) = decode_observation(&bytes, received_at)? else {
                             continue;
                         };
+                        crate::streaming::publish(
+                            STRATEGY_KEY.as_str(),
+                            format!("{}:{}", observation.window_seconds, observation.source_timestamp.timestamp_micros()),
+                            observation.source_timestamp,
+                            observation.published_at,
+                            observation.received_at,
+                            observation.payload_sha256.clone(),
+                            true,
+                            &observation,
+                        ).await;
                         self.persist_observation(checkpoint, &observation).await?;
                         if observation.window_seconds == 30 { thirty_seen_at = Some(Instant::now()); }
                         else { sixty_seen_at = Some(Instant::now()); }
@@ -625,6 +687,49 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             .await
             .map_err(db("polymarket_twap_commit"))?;
         *checkpoint = next;
+        Ok(())
+    }
+
+    async fn persist_reference(
+        &self,
+        observation: &ReferenceObservation,
+        connection_id: Uuid,
+        ingest_sequence: u64,
+    ) -> Result<(), StrategyError> {
+        let clock_skew_ms =
+            (observation.received_at - observation.source_timestamp).num_milliseconds();
+        let integrity_status = if clock_skew_ms < -2_000 {
+            "future"
+        } else if clock_skew_ms > 10_000 {
+            "stale"
+        } else {
+            "ok"
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO polymarket.reference_price_ticks (
+              tick_id, source_timestamp, received_at, source, symbol, price,
+              envelope_timestamp, connection_id, ingest_sequence, source_event_id,
+              dedup_key, clock_skew_ms, integrity_status, raw_payload
+            ) VALUES ($1,$2,$3,'rtds_chainlink','BTCUSD',$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(observation.tick_id)
+        .bind(observation.source_timestamp)
+        .bind(observation.received_at)
+        .bind(observation.price)
+        .bind(observation.provider_available_at)
+        .bind(connection_id)
+        .bind(i64::try_from(ingest_sequence).unwrap_or(i64::MAX))
+        .bind(Option::<String>::None)
+        .bind(&observation.dedup_key)
+        .bind(clock_skew_ms)
+        .bind(integrity_status)
+        .bind(&observation.source_payload)
+        .execute(&self.pool)
+        .await
+        .map_err(db("polymarket_rtds_chainlink_insert"))?;
         Ok(())
     }
 
@@ -896,6 +1001,99 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
     }
 }
 
+fn decode_reference_observation(
+    bytes: &[u8],
+    received_at: DateTime<Utc>,
+) -> Result<Option<ReferenceObservation>, StrategyError> {
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(integrity(
+            "polymarket_rtds_reference_frame_too_large",
+            "RTDS frame exceeded 64 KiB",
+        ));
+    }
+    let source_payload = serde_json::from_slice::<Value>(bytes)
+        .map_err(integrity_err("polymarket_rtds_reference_decode"))?;
+    if source_payload.get("topic").and_then(Value::as_str) != Some(TOPIC_REFERENCE) {
+        return Ok(None);
+    }
+    let envelope: RtdsEnvelope = serde_json::from_value(source_payload.clone())
+        .map_err(integrity_err("polymarket_rtds_reference_decode"))?;
+    if envelope.message_type == "subscribe" {
+        return Ok(None);
+    }
+    if envelope.message_type != "update" {
+        return Err(integrity(
+            "polymarket_rtds_reference_identity",
+            "RTDS Chainlink message type did not match its subscription",
+        ));
+    }
+    let payload: RtdsReferencePayload = serde_json::from_value(envelope.payload)
+        .map_err(integrity_err("polymarket_rtds_reference_decode"))?;
+    if !payload.symbol.eq_ignore_ascii_case(SYMBOL) {
+        return Err(integrity(
+            "polymarket_rtds_reference_identity",
+            "RTDS Chainlink message identity did not match its subscription",
+        ));
+    }
+    let price_text = payload
+        .value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| payload.value.to_string());
+    let price = Decimal::from_str(&price_text)
+        .map_err(integrity_err("polymarket_rtds_reference_price"))?
+        .round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero);
+    if price <= Decimal::ZERO {
+        return Err(integrity(
+            "polymarket_rtds_reference_nonpositive",
+            "RTDS Chainlink price must be positive",
+        ));
+    }
+    let source_timestamp =
+        timestamp_ms(payload.timestamp, "polymarket_rtds_reference_source_time")?;
+    let published_at = timestamp_ms(envelope.timestamp, "polymarket_rtds_reference_publish_time")?;
+    if published_at < source_timestamp
+        || published_at > received_at + chrono::Duration::milliseconds(MAX_CLOCK_LEAD_MS)
+    {
+        return Err(integrity(
+            "polymarket_rtds_reference_time_order",
+            "RTDS Chainlink timestamps are not causally ordered",
+        ));
+    }
+    let dedup_key = format!(
+        "rtds_chainlink:BTCUSD:{}:-:{}",
+        source_timestamp.timestamp_millis(),
+        price.normalize()
+    );
+    let source_event_id = dedup_key.clone();
+    let canonical = serde_json::to_vec(&source_payload)
+        .map_err(integrity_err("polymarket_rtds_reference_hash_encode"))?;
+    Ok(Some(ReferenceObservation {
+        source_timestamp,
+        provider_available_at: Some(published_at),
+        received_at,
+        price,
+        source_payload,
+        payload_sha256: hex_digest(Sha256::digest(canonical)),
+        source_event_id,
+        tick_id: Uuid::new_v5(&Uuid::NAMESPACE_URL, dedup_key.as_bytes()),
+        dedup_key,
+    }))
+}
+
+fn is_reference_topic(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("topic")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some(TOPIC_REFERENCE)
+}
+
 fn decode_observation(
     bytes: &[u8],
     received_at: DateTime<Utc>,
@@ -920,6 +1118,7 @@ fn decode_observation(
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
+        TOPIC_REFERENCE_SNAPSHOT_ALIAS if envelope.message_type == "subscribe" => return Ok(None),
         _ => {
             return Err(integrity(
                 "polymarket_twap_topic",
@@ -1133,6 +1332,56 @@ mod tests {
             assert_eq!(decoded.window_seconds, window);
             assert_eq!(decoded.price, Decimal::from_str("65000.5").unwrap());
         }
+    }
+
+    #[test]
+    fn decodes_chainlink_reference_from_the_shared_rtds_connection() {
+        let bytes = serde_json::to_vec(&json!({
+            "connection_id": "90bc5f25-3f12-4f11-b961-0af0b37a6da2",
+            "topic": TOPIC_REFERENCE, "type": "update", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"symbol": "btc/usd", "value": 65000.512345678912,
+                "full_accuracy_value": "65000512345678912000000",
+                "timestamp": 1_785_178_800_000_i64}
+        }))
+        .unwrap();
+        let received = Utc.timestamp_millis_opt(1_785_178_800_500).unwrap();
+        let decoded = decode_reference_observation(&bytes, received)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decoded.price,
+            Decimal::from_str("65000.5123456789").unwrap()
+        );
+        assert_eq!(
+            decoded.dedup_key,
+            "rtds_chainlink:BTCUSD:1785178800000:-:65000.5123456789"
+        );
+    }
+
+    #[test]
+    fn consumes_chainlink_reference_subscription_frames() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_REFERENCE, "type": "subscribe", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"symbol": "btc/usd", "value": 65000.5,
+                "timestamp": 1_785_178_800_000_i64}
+        }))
+        .unwrap();
+        assert!(decode_reference_observation(&bytes, Utc::now())
+            .unwrap()
+            .is_none());
+        assert!(is_reference_topic(&bytes));
+    }
+
+    #[test]
+    fn ignores_the_provider_reference_snapshot_topic_alias() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_REFERENCE_SNAPSHOT_ALIAS, "type": "subscribe",
+            "timestamp": 1_785_178_800_123_i64,
+            "payload": {"data": [{"timestamp": 1_785_178_800_000_i64, "value": 65000.5}],
+                "symbol": "btc/usd"}
+        }))
+        .unwrap();
+        assert!(decode_observation(&bytes, Utc::now()).unwrap().is_none());
     }
 
     #[test]

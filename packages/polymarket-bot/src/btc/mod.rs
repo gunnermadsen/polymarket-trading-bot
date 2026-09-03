@@ -39,8 +39,7 @@ pub use binance_spot_l2::{
 };
 pub use directional_external_runtime::{
     BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
-    DirectionalExternalRuntimeConfig, DirectionalExternalSourceStatus, DirectionalExternalState,
-    PolygonOraclePoint,
+    DirectionalExternalSourceStatus, DirectionalExternalState, PolygonOraclePoint,
 };
 pub use directional_features::{
     build_directional_features, build_directional_features_for_schema,
@@ -80,11 +79,7 @@ pub use feed_contract::{
     validate_feed_requirements, BtcModelFeedId, BtcModelFeedRequirement,
     BTC_MODEL_FEED_CONTRACT_VERSION,
 };
-pub use feeds::{
-    parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
-    parse_clob_messages, parse_rtds_reference_tick, BookRegistry, BookUpdateSide, ClobMessage,
-    PriceChange,
-};
+pub use feeds::BookRegistry;
 pub use live_execution::BtcLiveExecutionAdapter;
 pub use market::{
     aligned_window_start, discovery_windows, parse_gamma_btc_interval_event, slug_for_window,
@@ -109,9 +104,9 @@ pub use repository::{
     BtcRunManifest, PersistedOfficialResolution,
 };
 pub use runtime::{
-    runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
-    BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner,
-    NoopStrategyRunner, StrategyObservation,
+    runtime_status_from_inputs, BtcPlaybookRuntimeHandle, BtcRuntime, BtcRuntimeConfig,
+    BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner, NoopStrategyRunner,
+    StrategyObservation,
 };
 pub use strategy::*;
 pub use types::*;

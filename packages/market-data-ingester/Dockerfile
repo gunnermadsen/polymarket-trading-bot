@@ -10,6 +10,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.lock ./
+COPY packages/market-data-ingester/build.rs ./build.rs
+COPY common/proto /common/proto
 RUN mkdir src \
     && printf 'fn main() {}\n' > src/main.rs \
     && printf 'pub fn placeholder() {}\n' > src/lib.rs \

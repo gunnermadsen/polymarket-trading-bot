@@ -8,6 +8,7 @@ RUN apt-get update \
 
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
 COPY packages/polymarket-bot/build.rs ./build.rs
+COPY common/proto /common/proto
 COPY packages/polymarket-bot/src ./src
 
 FROM builder-base AS test

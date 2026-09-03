@@ -235,6 +235,16 @@ run key; lifecycle and record ownership still belong to `process_id`.
     "raw": {
       "btc_realtime_paper": {
         "schema_version": "btc_realtime_paper_process_v2",
+        "playbook_version": "v1.2",
+        "sources": [
+          "polymarket_btc_five_minute_market_contracts",
+          "polymarket_btc_five_minute_orderbooks",
+          "polymarket_btc_five_minute_resolutions",
+          "polymarket_rtds_chainlink_reference_price",
+          "polymarket_chainlink_btcusd_twap",
+          "binance_spot_btcusdt_one_second_ohlcv",
+          "polygon_chainlink_btcusd_oracle"
+        ],
         "next_experiment_key": "btc-5m-chainlink-paper-example-v1",
         "preregistration_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "strategy": {},
@@ -385,6 +395,16 @@ compiled identities and behavior.
     "raw": {
       "btc_realtime_paper": {
         "schema_version": "btc_realtime_paper_process_v3",
+        "playbook_version": "v1.2",
+        "sources": [
+          "polymarket_btc_five_minute_market_contracts",
+          "polymarket_btc_five_minute_orderbooks",
+          "polymarket_btc_five_minute_resolutions",
+          "polymarket_rtds_chainlink_reference_price",
+          "polymarket_chainlink_btcusd_twap",
+          "binance_spot_btcusdt_one_second_ohlcv",
+          "polygon_chainlink_btcusd_oracle"
+        ],
         "next_experiment_key": "btc-5m-market-anchored-research-example-v1",
         "preregistration_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "strategy": {

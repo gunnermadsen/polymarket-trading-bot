@@ -51,5 +51,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         |external| format!("{external}+tree-sha256:{tree_hash}"),
     );
     println!("cargo:rustc-env=POLYMARKET_COMPILED_SOURCE_ID={identity}");
+    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    env::set_var("PROTOC", protoc);
+    let proto = "../../common/proto/market_data.proto";
+    tonic_build::configure().compile_protos(&[proto], &["../../common/proto"])?;
+    println!("cargo:rerun-if-changed={proto}");
     Ok(())
 }

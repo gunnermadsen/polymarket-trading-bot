@@ -98,6 +98,13 @@ impl BtcExecutionLifecycle for PaperExecutionLifecycle {
         process_id: Uuid,
         run_id: Uuid,
     ) -> Result<()> {
+        repository
+            .recover_process_official_resolution_watches(
+                process_id,
+                run_id,
+                BtcExecutionMode::Paper,
+            )
+            .await?;
         let state = repository
             .paper_venue_resume_state(process_id, run_id)
             .await?;
@@ -205,10 +212,13 @@ impl BtcExecutionLifecycle for LiveExecutionLifecycle {
 
     async fn resume_run(
         &self,
-        _repository: &BtcRepository,
-        _process_id: Uuid,
-        _run_id: Uuid,
+        repository: &BtcRepository,
+        process_id: Uuid,
+        run_id: Uuid,
     ) -> Result<()> {
+        repository
+            .recover_process_official_resolution_watches(process_id, run_id, BtcExecutionMode::Live)
+            .await?;
         // The runner performs one mandatory reconciliation after resume hydration and admission
         // initialization. Live execution has no in-memory capital state to hydrate here.
         Ok(())

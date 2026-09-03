@@ -409,7 +409,7 @@ pub struct PolymarketBtcFiveMinuteOrderbooksStrategy {
     client: Client,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 enum Outcome {
     Up,
     Down,
@@ -424,7 +424,7 @@ impl Outcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct MarketContract {
     event_slug: String,
     market_id: String,
@@ -1628,17 +1628,16 @@ impl BookRegistry {
         !self.books.is_empty() && self.books.values().all(|book| book.bootstrapped)
     }
 
-    fn await_authoritative_books<'a>(&mut self, token_ids: impl IntoIterator<Item = &'a str>) {
-        for token_id in token_ids {
-            if let Some(book) = self.books.get_mut(token_id) {
-                book.bids.clear();
-                book.asks.clear();
-                book.bootstrapped = false;
-                book.received_at = None;
-                book.source_hash = None;
-                book.ingest_sequence = 0;
-            }
-        }
+    fn market_bootstrapped(&self, window_start: DateTime<Utc>) -> bool {
+        let mut matching = self
+            .books
+            .values()
+            .filter(|book| book.market.window_start == window_start);
+        let first = matching.next();
+        let second = matching.next();
+        first.is_some_and(|book| book.bootstrapped)
+            && second.is_some_and(|book| book.bootstrapped)
+            && matching.next().is_none()
     }
 
     fn apply(
@@ -1970,7 +1969,7 @@ impl BookRegistry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct BookSample {
     market: MarketContract,
     token_id: String,
@@ -1982,6 +1981,57 @@ struct BookSample {
     ingest_sequence: i64,
     bids: Vec<[String; 2]>,
     asks: Vec<[String; 2]>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SampledBookStreamMetadata {
+    source_event_id: String,
+    observed_at: DateTime<Utc>,
+    payload_sha256: String,
+}
+
+fn sampled_book_stream_metadata(
+    sample: &BookSample,
+    sampled_at: DateTime<Utc>,
+) -> Result<SampledBookStreamMetadata, StrategyError> {
+    let observed_at = canonical_timestamp(sampled_at);
+    let payload = serde_json::to_value(sample).map_err(|error| {
+        integrity_error(
+            "polymarket_stream_serialization",
+            format!("failed to serialize sampled Polymarket book: {error}"),
+        )
+    })?;
+    Ok(SampledBookStreamMetadata {
+        source_event_id: format!(
+            "sample:{}:{}:{}",
+            observed_at.timestamp_micros(),
+            sample.token_id,
+            sample.ingest_sequence
+        ),
+        observed_at,
+        payload_sha256: hash_json(&payload)?,
+    })
+}
+
+async fn publish_sampled_books(
+    samples: &[BookSample],
+    sampled_at: DateTime<Utc>,
+) -> Result<(), StrategyError> {
+    for sample in samples {
+        let metadata = sampled_book_stream_metadata(sample, sampled_at)?;
+        crate::streaming::publish(
+            STRATEGY_KEY.as_str(),
+            metadata.source_event_id,
+            metadata.observed_at,
+            metadata.observed_at,
+            metadata.observed_at,
+            metadata.payload_sha256,
+            true,
+            sample,
+        )
+        .await;
+    }
+    Ok(())
 }
 
 fn decimal_string(value: Decimal) -> String {
@@ -3808,7 +3858,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             tokio::select! {
                 _ = shutdown.cancelled() => return Ok(()),
                 _ = &mut bootstrap_sleep, if bootstrap_deadline.is_some() => {
-                    let message = "Polymarket CLOB did not deliver every subscribed token's initial full book within the bootstrap bound";
+                    let message = "Polymarket CLOB did not deliver every subscribed token's authoritative full book within the snapshot bound";
                     send_gap(&persistence_sender, GapObservation {
                         kind: "snapshot_bootstrap",
                         code: "polymarket_clob_bootstrap_timeout",
@@ -3845,12 +3895,23 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             end_cursor: Some(format!("sampling_bucket:{last_missed}")),
                         }).await?;
                     }
-                    if !registry.all_bootstrapped() {
+                    let current_window = aligned_market_window(scheduled_at);
+                    // Successor books are subscribed ahead of their trading window so
+                    // they can warm without interrupting canonical samples for the
+                    // current market. Only the current market's two outcome books are
+                    // required for this aligned bucket.
+                    if !registry.market_bootstrapped(current_window) {
+                        // A new connection has an explicit bounded bootstrap
+                        // deadline. Readiness remains false during that normal
+                        // startup interval; only expiry is a continuity gap.
+                        if bootstrap_deadline.is_some() {
+                            continue;
+                        }
                         let bucket = scheduled_at.timestamp_millis().div_euclid(
                             i64::try_from(self.config.sample_interval_ms).unwrap_or(i64::MAX)
                         );
                         let message = format!(
-                            "aligned sampling bucket {bucket} had incomplete subscribed books"
+                            "aligned sampling bucket {bucket} had incomplete current-market books"
                         );
                         send_gap(&persistence_sender, GapObservation {
                             kind: "local_sampling_cadence",
@@ -3863,7 +3924,6 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         }).await?;
                         continue;
                     }
-                    let current_window = aligned_market_window(scheduled_at);
                     let has_current = active_markets
                         .iter()
                         .any(|market| market.window_start == current_window);
@@ -3895,11 +3955,17 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     enqueue_samples(
                         &persistence_sender,
                         pending_missed_buckets,
-                        samples,
+                        samples.clone(),
                         sampled_at,
                         connection_epoch,
                         sampling_bucket,
                     )?;
+                    // The websocket emits only changed books, while this
+                    // product's canonical contract is an aligned sampled
+                    // snapshot. Publish each accepted sample immediately after
+                    // handing it to the asynchronous persistence worker so a
+                    // quiet venue does not make the direct gRPC stream stale.
+                    publish_sampled_books(&samples, sampled_at).await?;
                 }
                 event = persistence_events.recv() => match event {
                     Some(PersistenceEvent::Persisted(persisted)) => {
@@ -4010,18 +4076,31 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 return Err(error);
             }
         };
+        let mut frame_tokens = BTreeSet::new();
         for message in messages {
             let source_timestamp = message_source_timestamp(&message);
             let changed_tokens = match &message {
+                ClobMessage::Book { token_id, .. }
+                | ClobMessage::BestBidAsk { token_id, .. }
+                | ClobMessage::TickSizeChange { token_id, .. } => vec![token_id.clone()],
                 ClobMessage::PriceChange { changes, .. } => changes
                     .iter()
                     .map(|change| change.token_id.clone())
                     .collect::<Vec<_>>(),
                 _ => Vec::new(),
             };
+            frame_tokens.extend(changed_tokens.iter().cloned());
             match registry.apply(message, received_at, self.config.max_levels_per_side) {
                 Ok(_) => {}
                 Err(error) => {
+                    if requires_fresh_book_epoch(&error, &changed_tokens) {
+                        // With custom CLOB events enabled, the venue follows the
+                        // delta with an authoritative full book, but that refresh
+                        // is not guaranteed on an established subscription. Reject
+                        // the delta and immediately reconnect into a fresh snapshot
+                        // epoch rather than waiting while the product is unavailable.
+                        return Err(error);
+                    }
                     self.record_frame_gap(
                         persistence_sender,
                         continuity,
@@ -4031,18 +4110,26 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         source_timestamp,
                     )
                     .await?;
-                    if error.code == "polymarket_clob_top_mismatch" && !changed_tokens.is_empty() {
-                        // With custom CLOB events enabled, the venue follows the
-                        // delta with authoritative full books at the same source
-                        // timestamp. Keep the affected tokens fail closed until
-                        // those snapshots arrive instead of discarding the session.
-                        registry
-                            .await_authoritative_books(changed_tokens.iter().map(String::as_str));
-                        continue;
-                    }
                     return Err(error);
                 }
             }
+        }
+        for sample in registry
+            .samples(self.config.top_n)
+            .into_iter()
+            .filter(|sample| frame_tokens.contains(&sample.token_id))
+        {
+            crate::streaming::publish(
+                STRATEGY_KEY.as_str(),
+                format!("{}:{}", sample.token_id, sample.ingest_sequence),
+                sample.source_timestamp,
+                sample.source_timestamp,
+                sample.received_at,
+                sample.source_hash.clone().unwrap_or_default(),
+                true,
+                &sample,
+            )
+            .await;
         }
         Ok(())
     }
@@ -4074,6 +4161,10 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         )
         .await
     }
+}
+
+fn requires_fresh_book_epoch(error: &StrategyError, changed_tokens: &[String]) -> bool {
+    error.code == "polymarket_clob_top_mismatch" && !changed_tokens.is_empty()
 }
 
 fn message_source_timestamp(message: &ClobMessage) -> Option<DateTime<Utc>> {
@@ -4416,6 +4507,20 @@ mod tests {
     }
 
     #[test]
+    fn unbootstrapped_successor_does_not_block_current_market_sampling() {
+        let mut registry = bootstrapped_registry();
+        let current = fixture_market();
+        let successor = shifted_market(&current, 1, '3', "5", "6");
+        registry
+            .install_market_set(&[current.clone(), successor.clone()])
+            .expect("install successor");
+
+        assert!(!registry.all_bootstrapped());
+        assert!(registry.market_bootstrapped(current.window_start));
+        assert!(!registry.market_bootstrapped(successor.window_start));
+    }
+
+    #[test]
     fn deltas_wait_for_full_snapshot_and_reconnect_resets_every_level() {
         let market = fixture_market();
         let mut registry =
@@ -4490,7 +4595,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_timestamp_is_ignored_and_top_mismatch_awaits_authoritative_book() {
+    fn stale_timestamp_is_ignored_and_top_mismatch_requires_a_fresh_book_epoch() {
         let mut registry = bootstrapped_registry();
         let market = fixture_market();
         let before = registry
@@ -4546,10 +4651,14 @@ mod tests {
             source_timestamp: at(1_783_902_601_500),
             source_hash: None,
         };
-        let error = registry
+        let crossed_error = registry
             .apply(crossed, at(1_783_902_601_510), 100)
             .expect_err("crossed");
-        assert_eq!(error.code, "polymarket_clob_crossed_book");
+        assert_eq!(crossed_error.code, "polymarket_clob_crossed_book");
+        assert!(!requires_fresh_book_epoch(
+            &crossed_error,
+            std::slice::from_ref(&market.up_token_id),
+        ));
 
         let mismatched = ClobMessage::PriceChange {
             market_id: market.condition_id.clone(),
@@ -4573,11 +4682,16 @@ mod tests {
             .contains(&format!("token_id={}", market.up_token_id)));
         assert!(error.message.contains("advertised_bid=0.49"));
         assert!(error.message.contains("reconstructed_bid=0.48"));
+        assert!(requires_fresh_book_epoch(
+            &error,
+            std::slice::from_ref(&market.up_token_id),
+        ));
+        assert!(!requires_fresh_book_epoch(&error, &[]));
         let after = registry.books.get(&market.up_token_id).expect("Up book");
         assert_eq!(after.bids, before.bids);
         assert_eq!(after.asks, before.asks);
 
-        registry.await_authoritative_books([market.up_token_id.as_str()]);
+        registry.reset_connection(Uuid::new_v4());
         assert!(
             !registry
                 .books
@@ -4607,7 +4721,7 @@ mod tests {
         assert_eq!(
             registry
                 .apply(authoritative, at(1_783_902_601_620), 100)
-                .expect("authoritative book repairs mismatch"),
+                .expect("fresh-epoch authoritative book repairs mismatch"),
             ApplyOutcome::Applied
         );
         let repaired = registry.books.get(&market.up_token_id).expect("Up book");
@@ -4805,6 +4919,25 @@ mod tests {
         .expect("later");
         assert_eq!(first.book_sha256, later_sample.book_sha256);
         assert_ne!(first.payload_sha256, later_sample.payload_sha256);
+    }
+
+    #[test]
+    fn sampled_book_stream_identity_advances_on_quiet_sampling_ticks() {
+        let sample = bootstrapped_registry()
+            .samples(1)
+            .into_iter()
+            .find(|sample| sample.outcome == Outcome::Up)
+            .expect("Up sample");
+        let first = sampled_book_stream_metadata(&sample, at(1_783_902_602_001))
+            .expect("first stream metadata");
+        let second = sampled_book_stream_metadata(&sample, at(1_783_902_603_001))
+            .expect("second stream metadata");
+
+        assert_eq!(first.observed_at, at(1_783_902_602_001));
+        assert_eq!(second.observed_at, at(1_783_902_603_001));
+        assert_ne!(first.source_event_id, second.source_event_id);
+        assert_eq!(first.payload_sha256, second.payload_sha256);
+        assert!(first.source_event_id.contains(&sample.token_id));
     }
 
     #[test]

@@ -289,7 +289,7 @@ struct ChainlinkBtcusdReferencePriceStrategy {
     profiles: ProfileRepository,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct ReferencePriceObservation {
     feed_id: String,
     source_timestamp: DateTime<Utc>,
@@ -376,6 +376,21 @@ impl ChainlinkBtcusdReferencePriceStrategy {
             .map(|observation| observation.source_timestamp)
             .max()
             .expect("nonempty observations have a maximum timestamp");
+        for observation in &observations {
+            crate::streaming::publish(
+                STRATEGY_KEY.as_str(),
+                observation.report_sha256.clone(),
+                observation.source_timestamp,
+                observation
+                    .provider_available_at
+                    .unwrap_or(observation.received_at),
+                observation.received_at,
+                observation.payload_sha256.clone(),
+                true,
+                observation,
+            )
+            .await;
+        }
 
         let mut transaction = self
             .pool

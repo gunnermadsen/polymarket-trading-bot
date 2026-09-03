@@ -9,6 +9,8 @@
     "execution": { "mode": "paper", "execute_signals": true, "live_capital": false },
     "raw": { "btc_realtime_paper": {
       "schema_version": "btc_realtime_paper_process_v3",
+      "playbook_version": "v1.2",
+      "sources": ["polymarket_btc_five_minute_market_contracts", "polymarket_btc_five_minute_orderbooks", "polymarket_btc_five_minute_resolutions", "polymarket_rtds_chainlink_reference_price", "polymarket_chainlink_btcusd_twap", "binance_spot_btcusdt_one_second_ohlcv", "polygon_chainlink_btcusd_oracle"],
       "next_experiment_key": "btc-5m-payoff-aware-q5-native-admission-20260821-run",
       "preregistration_sha256": "8ff4d3292c89553e02b02bc061ed862d26a27f468f4ced3b866c7e582470b8ce",
       "strategy": {
