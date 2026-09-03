@@ -114,43 +114,6 @@ impl BinanceOpenInterestConfig {
             response_bytes,
         })
     }
-
-    /// Loads the latest bounded five-minute observations for causal runtime features.
-    ///
-    /// This uses the same decoder and validation contract as the historical ingester but does
-    /// not persist rows or create backfill lineage. Callers must retain the observation receipt
-    /// time and must not expose a row to a decision made before that receipt.
-    pub(crate) async fn fetch_latest(
-        &self,
-        client: &reqwest::Client,
-        limit: usize,
-    ) -> Result<Vec<BinanceBtcusdtOpenInterestRecord>> {
-        self.validate()?;
-        if !(13..=500).contains(&limit) {
-            bail!("Binance open-interest runtime limit must be between 13 and 500");
-        }
-        let limit = limit.to_string();
-        let response = client
-            .get(format!(
-                "{}/futures/data/openInterestHist",
-                self.base_url.trim_end_matches('/')
-            ))
-            .query(&[
-                ("symbol", self.symbol.as_str()),
-                ("period", "5m"),
-                ("limit", limit.as_str()),
-            ])
-            .send()
-            .await
-            .context("failed to request latest Binance open-interest history")?
-            .error_for_status()
-            .context("latest Binance open-interest history request was rejected")?;
-        let payload = response
-            .json::<Vec<RawOpenInterestRecord>>()
-            .await
-            .context("invalid latest Binance open-interest history JSON")?;
-        decode_open_interest_records(payload, &self.symbol, None, true)
-    }
 }
 
 fn decode_open_interest_records(

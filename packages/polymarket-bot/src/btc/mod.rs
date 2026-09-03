@@ -79,11 +79,7 @@ pub use feed_contract::{
     validate_feed_requirements, BtcModelFeedId, BtcModelFeedRequirement,
     BTC_MODEL_FEED_CONTRACT_VERSION,
 };
-pub use feeds::{
-    parse_binance_agg_trade, parse_binance_agg_trade_with_details, parse_binance_aggregate_trade,
-    parse_clob_messages, parse_rtds_reference_tick, BookRegistry, BookUpdateSide, ClobMessage,
-    PriceChange,
-};
+pub use feeds::BookRegistry;
 pub use live_execution::BtcLiveExecutionAdapter;
 pub use market::{
     aligned_window_start, discovery_windows, parse_gamma_btc_interval_event, slug_for_window,

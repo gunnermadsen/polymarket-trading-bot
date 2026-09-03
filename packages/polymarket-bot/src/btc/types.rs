@@ -669,7 +669,7 @@ pub struct OrderbookCheckpoint {
 pub struct BookReadiness {
     pub market_id: String,
     pub token_id: String,
-    /// Current CLOB websocket epoch. A book is never reusable across epochs.
+    /// Current market-data stream epoch. A book is never reusable across epochs.
     pub connection_id: Uuid,
     pub bootstrapped: bool,
     pub integrity_status: FeedIntegrityStatus,
