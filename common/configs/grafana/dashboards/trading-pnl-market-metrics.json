@@ -380,7 +380,7 @@
           },
           "decimals": 1,
           "mappings": [],
-          "max": 1,
+          "max": 8,
           "min": -1,
           "thresholds": {
             "mode": "absolute",
@@ -2901,7 +2901,7 @@
       "id": 22,
       "type": "stat",
       "title": "Data Delivery Latency",
-      "description": "Slowest current worker-publish to trading-runtime apply latency across subscribed products.",
+      "description": "Slowest current worker-publish to trading-runtime apply latency across the core realtime trading feeds.",
       "gridPos": {
         "h": 5,
         "w": 5,
@@ -2915,9 +2915,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "1000 * max(polymarket_market_data_product_publish_apply_latency_seconds)",
+          "expr": "1000 * max(polymarket_market_data_product_publish_apply_latency_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"})",
           "instant": true,
-          "legendFormat": "Slowest subscribed product"
+          "legendFormat": "Slowest core realtime stream"
         }
       ],
       "fieldConfig": {
