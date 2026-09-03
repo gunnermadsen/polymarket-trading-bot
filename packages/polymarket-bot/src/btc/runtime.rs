@@ -1968,7 +1968,7 @@ pub struct BtcRuntime {
 async fn apply_directional_chainlink_history(
     state: &Arc<RwLock<RealtimeState>>,
     ticks: Vec<ReferencePriceTick>,
-) {
+) -> usize {
     let mut realtime = state.write().await;
     for tick in ticks {
         if let Err(error) = realtime.directional_external.observe_rtds_chainlink(&tick) {
@@ -1978,6 +1978,9 @@ async fn apply_directional_chainlink_history(
             );
         }
     }
+    realtime
+        .directional_external
+        .chainlink_candle_complete_minutes(Utc::now())
 }
 
 async fn run_directional_chainlink_hydration_recovery(
@@ -2003,13 +2006,24 @@ async fn run_directional_chainlink_hydration_recovery(
         {
             Ok(ticks) => {
                 let tick_count = ticks.len();
-                apply_directional_chainlink_history(&state, ticks).await;
-                tracing::info!(
+                let complete_minutes = apply_directional_chainlink_history(&state, ticks).await;
+                if complete_minutes >= 61 {
+                    tracing::info!(
+                        tick_count,
+                        complete_minutes,
+                        "directional Chainlink midpoint bootstrap recovered"
+                    );
+                    let _ = shutdown.changed().await;
+                    return;
+                }
+                tracing::warn!(
                     tick_count,
-                    "directional Chainlink midpoint bootstrap recovered"
+                    complete_minutes,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "directional Chainlink midpoint bootstrap remains incomplete"
                 );
-                let _ = shutdown.changed().await;
-                return;
+                retry_delay =
+                    (retry_delay * 2).min(DIRECTIONAL_CHAINLINK_HYDRATION_RETRY_MAX_DELAY);
             }
             Err(error) => {
                 tracing::warn!(
@@ -2082,7 +2096,16 @@ impl BtcRuntime {
                 .load_directional_external_chainlink_mid_history(bootstrap_start, bootstrap_end)
                 .await
             {
-                Ok(ticks) => apply_directional_chainlink_history(&state, ticks).await,
+                Ok(ticks) => {
+                    let complete_minutes = apply_directional_chainlink_history(&state, ticks).await;
+                    if complete_minutes < 61 {
+                        directional_chainlink_hydration_failed = true;
+                        tracing::warn!(
+                            complete_minutes,
+                            "directional Chainlink midpoint bootstrap is incomplete"
+                        );
+                    }
+                }
                 Err(error) => {
                     directional_chainlink_hydration_failed = true;
                     tracing::warn!(
