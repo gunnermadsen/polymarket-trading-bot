@@ -29,7 +29,7 @@
       "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
     },
     {
-      "id": 3, "type": "stat", "title": "Integrity", "gridPos": {"x": 15, "y": 0, "w": 9, "h": 5},
+      "id": 3, "type": "stat", "title": "Integrity · Last Hour", "gridPos": {"x": 15, "y": 0, "w": 9, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))", "instant": true, "legendFormat": "Sequence gaps"},
