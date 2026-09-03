@@ -105,7 +105,7 @@ impl StrategyError {
 }
 
 #[async_trait]
-pub trait IngesterStrategy: Send + Sync {
+pub trait RealtimeWorkerStrategy: Send + Sync {
     fn key(&self) -> IngesterStrategyKey;
 
     async fn run(&self, shutdown: CancellationToken) -> Result<(), StrategyError>;

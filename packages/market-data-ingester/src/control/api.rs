@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE},
         HeaderMap, Request, StatusCode,
@@ -18,10 +18,17 @@ use serde_json::Value;
 use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::watch};
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{
-    domain::{DesiredState, IngesterProfile, IngesterStrategyKey},
-    persistence::ProfileRepository,
+    domain::{
+        BackfillFailureKind, BackfillOutcome, BackfillRequest, DesiredState, IngesterProfile,
+        IngesterStrategyKey,
+    },
+    persistence::{
+        BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob,
+        ProfileRepository, WorkerRecord, WorkerRegistration,
+    },
     runtime::StrategyRegistry,
 };
 
@@ -48,6 +55,7 @@ impl ControlApi {
         }
         Ok(Self {
             state: ApiState {
+                backfills: BackfillRepository::new(profiles.pool().clone()),
                 profiles,
                 registry,
                 admin_token: Arc::<str>::from(admin_token),
@@ -58,15 +66,44 @@ impl ControlApi {
 
     pub fn router(&self) -> Router {
         let admin = Router::new()
-            .route("/v1/ingesters", get(list_profiles))
-            .route("/v1/ingesters/:strategy_key", get(get_profile))
+            .route("/strategy/all", get(list_strategies))
+            .route("/strategy/:strategy_key", get(get_strategy))
+            .route("/backfills", get(list_backfills).post(submit_backfill))
+            .route("/backfills/:job_id", get(get_backfill))
+            .route("/backfills/:job_id/cancel", post(cancel_backfill))
+            .route("/backfills/:job_id/retry", post(retry_backfill))
+            .route("/backfills/:job_id/events", get(get_backfill_events))
+            .route("/workers", get(list_workers))
+            .route("/internal/workers/register", post(register_worker))
             .route(
-                "/v1/ingesters/:strategy_key/config",
+                "/internal/workers/:worker_id/heartbeat",
+                post(heartbeat_worker),
+            )
+            .route(
+                "/internal/workers/:worker_id/assignments",
+                post(claim_assignment),
+            )
+            .route(
+                "/internal/workers/:worker_id/jobs/:job_id/heartbeat",
+                post(heartbeat_job),
+            )
+            .route(
+                "/internal/workers/:worker_id/jobs/:job_id/complete",
+                post(complete_job),
+            )
+            .route(
+                "/internal/workers/:worker_id/jobs/:job_id/fail",
+                post(fail_job),
+            )
+            .route("/ingesters", get(list_profiles))
+            .route("/ingesters/:strategy_key", get(get_profile))
+            .route(
+                "/ingesters/:strategy_key/config",
                 get(get_profile_config).put(replace_profile_config),
             )
-            .route("/v1/ingesters/:strategy_key/start", post(start_profile))
-            .route("/v1/ingesters/:strategy_key/stop", post(stop_profile))
-            .route("/v1/ingesters/:strategy_key/restart", post(restart_profile))
+            .route("/ingesters/:strategy_key/start", post(start_profile))
+            .route("/ingesters/:strategy_key/stop", post(stop_profile))
+            .route("/ingesters/:strategy_key/restart", post(restart_profile))
             .route_layer(middleware::from_fn_with_state(
                 self.state.clone(),
                 require_admin,
@@ -94,10 +131,353 @@ impl ControlApi {
 
 #[derive(Clone)]
 struct ApiState {
+    backfills: BackfillRepository,
     profiles: ProfileRepository,
     registry: StrategyRegistry,
     admin_token: Arc<str>,
     readiness: ControlReadiness,
+}
+
+async fn list_strategies(State(state): State<ApiState>) -> Json<Vec<String>> {
+    let mut keys = state
+        .registry
+        .keys()
+        .map(|key| key.as_str().to_owned())
+        .collect::<BTreeSet<_>>();
+    keys.extend(
+        state
+            .registry
+            .backfills()
+            .map(|strategy| strategy.descriptor().strategy_key.to_string()),
+    );
+    Json(keys.into_iter().collect())
+}
+
+async fn get_strategy(
+    State(state): State<ApiState>,
+    Path(strategy_key): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    if let Some(strategy) = state.registry.backfill(&strategy_key) {
+        return serde_json::to_value(strategy.descriptor())
+            .map(Json)
+            .map_err(ApiError::internal);
+    }
+    if let Ok(key) = IngesterStrategyKey::from_str(&strategy_key) {
+        if state.registry.factory(key).is_some() {
+            return Ok(Json(serde_json::json!({
+                "strategy_key": key.as_str(),
+                "name": key.as_str(),
+                "description": "realtime collection strategy",
+                "capabilities": ["realtime"],
+                "strategy_contract_version": 1,
+                "request_schema_version": null,
+                "shardable": false,
+                "maximum_shards": 0
+            })));
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::NOT_FOUND,
+        "strategy_not_found",
+        "strategy is not registered",
+    ))
+}
+
+async fn submit_backfill(
+    State(state): State<ApiState>,
+    Json(request): Json<BackfillRequest>,
+) -> Result<(StatusCode, Json<BackfillJobRecord>), ApiError> {
+    let strategy = state
+        .registry
+        .backfill(&request.strategy_key)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unsupported_strategy",
+                "strategy is not registered for backfills",
+            )
+        })?;
+    let validated = strategy.validate_request(&request).map_err(|error| {
+        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.code, error.message)
+    })?;
+    let shards = strategy.plan_shards(&validated).map_err(|error| {
+        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, error.code, error.message)
+    })?;
+    let job = state
+        .backfills
+        .submit(&validated, &shards)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
+#[derive(Debug, Deserialize)]
+struct BackfillListQuery {
+    limit: Option<i64>,
+}
+
+async fn list_backfills(
+    State(state): State<ApiState>,
+    Query(query): Query<BackfillListQuery>,
+) -> Result<Json<Vec<BackfillJobRecord>>, ApiError> {
+    state
+        .backfills
+        .list(query.limit.unwrap_or(100))
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+#[derive(Serialize)]
+struct BackfillDetail {
+    job: BackfillJobRecord,
+    shards: Vec<BackfillJobRecord>,
+}
+
+async fn get_backfill(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<BackfillDetail>, ApiError> {
+    let job = state
+        .backfills
+        .get(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "backfill_not_found",
+                "backfill job was not found",
+            )
+        })?;
+    let parent = job.parent_job_id.unwrap_or(job.job_id);
+    let shards = state
+        .backfills
+        .children(parent)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(BackfillDetail { job, shards }))
+}
+
+async fn cancel_backfill(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<BackfillJobRecord>, ApiError> {
+    state
+        .backfills
+        .cancel(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "backfill_not_found",
+                "backfill job was not found",
+            )
+        })
+}
+
+async fn retry_backfill(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<BackfillJobRecord>, ApiError> {
+    state
+        .backfills
+        .retry(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "backfill_not_found",
+                "backfill job was not found",
+            )
+        })
+}
+
+async fn get_backfill_events(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+    Query(query): Query<BackfillListQuery>,
+) -> Result<Json<Vec<BackfillJobEvent>>, ApiError> {
+    if state
+        .backfills
+        .get(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .is_none()
+    {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "backfill_not_found",
+            "backfill job was not found",
+        ));
+    }
+    state
+        .backfills
+        .events(job_id, query.limit.unwrap_or(100))
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+async fn list_workers(State(state): State<ApiState>) -> Result<Json<Vec<WorkerRecord>>, ApiError> {
+    state
+        .backfills
+        .list_workers()
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+async fn register_worker(
+    State(state): State<ApiState>,
+    Json(worker): Json<WorkerRegistration>,
+) -> Result<Json<WorkerRecord>, ApiError> {
+    state
+        .backfills
+        .register_worker(&worker)
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+async fn heartbeat_worker(
+    State(state): State<ApiState>,
+    Path(worker_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if state
+        .backfills
+        .heartbeat_worker(&worker_id)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "worker_not_found",
+            "worker is not registered",
+        ))
+    }
+}
+
+async fn claim_assignment(
+    State(state): State<ApiState>,
+    Path(worker_id): Path<String>,
+) -> Result<Json<Option<ClaimedBackfillJob>>, ApiError> {
+    state
+        .backfills
+        .claim(&worker_id, Duration::from_secs(60))
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+
+#[derive(Deserialize)]
+struct JobHeartbeatRequest {
+    lease_token: Uuid,
+    #[serde(default = "empty_json_object")]
+    progress: Value,
+    #[serde(default = "empty_json_object")]
+    checkpoint: Value,
+}
+
+fn empty_json_object() -> Value {
+    Value::Object(Default::default())
+}
+
+async fn heartbeat_job(
+    State(state): State<ApiState>,
+    Path((worker_id, job_id)): Path<(String, Uuid)>,
+    Json(request): Json<JobHeartbeatRequest>,
+) -> Result<StatusCode, ApiError> {
+    if state
+        .backfills
+        .heartbeat_job(
+            &worker_id,
+            job_id,
+            request.lease_token,
+            Duration::from_secs(60),
+            &request.progress,
+            &request.checkpoint,
+        )
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "lease_lost",
+            "backfill job lease was lost",
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+struct CompleteJobRequest {
+    lease_token: Uuid,
+    outcome: BackfillOutcome,
+}
+
+async fn complete_job(
+    State(state): State<ApiState>,
+    Path((worker_id, job_id)): Path<(String, Uuid)>,
+    Json(request): Json<CompleteJobRequest>,
+) -> Result<StatusCode, ApiError> {
+    if state
+        .backfills
+        .complete(&worker_id, job_id, request.lease_token, &request.outcome)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "lease_lost",
+            "backfill job lease was lost",
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+struct FailJobRequest {
+    lease_token: Uuid,
+    kind: BackfillFailureKind,
+    code: String,
+    message: String,
+}
+
+async fn fail_job(
+    State(state): State<ApiState>,
+    Path((worker_id, job_id)): Path<(String, Uuid)>,
+    Json(request): Json<FailJobRequest>,
+) -> Result<StatusCode, ApiError> {
+    if state
+        .backfills
+        .fail(
+            &worker_id,
+            job_id,
+            request.lease_token,
+            request.kind,
+            &request.code,
+            &request.message,
+        )
+        .await
+        .map_err(ApiError::internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "lease_lost",
+            "backfill job lease was lost",
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -462,7 +842,7 @@ mod tests {
             .router()
             .oneshot(
                 Request::builder()
-                    .uri("/v1/ingesters")
+                    .uri("/ingesters")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -537,7 +917,7 @@ mod tests {
                 Request::builder()
                     .method(Method::PUT)
                     .uri(format!(
-                        "/v1/ingesters/{KEY}/config",
+                        "/ingesters/{KEY}/config",
                         KEY = IngesterStrategyKey::BinanceSpotBtcusdtAggregateTrades
                     ))
                     .header(AUTHORIZATION, "Bearer 01234567890123456789012345678901")

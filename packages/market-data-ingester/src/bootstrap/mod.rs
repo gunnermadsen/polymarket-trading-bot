@@ -3,5 +3,5 @@ mod settings;
 mod shutdown;
 
 pub use application::Application;
-pub(crate) use settings::BootstrapSettings;
+pub(crate) use settings::{BootstrapSettings, IngesterMode};
 pub(crate) use shutdown::shutdown_signal;

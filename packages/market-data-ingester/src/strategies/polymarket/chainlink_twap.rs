@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategy, IngesterStrategyKey, StrategyError,
-        StrategyErrorKind,
+        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+        StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
@@ -196,7 +196,7 @@ impl StrategyFactory for PolymarketChainlinkBtcusdTwapFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         let config = PolymarketChainlinkBtcusdTwapConfig::from_value(&profile.config)?;
         if profile.checkpoint_schema_version != CHECKPOINT_SCHEMA_VERSION {
             return Err(StrategyFactoryError::Construction(format!(
@@ -247,7 +247,7 @@ struct PolymarketChainlinkBtcusdTwapStrategy {
 }
 
 #[async_trait]
-impl IngesterStrategy for PolymarketChainlinkBtcusdTwapStrategy {
+impl RealtimeWorkerStrategy for PolymarketChainlinkBtcusdTwapStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

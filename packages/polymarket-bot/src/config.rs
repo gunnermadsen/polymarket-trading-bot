@@ -51,8 +51,6 @@ impl fmt::Debug for GrafanaLiveConfig {
 pub struct BtcConfig {
     pub rtds_ws_url: String,
     pub binance_ws_url: String,
-    pub binance_spot_l2_enabled: bool,
-    pub binance_spot_l2_ws_url: String,
     pub binance_rest_base_url: String,
     pub data_source_heartbeat: BtcHeartbeatConfig,
     pub directional_external: DirectionalExternalRuntimeConfig,
@@ -129,11 +127,6 @@ impl AppConfig {
             binance_ws_url: env_or(
                 "POLYMARKET_BTC_BINANCE_WS_URL",
                 "wss://stream.binance.com/ws/btcusdt@aggTrade",
-            ),
-            binance_spot_l2_enabled: parse_bool("POLYMARKET_BTC_BINANCE_SPOT_L2_ENABLED", false),
-            binance_spot_l2_ws_url: env_or(
-                "POLYMARKET_BTC_BINANCE_SPOT_L2_WS_URL",
-                "wss://stream.binance.com/ws/btcusdt@depth@100ms",
             ),
             binance_rest_base_url: env_or(
                 "POLYMARKET_BTC_BINANCE_REST_BASE_URL",

@@ -4,24 +4,16 @@ This package procures public NYC daily-high market data and tests whether a froz
 weather policy has positive net expectancy. It does not submit orders, paper trade, load wallet
 credentials, or run the Polymarket trading-bot container.
 
-The runtime is isolated in `docker-compose.temperature.yml`:
-
-- a private PostgreSQL database with no published host port;
-- a weather-only migration command whose migrations are not loaded by the normal bot migrator;
-- four leased weather/archive workers and four dedicated CLOB price-history workers with public
-  read-only source access;
-- an on-demand offline model runner;
-- SSD-backed cache, database, model, and report directories under
-  `/Volumes/docker-data/polymarket-bot/temperature-expectancy` by default.
+Weather backfills use the repository's standard `ingester-master` API, unified backfill ledger, and
+horizontally scalable `ingester-worker` service. The GOES and HRRR strategy keys are
+`goes_abi_klga_features` and `hrrr_environment_features`. No weather-specific queue, database, or
+Compose runtime is used. Offline model commands remain available from the standard worker image.
 
 ## Start and procure data
 
-```bash
-docker compose -f docker-compose.temperature.yml up -d --build
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
-  enqueue-pilot --weather-start 2019-01-01 --market-start 2025-09-01 --end 2026-08-01
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model jobs
-```
+Start the standard ingester services with `docker compose --profile data-ingestion up -d`. Schedule
+weather collection through the master API; use `GET /strategy/all` and
+`GET /strategy/{strategy_id}` for the authoritative request and sharding contracts.
 
 `enqueue-pilot` splits both the Wunderground-aligned IEM METAR archive and the IEM-processed NCEI
 one-minute ASOS archive into annual jobs, and HRRR, price-history, and PMXT work into monthly
@@ -45,15 +37,15 @@ jobs, while the general pool cannot consume price-history jobs.
 ## Reconcile, train, and benchmark
 
 ```bash
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
+docker compose --profile data-ingestion run --rm --entrypoint nyc-temperature-model ingester-worker \
   reconcile-labels --start 2025-09-01 --end 2026-08-01
 
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
+docker compose --profile data-ingestion run --rm --entrypoint nyc-temperature-model ingester-worker \
   train --candidate histogram_residual --decision-hour 0 \
   --training-start 2019-01-01 --training-end 2024-12-31 \
   --calibration-start 2025-01-01 --calibration-end 2025-12-31
 
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
+docker compose --profile data-ingestion run --rm --entrypoint nyc-temperature-model ingester-worker \
   asymmetric-benchmark \
   --midnight-model-run-id MIDNIGHT_MODEL_RUN_ID \
   --noon-model-run-id NOON_MODEL_RUN_ID \
@@ -102,7 +94,7 @@ baseline. There is no intercept, so YES and NO remain exact complements.
 ```bash
 WEATHER_MODEL_IMAGE_ID="$(docker image inspect \
   capitonic/nyc-temperature-model:local --format '{{.Id}}')"
-docker compose -f docker-compose.temperature.yml --profile tools run --rm temperature-model \
+docker compose --profile data-ingestion run --rm --entrypoint nyc-temperature-model ingester-worker \
   residual-opportunity-benchmark \
   --source-policy-run-id SOURCE_ASYMMETRIC_POLICY_RUN_ID \
   --weather-model-image-id "${WEATHER_MODEL_IMAGE_ID}" \

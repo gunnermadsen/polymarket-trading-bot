@@ -5,6 +5,19 @@ edition = "2021"
 description = "Polymarket negative-risk arbitrage scanner and execution service"
 license = "UNLICENSED"
 publish = false
+autobins = false
+
+[[bin]]
+name = "polymarket-bot"
+path = "src/main.rs"
+
+[[bin]]
+name = "derive-clob-creds"
+path = "src/bin/derive-clob-creds.rs"
+
+[[bin]]
+name = "fit-chainlink-reliability-calibration"
+path = "src/bin/fit-chainlink-reliability-calibration.rs"
 
 [dependencies]
 anyhow = "1.0"

@@ -11,6 +11,7 @@ const DEFAULT_CONTROL_DATABASE_ACQUIRE_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Clone)]
 pub(crate) struct BootstrapSettings {
+    pub mode: IngesterMode,
     pub database: PgConnectOptions,
     pub database_pool_connections: u32,
     pub control_database_pool_connections: u32,
@@ -21,16 +22,34 @@ pub(crate) struct BootstrapSettings {
     pub admin_token: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IngesterMode {
+    Master,
+    Worker,
+}
+
 impl BootstrapSettings {
     pub fn from_environment() -> Result<Self> {
+        let mode = match env_or("INGESTER_MODE", "master").as_str() {
+            "master" => IngesterMode::Master,
+            "worker" => IngesterMode::Worker,
+            _ => bail!("INGESTER_MODE must be master or worker"),
+        };
         let database = database_options()?;
-        let admin_token = required("MARKET_DATA_INGESTER_ADMIN_TOKEN")?;
-        let service_instance = env::var("MARKET_DATA_INGESTER_INSTANCE")
-            .unwrap_or_else(|_| "market-data-ingester-1".to_owned());
-        let api_bind = env::var("MARKET_DATA_INGESTER_API_BIND")
+        let admin_token = env::var("INGESTER_ADMIN_TOKEN")
+            .or_else(|_| env::var("MARKET_DATA_INGESTER_ADMIN_TOKEN"))
+            .context("INGESTER_ADMIN_TOKEN is required")?;
+        let service_instance = env::var("INGESTER_INSTANCE")
+            .or_else(|_| env::var("MARKET_DATA_INGESTER_INSTANCE"))
+            .unwrap_or_else(|_| match mode {
+                IngesterMode::Master => "ingester-master".to_owned(),
+                IngesterMode::Worker => "ingester-worker".to_owned(),
+            });
+        let api_bind = env::var("INGESTER_API_BIND")
+            .or_else(|_| env::var("MARKET_DATA_INGESTER_API_BIND"))
             .unwrap_or_else(|_| DEFAULT_API_BIND.to_owned())
             .parse()
-            .context("MARKET_DATA_INGESTER_API_BIND must be a socket address")?;
+            .context("INGESTER_API_BIND must be a socket address")?;
         let database_pool_connections = env_u32(
             "MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS",
             DEFAULT_POOL_CONNECTIONS,
@@ -68,6 +87,7 @@ impl BootstrapSettings {
             bail!("MARKET_DATA_INGESTER_ADMIN_TOKEN must be between 32 and 4096 bytes");
         }
         Ok(Self {
+            mode,
             database,
             database_pool_connections,
             control_database_pool_connections,

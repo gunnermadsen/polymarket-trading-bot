@@ -741,7 +741,7 @@ async fn health_is_public_and_admin_routes_require_bearer() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -779,33 +779,37 @@ async fn generic_ingestion_admin_routes_require_bearer() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
     let job_id = Uuid::new_v4();
     let cases = vec![
-        ("GET", "/admin/backfill/ingesters".to_string(), ""),
-        ("GET", "/admin/backfill/jobs".to_string(), ""),
+        ("GET", "/admin/backfill/ingesters".to_string(), "", StatusCode::NOT_FOUND),
+        ("GET", "/admin/backfill/jobs".to_string(), "", StatusCode::NOT_FOUND),
         (
             "POST",
             "/admin/backfill/jobs".to_string(),
             r#"{"ingester":"btc_five_minute_markets"}"#,
+            StatusCode::NOT_FOUND,
         ),
-        ("GET", format!("/admin/backfill/jobs/{job_id}"), ""),
+        ("GET", format!("/admin/backfill/jobs/{job_id}"), "", StatusCode::NOT_FOUND),
         (
             "GET",
             format!("/admin/backfill/jobs/{job_id}/events"),
             "",
+            StatusCode::NOT_FOUND,
         ),
         (
             "POST",
             format!("/admin/backfill/jobs/{job_id}/cancel"),
             "",
+            StatusCode::NOT_FOUND,
         ),
         (
             "GET",
             "/admin/backfill/readiness/btc-five-minute-training?range_start=2026-01-01T00%3A00%3A00Z&range_end=2026-01-02T00%3A00%3A00Z"
                 .to_string(),
             "",
+            StatusCode::UNAUTHORIZED,
         ),
     ];
 
-    for (method, uri, body) in cases {
+    for (method, uri, body, expected) in cases {
         let response = app
             .clone()
             .oneshot(
@@ -819,298 +823,19 @@ async fn generic_ingestion_admin_routes_require_bearer() {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        assert_eq!(response.status(), expected, "{uri}");
     }
 }
 
 #[tokio::test]
-async fn authenticated_admin_can_list_generic_ingesters() {
+async fn retired_backfill_routes_are_not_found_for_authenticated_admin() {
     let app = http::router(Arc::new(FakeControlApi), "secret");
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/admin/backfill/ingesters")
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        json,
-        serde_json::json!({
-            "ingesters": [
-                {
-                    "key": "btc_five_minute_markets",
-                    "request_version": 1,
-                    "range_alignment_seconds": 300,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "btc_five_minute_resolutions",
-                    "request_version": 1,
-                    "range_alignment_seconds": 300,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "binance_btcusdt_agg_trades",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "binance_btcusdt_l2_one_second_features",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "binance_spot_btcusdt_l2_one_second_features",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "binance_btcusdt_one_second_klines",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "kraken_spot_btcusd_trade_prints_one_second_ohlcv",
-                    "request_version": 1,
-                    "range_alignment_seconds": 1,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "polymarket_btc_five_minute_orderbooks",
-                    "request_version": 1,
-                    "range_alignment_seconds": 3600,
-                    "accepts_new_requests": false
-                },
-                {
-                    "key": "polymarket_btc_five_minute_execution_snapshots",
-                    "request_version": 1,
-                    "range_alignment_seconds": 3600,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "chainlink_btcusd_reference_ticks",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "chainlink_btcusd_one_minute_candles",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "binance_btcusdt_five_minute_open_interest",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "polygon_chainlink_btcusd_oracle_rounds",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "pmdata_chainlink_btcusd_refprice",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "pmdata_chainlink_btcusd_twap_30s",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                },
-                {
-                    "key": "pmdata_chainlink_btcusd_twap_60s",
-                    "request_version": 1,
-                    "range_alignment_seconds": 86400,
-                    "accepts_new_requests": true
-                }
-            ]
-        })
-    );
-}
-
-#[tokio::test]
-async fn authenticated_admin_can_enqueue_one_generic_ingester_with_http_200() {
-    let app = http::router(Arc::new(FakeControlApi), "secret");
-    let request = serde_json::json!({
-        "ingester": "btc_five_minute_markets",
-        "request_version": 1,
-        "range_start": "2026-01-01T00:00:00Z",
-        "range_end": "2026-01-01T01:00:00Z",
-        "parameters": {},
-        "idempotency_key": "markets-2026-01-01-00"
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/backfill/jobs")
-                .header(AUTHORIZATION, "Bearer secret")
-                .header("content-type", "application/json")
-                .body(Body::from(request.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert!(Uuid::parse_str(json["job_id"].as_str().unwrap()).is_ok());
-    assert_eq!(json["ingester"], "btc_five_minute_markets");
-    assert_eq!(json["status"], "queued");
-    assert!(json["requested_at"].is_string());
-    assert!(json.get("job").is_none());
-
-    let invalid_request = serde_json::json!({
-        "ingester": "btc_five_minute_markets",
-        "request_version": 1,
-        "range_start": "2026-01-01T00:00:01Z",
-        "range_end": "2026-01-01T01:00:00Z",
-        "parameters": {},
-        "idempotency_key": "unaligned-markets-range"
-    });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/admin/backfill/jobs")
-                .header(AUTHORIZATION, "Bearer secret")
-                .header("content-type", "application/json")
-                .body(Body::from(invalid_request.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["error"]["code"], "bad_request");
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("range_start must align to a 300-second UTC boundary"));
-}
-
-#[tokio::test]
-async fn authenticated_admin_can_inspect_cancel_and_check_generic_backfills() {
-    let app = http::router(Arc::new(FakeControlApi), "secret");
-    let job_id = Uuid::new_v4();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/backfill/jobs?limit=10")
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["jobs"].as_array().unwrap().len(), 1);
-    assert_eq!(json["jobs"][0]["ingester"], "binance_btcusdt_agg_trades");
-    assert_eq!(json["jobs"][0]["status"], "completed");
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/admin/backfill/jobs/{job_id}"))
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job"]["job_id"], job_id.to_string());
-    assert_eq!(json["job"]["ingester"], "btc_five_minute_markets");
-    assert_eq!(json["job"]["status"], "running");
-    assert!(json["job"].get("lease_token").is_none());
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/admin/backfill/jobs/{job_id}/events?limit=25"))
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job_id"], job_id.to_string());
-    assert_eq!(json["events"].as_array().unwrap().len(), 1);
-    assert_eq!(json["events"][0]["job_id"], job_id.to_string());
-    assert_eq!(json["events"][0]["level"], "info");
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/admin/backfill/jobs/{job_id}/cancel"))
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["job_id"], job_id.to_string());
-    assert_eq!(json["status"], "cancel_requested");
-    assert_eq!(json["cancel_requested"], true);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(
-                    "/admin/backfill/readiness/btc-five-minute-training?range_start=2026-01-01T00%3A00%3A00Z&range_end=2026-01-02T00%3A00%3A00Z",
-                )
-                .header(AUTHORIZATION, "Bearer secret")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["range_start"], "2026-01-01T00:00:00Z");
-    assert_eq!(json["range_end"], "2026-01-02T00:00:00Z");
-    assert_eq!(json["expected_markets"], 288);
-    assert_eq!(json["usable_markets"], 279);
-    assert_eq!(json["missing_by_reason"]["missing_final_price"], 3);
-    assert_eq!(json["artifact_status_counts"]["completed"], 2);
+    for uri in ["/admin/backfill/ingesters", "/admin/backfill/jobs"] {
+        let response = app.clone().oneshot(
+            Request::builder().uri(uri).header(AUTHORIZATION, "Bearer secret").body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+    }
 }
 
 #[tokio::test]

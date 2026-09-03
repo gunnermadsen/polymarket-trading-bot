@@ -4,7 +4,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use thiserror::Error;
 
-use crate::domain::{IngesterProfile, IngesterStrategy, IngesterStrategyKey};
+use crate::domain::{
+    BackfillWorkerStrategy, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+};
 
 pub trait StrategyFactory: Send + Sync {
     fn key(&self) -> IngesterStrategyKey;
@@ -14,12 +16,13 @@ pub trait StrategyFactory: Send + Sync {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError>;
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError>;
 }
 
 #[derive(Clone, Default)]
 pub struct StrategyRegistry {
     factories: Arc<BTreeMap<IngesterStrategyKey, Arc<dyn StrategyFactory>>>,
+    backfills: Arc<BTreeMap<String, Arc<dyn BackfillWorkerStrategy>>>,
 }
 
 impl StrategyRegistry {
@@ -35,7 +38,27 @@ impl StrategyRegistry {
         }
         Ok(Self {
             factories: Arc::new(registered),
+            backfills: Arc::new(BTreeMap::new()),
         })
+    }
+
+    pub fn with_backfills(
+        mut self,
+        strategies: impl IntoIterator<Item = Arc<dyn BackfillWorkerStrategy>>,
+    ) -> Result<Self, StrategyFactoryError> {
+        let mut registered = BTreeMap::new();
+        for strategy in strategies {
+            strategy
+                .descriptor()
+                .validate()
+                .map_err(|error| StrategyFactoryError::InvalidDescriptor(error.to_string()))?;
+            let key = strategy.descriptor().strategy_key.to_string();
+            if registered.insert(key.clone(), strategy).is_some() {
+                return Err(StrategyFactoryError::DuplicateBackfillRegistration(key));
+            }
+        }
+        self.backfills = Arc::new(registered);
+        Ok(self)
     }
 
     pub fn factory(&self, key: IngesterStrategyKey) -> Option<&Arc<dyn StrategyFactory>> {
@@ -44,6 +67,14 @@ impl StrategyRegistry {
 
     pub fn keys(&self) -> impl Iterator<Item = IngesterStrategyKey> + '_ {
         self.factories.keys().copied()
+    }
+
+    pub fn backfill(&self, key: &str) -> Option<&Arc<dyn BackfillWorkerStrategy>> {
+        self.backfills.get(key)
+    }
+
+    pub fn backfills(&self) -> impl Iterator<Item = &Arc<dyn BackfillWorkerStrategy>> {
+        self.backfills.values()
     }
 
     pub fn validate_profile(&self, profile: &IngesterProfile) -> Result<(), StrategyFactoryError> {
@@ -65,6 +96,10 @@ impl StrategyRegistry {
 pub enum StrategyFactoryError {
     #[error("strategy {0} is registered more than once")]
     DuplicateRegistration(IngesterStrategyKey),
+    #[error("backfill strategy {0} is registered more than once")]
+    DuplicateBackfillRegistration(String),
+    #[error("invalid strategy descriptor: {0}")]
+    InvalidDescriptor(String),
     #[error("strategy {0} is not compiled into this service")]
     Unsupported(IngesterStrategyKey),
     #[error("strategy {key} config schema mismatch: expected {expected}, received {actual}")]

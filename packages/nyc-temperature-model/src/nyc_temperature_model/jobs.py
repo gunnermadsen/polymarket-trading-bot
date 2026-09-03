@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import threading
 import traceback
@@ -11,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
+import httpx
 
 from .config import SUPPORTED_INGESTERS, Settings
 from .database import connection
@@ -25,6 +27,8 @@ class Job:
     request: dict[str, Any]
     attempt: int
     lease_token: str
+    unified: bool = False
+    worker_id: str | None = None
 
 
 def enqueue(
@@ -166,6 +170,21 @@ class Heartbeat:
 
 
 def update_progress(settings: Settings, job: Job, progress: dict[str, Any]) -> None:
+    if job.unified:
+        master_url = os.environ["INGESTER_MASTER_URL"].rstrip("/")
+        admin_token = os.environ.get("INGESTER_ADMIN_TOKEN") or os.environ[
+            "MARKET_DATA_INGESTER_ADMIN_TOKEN"
+        ]
+        response = httpx.post(
+            f"{master_url}/internal/workers/{job.worker_id}/jobs/{job.job_id}/heartbeat",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"lease_token": job.lease_token, "progress": progress, "checkpoint": progress},
+            timeout=30,
+        )
+        if response.status_code == 409:
+            raise RuntimeError("ingestion job lease was lost")
+        response.raise_for_status()
+        return
     with connection(settings.database_url, autocommit=True) as conn:
         result = conn.execute(
             """

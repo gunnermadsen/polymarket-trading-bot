@@ -197,8 +197,6 @@ fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRunt
         && left.clob_ws_url == right.clob_ws_url
         && left.rtds_ws_url == right.rtds_ws_url
         && left.binance_ws_url == right.binance_ws_url
-        && left.binance_spot_l2_enabled == right.binance_spot_l2_enabled
-        && left.binance_spot_l2_ws_url == right.binance_spot_l2_ws_url
         && left.binance_rest_base_url == right.binance_rest_base_url
         && left.discovery_interval == right.discovery_interval
         && left.reconnect_initial_delay == right.reconnect_initial_delay
@@ -1503,16 +1501,6 @@ impl BtcProcessManager {
         if strategy
             .required_model_feeds
             .iter()
-            .any(|requirement| requirement.feed == BtcModelFeedId::BinanceBtcusdtL2V1)
-            && !self.config.btc.binance_spot_l2_enabled
-        {
-            return Err(HttpError::bad_request(
-                "BTC strategy requires the shared Binance spot L2 runtime feed",
-            ));
-        }
-        if strategy
-            .required_model_feeds
-            .iter()
             .any(|requirement| requirement.feed == BtcModelFeedId::ChainlinkBtcusdOracleV1)
             && !self.config.btc.directional_external.enabled
         {
@@ -1550,8 +1538,6 @@ impl BtcProcessManager {
             clob_ws_url: self.config.clob_ws_url.clone(),
             rtds_ws_url: self.config.btc.rtds_ws_url.clone(),
             binance_ws_url: self.config.btc.binance_ws_url.clone(),
-            binance_spot_l2_enabled: self.config.btc.binance_spot_l2_enabled,
-            binance_spot_l2_ws_url: self.config.btc.binance_spot_l2_ws_url.clone(),
             binance_rest_base_url: self.config.btc.binance_rest_base_url.clone(),
             strategy_interval: Duration::from_millis(control.runtime.strategy_interval_ms),
             max_book_age: Duration::from_millis(strategy.max_book_age_ms as u64),
@@ -4472,8 +4458,6 @@ mod lifecycle_tests {
                 btc: BtcConfig {
                     rtds_ws_url: String::new(),
                     binance_ws_url: String::new(),
-                    binance_spot_l2_enabled: false,
-                    binance_spot_l2_ws_url: String::new(),
                     binance_rest_base_url: String::new(),
                     data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
                     directional_external:
@@ -4618,8 +4602,6 @@ mod lifecycle_tests {
             "clob_heartbeat_interval",
             "rtds_heartbeat_interval",
             "binance_heartbeat_interval",
-            "binance_spot_l2_enabled",
-            "binance_spot_l2_ws_url",
         ] {
             let mut process_control = serde_json::json!({
                 "schema_version": BTC_PROCESS_SCHEMA_VERSION,
@@ -5936,16 +5918,6 @@ mod lifecycle_tests {
 
         playbook.writer_capacity += 1;
         assert!(!shared_market_data_config_compatible(&shared, &playbook));
-
-        let mut l2_playbook = shared.clone();
-        l2_playbook.binance_spot_l2_enabled = true;
-        assert!(!shared_market_data_config_compatible(&shared, &l2_playbook));
-        let mut l2_url_playbook = shared.clone();
-        l2_url_playbook.binance_spot_l2_ws_url = "wss://example.test/ws/depth".to_string();
-        assert!(!shared_market_data_config_compatible(
-            &shared,
-            &l2_url_playbook
-        ));
     }
 
     #[test]

@@ -185,15 +185,14 @@ def test_environment_migration_uses_typed_columns_and_versioned_keys():
     assert "temperature_2m_east_west_gradient_k double precision" in gradient_text
 
 
-def test_temperature_compose_has_exactly_two_restricted_environment_workers():
-    compose = (Path(__file__).parents[3] / "docker-compose.temperature.yml").read_text()
+def test_environment_backfills_use_only_standard_ingester_workers():
+    root = Path(__file__).parents[3]
+    compose = (root / "docker-compose.yml").read_text()
 
-    assert compose.count("temperature-environment-worker-1:") == 1
-    assert compose.count("temperature-environment-worker-2:") == 1
-    assert compose.count(
-        'WEATHER_WORKER_INGESTERS: "goes_abi_klga_features,hrrr_environment_features"'
-    ) == 2
-    assert "polymarket-bot:" not in compose
+    assert "ingester-master:" in compose
+    assert "ingester-worker:" in compose
+    assert "temperature-environment-worker" not in compose
+    assert not (root / "docker-compose.temperature.yml").exists()
 
 
 def test_causal_coverage_keeps_sparse_processed_products_distinct_from_source_failures():

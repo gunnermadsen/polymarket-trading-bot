@@ -1,11 +1,27 @@
 //! Binance spot and USD-M futures factual ingestion strategies.
 
 mod aggregate_trades;
+mod aggregate_trades_backfill;
+pub(crate) mod archive_support;
+mod backfill_support;
+mod five_minute_open_interest_backfill;
+mod futures_l2_one_second_features_backfill;
 mod futures_open_interest;
+mod l2_backfill_support;
+mod l2_support;
 mod one_second_ohlcv;
+mod one_second_ohlcv_backfill;
+mod open_interest_support;
+mod spot_l2_one_second_features_backfill;
 mod spot_l2_snapshots;
+mod types;
 
 pub use aggregate_trades::BinanceSpotAggregateTradesFactory;
+pub use aggregate_trades_backfill::BinanceSpotAggregateTradesBackfill;
+pub use five_minute_open_interest_backfill::BinanceFuturesFiveMinuteOpenInterestBackfill;
+pub use futures_l2_one_second_features_backfill::BinanceFuturesL2OneSecondFeaturesBackfill;
 pub use futures_open_interest::BinanceFuturesOpenInterestFactory;
 pub use one_second_ohlcv::BinanceSpotOneSecondOhlcvFactory;
+pub use one_second_ohlcv_backfill::BinanceSpotOneSecondOhlcvBackfill;
+pub use spot_l2_one_second_features_backfill::BinanceSpotL2OneSecondFeaturesBackfill;
 pub use spot_l2_snapshots::BinanceSpotL2SnapshotFactory;

@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategy, IngesterStrategyKey, StrategyError,
-        StrategyErrorKind,
+        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+        StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
@@ -244,7 +244,7 @@ impl StrategyFactory for BinanceSpotL2SnapshotFactory {
         &self,
         profile: &IngesterProfile,
         pool: PgPool,
-    ) -> Result<Box<dyn IngesterStrategy>, StrategyFactoryError> {
+    ) -> Result<Box<dyn RealtimeWorkerStrategy>, StrategyFactoryError> {
         let config = BinanceSpotL2SnapshotConfig::from_value(&profile.config)?;
         let lease_owner = profile.lease_owner.clone().ok_or_else(|| {
             StrategyFactoryError::Construction("profile lease owner is missing".to_owned())
@@ -1524,7 +1524,7 @@ fn encode_digest(digest: impl AsRef<[u8]>) -> String {
 }
 
 #[async_trait]
-impl IngesterStrategy for BinanceSpotL2SnapshotStrategy {
+impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
     fn key(&self) -> IngesterStrategyKey {
         STRATEGY_KEY
     }

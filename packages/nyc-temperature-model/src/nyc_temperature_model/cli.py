@@ -28,6 +28,7 @@ from .hrrr_environment_ingestion import (
 )
 from .hrrr_ingestion import ingest_hrrr
 from .jobs import (
+    Job,
     SUPPORTED_INGESTERS,
     cancel_job,
     enqueue,
@@ -226,6 +227,16 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue_parser.add_argument("--parameters", default="{}")
     enqueue_parser.add_argument("--idempotency-key")
     enqueue_parser.add_argument("--depends-on-job-id")
+    unified = subparsers.add_parser("execute-unified-backfill")
+    unified.add_argument("--strategy-key", required=True, choices=(
+        "goes_abi_klga_features", "hrrr_environment_features"
+    ))
+    unified.add_argument("--job-id", required=True)
+    unified.add_argument("--lease-token", required=True)
+    unified.add_argument("--worker-id", required=True)
+    unified.add_argument("--start", required=True, type=_instant)
+    unified.add_argument("--end", required=True, type=_instant)
+    unified.add_argument("--parameters", required=True)
     pilot = subparsers.add_parser("enqueue-pilot")
     pilot.add_argument("--weather-start", type=_date, default=date(2019, 1, 1))
     pilot.add_argument("--market-start", type=_date, default=date(2025, 9, 1))
@@ -323,7 +334,35 @@ def main() -> None:
     if args.command == "worker":
         run_worker(settings, HANDLERS)
         return
-    if args.command == "jobs":
+    if args.command == "execute-unified-backfill":
+        request = json.loads(args.parameters)
+        job = Job(
+            job_id=args.job_id,
+            ingester_key=args.strategy_key,
+            range_start=args.start,
+            range_end=args.end,
+            request=request,
+            attempt=1,
+            lease_token=args.lease_token,
+            unified=True,
+            worker_id=args.worker_id,
+        )
+        summary = HANDLERS[args.strategy_key](settings, job)
+        counters = summary.get("counters", summary)
+        records_verified = sum(
+            int(counters.get(key, 0)) for key in ("completed", "reused")
+        )
+        result = {
+            "records_verified": records_verified,
+            "verified_coverage": {
+                "requested_start": args.start,
+                "requested_end": args.end,
+                "strategy_key": args.strategy_key,
+                "records_verified": records_verified,
+            },
+            "summary": summary,
+        }
+    elif args.command == "jobs":
         result = job_rows(settings.database_url, args.limit)
     elif args.command == "cancel-job":
         result = {"job_id": args.job_id, "status": cancel_job(settings.database_url, args.job_id)}
