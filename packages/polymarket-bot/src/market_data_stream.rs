@@ -37,7 +37,7 @@ pub const CONTRACT_VERSION: u32 = 1;
 pub const PRODUCT_MARKETS: &str = "polymarket_btc_five_minute_market_contracts";
 pub const PRODUCT_BOOKS: &str = "polymarket_btc_five_minute_orderbooks";
 pub const PRODUCT_RESOLUTIONS: &str = "polymarket_btc_five_minute_resolutions";
-pub const PRODUCT_CHAINLINK: &str = "chainlink_btcusd_reference_price";
+pub const PRODUCT_CHAINLINK: &str = "polymarket_rtds_chainlink_reference_price";
 pub const PRODUCT_TWAP: &str = "polymarket_chainlink_btcusd_twap";
 pub const PRODUCT_BINANCE_1S: &str = "binance_spot_btcusdt_one_second_ohlcv";
 pub const PRODUCT_POLYGON_ORACLE: &str = "polygon_chainlink_btcusd_oracle";
@@ -594,7 +594,7 @@ impl MarketDataStreamRuntime {
                     tick_id: Uuid::new_v4(),
                     dedup_key: event.payload_sha256.clone(),
                     source: ReferencePriceSource::RtdsChainlink,
-                    symbol: "btc/usd".to_owned(),
+                    symbol: "BTCUSD".to_owned(),
                     price: payload.price,
                     source_timestamp: payload.source_timestamp,
                     envelope_timestamp: payload.provider_available_at,

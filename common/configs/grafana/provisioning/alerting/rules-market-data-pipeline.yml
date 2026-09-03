@@ -79,7 +79,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
-              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product=~"polymarket_btc_five_minute_orderbooks|chainlink_btcusd_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv"}) * on(product) group_left() (ingester_stream_subscribers > 0))'
+              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product=~"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv"}) * on(product) group_left() (ingester_stream_subscribers > 0))'
               instant: true
               refId: A
           - refId: B

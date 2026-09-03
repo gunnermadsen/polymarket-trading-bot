@@ -240,7 +240,7 @@ run key; lifecycle and record ownership still belong to `process_id`.
           "polymarket_btc_five_minute_market_contracts",
           "polymarket_btc_five_minute_orderbooks",
           "polymarket_btc_five_minute_resolutions",
-          "chainlink_btcusd_reference_price",
+          "polymarket_rtds_chainlink_reference_price",
           "polymarket_chainlink_btcusd_twap",
           "binance_spot_btcusdt_one_second_ohlcv",
           "polygon_chainlink_btcusd_oracle"
@@ -400,7 +400,7 @@ compiled identities and behavior.
           "polymarket_btc_five_minute_market_contracts",
           "polymarket_btc_five_minute_orderbooks",
           "polymarket_btc_five_minute_resolutions",
-          "chainlink_btcusd_reference_price",
+          "polymarket_rtds_chainlink_reference_price",
           "polymarket_chainlink_btcusd_twap",
           "binance_spot_btcusdt_one_second_ohlcv",
           "polygon_chainlink_btcusd_oracle"

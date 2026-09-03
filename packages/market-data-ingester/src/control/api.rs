@@ -388,7 +388,14 @@ async fn resolve_stream_routes(
     let mut grouped = std::collections::BTreeMap::<String, WorkerStreamRoute>::new();
     let mut unresolved = Vec::new();
     for product in request.products {
-        let Ok(key) = IngesterStrategyKey::from_str(&product.key) else {
+        // One Polymarket RTDS strategy owns both products carried by its single
+        // upstream socket. Product selectors are intentionally not constrained
+        // to a one-product-per-strategy topology.
+        let key = if product.key == "polymarket_rtds_chainlink_reference_price" {
+            IngesterStrategyKey::PolymarketChainlinkBtcusdTwap
+        } else if let Ok(key) = IngesterStrategyKey::from_str(&product.key) {
+            key
+        } else {
             unresolved.push(StreamProductRejection {
                 product,
                 reason: "unknown_product",
@@ -430,7 +437,7 @@ async fn resolve_stream_routes(
                     .is_some_and(|strategies| {
                         strategies
                             .iter()
-                            .any(|strategy| strategy.as_str() == Some(product.key.as_str()))
+                            .any(|strategy| strategy.as_str() == Some(key.as_str()))
                     })
         }) else {
             unresolved.push(StreamProductRejection {

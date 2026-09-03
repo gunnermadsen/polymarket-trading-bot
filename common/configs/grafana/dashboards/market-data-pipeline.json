@@ -19,7 +19,7 @@
     {
       "id": 2, "type": "stat", "title": "Realtime Product Freshness", "gridPos": {"x": 6, "y": 0, "w": 9, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "(time() - ingester_stream_last_published_timestamp_seconds{product=~\"polymarket_btc_five_minute_orderbooks|chainlink_btcusd_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"}) * on(product) group_left() (ingester_stream_subscribers > 0)", "instant": true, "legendFormat": "{{product}}"}],
+      "targets": [{"refId": "A", "expr": "(time() - ingester_stream_last_published_timestamp_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"}) * on(product) group_left() (ingester_stream_subscribers > 0)", "instant": true, "legendFormat": "{{product}}"}],
       "fieldConfig": {"defaults": {"unit": "s", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 30}]}}, "overrides": []},
       "options": {"colorMode": "value", "graphMode": "area", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
     },
