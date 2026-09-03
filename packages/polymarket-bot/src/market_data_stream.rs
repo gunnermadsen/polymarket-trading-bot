@@ -507,10 +507,12 @@ impl MarketDataStreamRuntime {
                 return Ok(());
             }
         }
-        {
+        let is_connection_baseline = {
             let mut sequence = self.sequence.lock().expect("stream sequence lock");
+            let mut is_connection_baseline = true;
             if let Some((epoch, last)) = sequence.get(&event.product_key) {
                 if epoch == &event.publisher_epoch {
+                    is_connection_baseline = false;
                     if event.sequence <= *last {
                         self.metrics.duplicates.fetch_add(1, Ordering::Relaxed);
                         return Ok(());
@@ -527,8 +529,9 @@ impl MarketDataStreamRuntime {
                 event.product_key.clone(),
                 (event.publisher_epoch.clone(), event.sequence),
             );
-        }
-        let result = self.apply_payload(&event).await;
+            is_connection_baseline
+        };
+        let result = self.apply_payload(&event, is_connection_baseline).await;
         if result.is_err() {
             self.metrics.decode_errors.fetch_add(1, Ordering::Relaxed);
         }
@@ -550,7 +553,11 @@ impl MarketDataStreamRuntime {
         Ok(())
     }
 
-    async fn apply_payload(&self, event: &MarketDataEvent) -> Result<()> {
+    async fn apply_payload(
+        &self,
+        event: &MarketDataEvent,
+        is_connection_baseline: bool,
+    ) -> Result<()> {
         match event.product_key.as_str() {
             PRODUCT_MARKETS => {
                 let payload: MarketPayload = serde_json::from_slice(&event.payload_json)?;
@@ -580,10 +587,12 @@ impl MarketDataStreamRuntime {
                 let asks = parse_levels(payload.asks)?;
                 let epoch = Uuid::parse_str(&event.publisher_epoch)?;
                 let mut books = self.books.write().await;
-                books.apply_canonical_snapshot_for_registered_market(
+                books.apply_canonical_snapshot_for_market_identity(
                     epoch,
                     &payload.market.market_id,
                     &payload.market.condition_id,
+                    &payload.market.up_token_id,
+                    &payload.market.down_token_id,
                     &payload.token_id,
                     outcome,
                     payload.tick_size,
@@ -630,11 +639,18 @@ impl MarketDataStreamRuntime {
             }
             PRODUCT_BINANCE_1S => {
                 let payload: KlinePayload = serde_json::from_slice(&event.payload_json)?;
-                self.state
-                    .write()
-                    .await
+                let kline = payload.into_kline();
+                let mut state = self.state.write().await;
+                if let Err(error) = state
                     .binance_one_second_window
-                    .observe_completed(payload.into_kline())?;
+                    .observe_completed(kline.clone())
+                {
+                    if !is_connection_baseline {
+                        return Err(error);
+                    }
+                    state.binance_one_second_window.clear();
+                    state.binance_one_second_window.observe_completed(kline)?;
+                }
             }
             PRODUCT_POLYGON_ORACLE => {
                 let payload: PolygonOraclePayload = serde_json::from_slice(&event.payload_json)?;
@@ -762,6 +778,8 @@ struct BookPayload {
 struct BookMarketPayload {
     market_id: String,
     condition_id: String,
+    up_token_id: String,
+    down_token_id: String,
 }
 #[derive(Debug, Deserialize)]
 struct ReferencePayload {

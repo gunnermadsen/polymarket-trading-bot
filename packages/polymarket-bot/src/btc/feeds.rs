@@ -752,11 +752,13 @@ impl BookRegistry {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn apply_canonical_snapshot_for_registered_market(
+    pub fn apply_canonical_snapshot_for_market_identity(
         &mut self,
         connection_id: Uuid,
         market_id: &str,
         condition_id: &str,
+        up_token_id: &str,
+        down_token_id: &str,
         token_id: &str,
         outcome: BtcOutcome,
         tick_size: Decimal,
@@ -770,6 +772,13 @@ impl BookRegistry {
         if self.connection_id != connection_id {
             self.reset_connection(connection_id);
         }
+        self.try_register_market_identity(
+            market_id,
+            condition_id,
+            up_token_id,
+            down_token_id,
+            tick_size,
+        )?;
         self.apply_canonical_snapshot_to_registered_market(
             market_id,
             condition_id,
@@ -783,6 +792,63 @@ impl BookRegistry {
             bids,
             asks,
         )
+    }
+
+    fn try_register_market_identity(
+        &mut self,
+        market_id: &str,
+        condition_id: &str,
+        up_token_id: &str,
+        down_token_id: &str,
+        tick_size: Decimal,
+    ) -> Result<()> {
+        if up_token_id == down_token_id {
+            bail!("orderbook market {market_id} assigns both outcomes to token {up_token_id}");
+        }
+        for book in self.books.values() {
+            let expected_outcome = if book.token_id == up_token_id {
+                Some(BtcOutcome::Up)
+            } else if book.token_id == down_token_id {
+                Some(BtcOutcome::Down)
+            } else {
+                None
+            };
+            let token_claimed = expected_outcome.is_some();
+            let identifier_claimed = book.market_id == market_id
+                || book.market_id == condition_id
+                || book.wire_market_id == market_id
+                || book.wire_market_id == condition_id;
+            let same_market = book.market_id == market_id && book.wire_market_id == condition_id;
+            let expected_token = same_market && expected_outcome == Some(book.outcome);
+            if token_claimed && !same_market {
+                bail!(
+                    "orderbook token {} is already owned by market {}",
+                    book.token_id,
+                    book.market_id
+                );
+            }
+            if identifier_claimed && !expected_token {
+                bail!(
+                    "orderbook market identity {market_id} conflicts with registered token {}",
+                    book.token_id
+                );
+            }
+        }
+        for (token_id, outcome) in [
+            (up_token_id, BtcOutcome::Up),
+            (down_token_id, BtcOutcome::Down),
+        ] {
+            self.books.entry(token_id.to_owned()).or_insert_with(|| {
+                FeedBook::new(
+                    market_id.to_owned(),
+                    condition_id.to_owned(),
+                    token_id.to_owned(),
+                    outcome,
+                    tick_size,
+                )
+            });
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2132,17 +2198,18 @@ mod tests {
     }
 
     #[test]
-    fn canonical_ingester_snapshot_requires_a_registered_exact_market_identity() {
+    fn canonical_ingester_snapshot_registers_and_enforces_exact_market_identity() {
         let market = market();
         let epoch = Uuid::new_v4();
         let mut registry = BookRegistry::new(epoch);
-        registry.register_market(&market);
 
         let applied = registry
-            .apply_canonical_snapshot_for_registered_market(
+            .apply_canonical_snapshot_for_market_identity(
                 epoch,
                 &market.market_id,
                 &market.condition_id,
+                &market.up_token_id,
+                &market.down_token_id,
                 &market.up_token_id,
                 BtcOutcome::Up,
                 market.tick_size,
@@ -2156,10 +2223,12 @@ mod tests {
             .expect("registered canonical snapshot");
         assert!(applied.applied);
 
-        let rejected = registry.apply_canonical_snapshot_for_registered_market(
+        let rejected = registry.apply_canonical_snapshot_for_market_identity(
             epoch,
             "different-market",
             &market.condition_id,
+            &market.up_token_id,
+            &market.down_token_id,
             &market.up_token_id,
             BtcOutcome::Up,
             market.tick_size,
