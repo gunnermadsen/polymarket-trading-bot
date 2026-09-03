@@ -69,25 +69,13 @@ scrape_configs:
     static_configs:
       - targets:
           - 127.0.0.1:9090
-  - job_name: polymarket-bot
-    metrics_path: /prometheus/metrics
-    static_configs:
-      - targets:
-          - polymarket-bot:8097
-  - job_name: market-data-ingester
-    metrics_path: /prometheus/metrics
-    static_configs:
-      - targets:
-          - market-data-ingester:8098
-  - job_name: alloy
-    static_configs:
-      - targets:
-          - alloy:12345
-  - job_name: loki
-    static_configs:
-      - targets:
-          - loki:3100
 EOF
+
+# The checked-in configuration is the authoritative inventory of monitored
+# services. Keep only the generated, authenticated self-scrape above; append
+# every repository-provisioned job that follows its scrape_configs key.
+awk 'seen { print } /^scrape_configs:[[:space:]]*$/ { seen = 1 }' "${SRC_CONFIG}" \
+  >> "${RUNTIME_CONFIG}"
 
 exec /bin/prometheus \
   --config.file="${RUNTIME_CONFIG}" \
