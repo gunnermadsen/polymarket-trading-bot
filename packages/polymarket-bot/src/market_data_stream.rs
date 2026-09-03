@@ -438,6 +438,17 @@ impl MarketDataStreamRuntime {
                     .collect(),
             })
             .await?;
+        {
+            let route_products = route
+                .products
+                .iter()
+                .map(|product| product.key.as_str())
+                .collect::<BTreeSet<_>>();
+            self.sequence
+                .lock()
+                .expect("stream sequence lock")
+                .retain(|product, _| !route_products.contains(product.as_str()));
+        }
         self.metrics.connections.fetch_add(1, Ordering::Relaxed);
         let _connection_gauge = ConnectionGauge(&self.metrics.connections);
         tracing::info!(worker_id=%route.worker_id, source_revision=%route.source_revision, products=route.products.len(), "market-data gRPC route connected");
@@ -560,12 +571,10 @@ impl MarketDataStreamRuntime {
             }
             PRODUCT_BOOKS => {
                 let payload: BookPayload = serde_json::from_slice(&event.payload_json)?;
-                let outcome = if payload.outcome == "up" {
-                    BtcOutcome::Up
-                } else if payload.outcome == "down" {
-                    BtcOutcome::Down
-                } else {
-                    bail!("invalid book outcome");
+                let outcome = match payload.outcome.as_str() {
+                    "Up" | "up" => BtcOutcome::Up,
+                    "Down" | "down" => BtcOutcome::Down,
+                    _ => bail!("invalid book outcome"),
                 };
                 let bids = parse_levels(payload.bids)?;
                 let asks = parse_levels(payload.asks)?;
@@ -933,7 +942,7 @@ mod tests {
                 "received_at": "2026-09-03T17:30:01Z"
             },
             "token_id": "up-1",
-            "outcome": "up",
+            "outcome": "Up",
             "tick_size": "0.01",
             "source_timestamp": "2026-09-03T17:30:01Z",
             "received_at": "2026-09-03T17:30:01.050Z",
