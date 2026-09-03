@@ -380,7 +380,7 @@
           },
           "decimals": 1,
           "mappings": [],
-          "max": 8,
+          "max": 1,
           "min": -1,
           "thresholds": {
             "mode": "absolute",
@@ -2510,9 +2510,9 @@
       "description": "Current direct gRPC connection from the trading runtime to its owning ingester worker.",
       "gridPos": {
         "h": 5,
-        "w": 5,
+        "w": 8,
         "x": 0,
-        "y": 40
+        "y": 41
       },
       "datasource": {
         "type": "prometheus",
@@ -2529,7 +2529,7 @@
       "fieldConfig": {
         "defaults": {
           "min": 0,
-          "max": 1,
+          "max": 8,
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -2778,10 +2778,10 @@
         ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 19,
-        "x": 5,
-        "y": 41
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 46
       },
       "id": 2,
       "options": {
@@ -2789,12 +2789,33 @@
         "showHeader": true,
         "sortBy": [
           {
-            "desc": true,
-            "displayName": "Last Updated"
+            "desc": false,
+            "displayName": "Process"
           }
         ]
       },
       "pluginVersion": "12.4.2",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Enabled": true,
+              "Filled Orders": true,
+              "Freshly Priced Current Entries": true,
+              "Gross Realized PnL": true,
+              "Heartbeat Age": true,
+              "Last Heartbeat": true,
+              "Last Updated": true,
+              "ROI": true,
+              "Realized Fees": true,
+              "Resolved Positions": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
@@ -2834,10 +2855,10 @@
       "title": "Pipeline Errors · Last Hour",
       "description": "Delivery sequence gaps, dropped worker events, and data-contract decode errors observed during the last hour.",
       "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 0,
-        "y": 45
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 41
       },
       "datasource": {
         "type": "prometheus",
@@ -2904,9 +2925,9 @@
       "description": "Slowest current worker-publish to trading-runtime apply latency across the core realtime trading feeds.",
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 49
+        "w": 8,
+        "x": 16,
+        "y": 41
       },
       "datasource": {
         "type": "prometheus",
@@ -3015,7 +3036,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 54
+        "y": 55
       },
       "id": 24,
       "options": {
@@ -3130,7 +3151,7 @@
         "h": 15,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 68
       },
       "id": 20,
       "options": {
@@ -3195,7 +3216,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 83
       },
       "id": 28,
       "panels": [],
@@ -3210,7 +3231,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 83
+        "y": 84
       },
       "datasource": {
         "type": "prometheus",
@@ -3264,7 +3285,7 @@
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 83
+        "y": 84
       },
       "datasource": {
         "type": "prometheus",
@@ -3342,7 +3363,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 83
+        "y": 84
       },
       "datasource": {
         "type": "prometheus",
@@ -3451,6 +3472,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 176,
+  "version": 177,
   "weekStart": ""
 }
