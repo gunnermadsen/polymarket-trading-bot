@@ -15,11 +15,11 @@ use polymarket_bot::{
     btc::{
         process_runtime_readiness, runtime_model, runtime_status_from_inputs, BookRegistry,
         BtcDecisionStrategyConfig, BtcDirectionalModelEntryPolicy, BtcEntryAdmissionConfig,
-        BtcExecutionLifecycle, BtcExecutionMode, BtcLiveExecutionAdapter, BtcModelFeedId,
-        BtcPlaybookRuntimeHandle, BtcProcessConfig, BtcProcessRunner, BtcRepository, BtcRuntime,
-        BtcRuntimeConfig, BtcRuntimeHandle, BtcStrategyConfig, LiveExecutionLifecycle,
-        PaperExecutionLifecycle, PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig,
-        RuntimeModelSelection, BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
+        BtcExecutionLifecycle, BtcExecutionMode, BtcLiveExecutionAdapter, BtcPlaybookRuntimeHandle,
+        BtcProcessConfig, BtcProcessRunner, BtcRepository, BtcRuntime, BtcRuntimeConfig,
+        BtcRuntimeHandle, BtcStrategyConfig, LiveExecutionLifecycle, PaperExecutionLifecycle,
+        PaperPreviewConfig, PaperVenue as BtcPaperVenue, PaperVenueConfig, RuntimeModelSelection,
+        BTC_ASYMMETRIC_VALUE_MODEL_STRATEGY_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_SCHEMA_VERSION,
         BTC_CHAINLINK_PATH_CONDITIONED_STRATEGY_VERSION,
         BTC_CHAINLINK_PERSISTENCE_CALIBRATED_FEATURE_SCHEMA_VERSION,
@@ -31,7 +31,7 @@ use polymarket_bot::{
         BTC_MARKET_ANCHORED_RESEARCH_STRATEGY_VERSION, BTC_STRATEGY_VERSION,
         BTC_VOLATILITY_CONTINUATION_STRATEGY_VERSION,
     },
-    config::{AppConfig, BtcConfig},
+    config::AppConfig,
     data_api::DataApiClient,
     events::ServiceEvent,
     execution::{
@@ -184,29 +184,13 @@ fn validate_btc_process_terminal_request(status: &str, reason: &str) -> Result<(
 
 #[derive(Clone)]
 struct BtcProcessManagerConfig {
-    btc: BtcConfig,
-    gamma_base_url: String,
-    clob_rest_base_url: String,
-    clob_ws_url: String,
     live_venue: Option<Arc<LiveVenue>>,
     live_reconcile_interval: Duration,
 }
 
 fn shared_market_data_config_compatible(left: &BtcRuntimeConfig, right: &BtcRuntimeConfig) -> bool {
-    left.gamma_base_url == right.gamma_base_url
-        && left.clob_rest_base_url == right.clob_rest_base_url
-        && left.clob_ws_url == right.clob_ws_url
-        && left.rtds_ws_url == right.rtds_ws_url
-        && left.binance_ws_url == right.binance_ws_url
-        && left.binance_rest_base_url == right.binance_rest_base_url
-        && left.discovery_interval == right.discovery_interval
-        && left.reconnect_initial_delay == right.reconnect_initial_delay
-        && left.reconnect_max_delay == right.reconnect_max_delay
-        && left.checkpoint_interval == right.checkpoint_interval
-        && left.boundary_tick_max_delay == right.boundary_tick_max_delay
-        && left.official_resolution_audit_grace == right.official_resolution_audit_grace
-        && left.official_resolution_watch_retention == right.official_resolution_watch_retention
-        && left.writer_capacity == right.writer_capacity
+    let _ = (left, right);
+    true
 }
 
 fn shared_runtime_recovery_required(active_process_count: usize, shared_running: bool) -> bool {
@@ -1341,10 +1325,8 @@ impl BtcProcessManager {
         let books = Arc::new(tokio::sync::RwLock::new(BookRegistry::new(
             uuid::Uuid::new_v4(),
         )));
-        let heartbeat = self.config.btc.data_source_heartbeat;
-        let runtime = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+        let runtime = BtcRuntime::new(config.clone(), self.repository.clone())
             .with_sources(source_union)
-            .with_directional_external(self.config.btc.directional_external.clone())
             .with_shared_state(state.clone())
             .with_shared_book_registry(books.clone())
             .start()
@@ -1354,13 +1336,7 @@ impl BtcProcessManager {
                     "failed to start shared BTC market-data runtime: {error:#}"
                 ))
             })?;
-        info!(
-            clob_heartbeat_interval_secs = heartbeat.clob_interval.as_secs(),
-            clob_pong_timeout_secs = heartbeat.clob_pong_timeout.as_secs(),
-            rtds_heartbeat_interval_secs = heartbeat.rtds_interval.as_secs(),
-            binance_heartbeat_interval_secs = heartbeat.binance_interval.as_secs(),
-            "BTC shared market-data runtime started with global heartbeat configuration"
-        );
+        info!("BTC shared market-data gRPC runtime started");
         let mut shared = self.shared_runtime.lock().await;
         debug_assert!(shared.is_none());
         *shared = Some(SharedBtcRuntime {
@@ -1445,7 +1421,6 @@ impl BtcProcessManager {
 
         invalidate_shared_market_data_evidence(&state, &books).await;
 
-        let heartbeat = self.config.btc.data_source_heartbeat;
         let sources = self
             .active_playbooks
             .lock()
@@ -1455,9 +1430,8 @@ impl BtcProcessManager {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let recovery = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+        let recovery = BtcRuntime::new(config.clone(), self.repository.clone())
             .with_sources(sources)
-            .with_directional_external(self.config.btc.directional_external.clone())
             .with_shared_state(state)
             .with_shared_book_registry(books)
             .start()
@@ -1635,16 +1609,6 @@ impl BtcProcessManager {
             ));
         }
         let strategy = resolve_btc_strategy(&control)?;
-        if strategy
-            .required_model_feeds
-            .iter()
-            .any(|requirement| requirement.feed == BtcModelFeedId::ChainlinkBtcusdOracleV1)
-            && !self.config.btc.directional_external.enabled
-        {
-            return Err(HttpError::bad_request(
-                "BTC strategy requires the shared Chainlink oracle runtime feed",
-            ));
-        }
         if process.effective_execution().mode == "live"
             && definition_use != BtcDefinitionUse::InactiveDefinition
         {
@@ -1660,34 +1624,16 @@ impl BtcProcessManager {
                 .map_err(|error| HttpError::bad_request(error.to_string()))?;
         }
         validate_btc_entry_timing(&strategy)?;
-        if !(1..=60_000).contains(&control.runtime.strategy_interval_ms)
-            || !(1..=86_400).contains(&control.runtime.official_resolution_audit_grace_secs)
-            || !(600..=604_800).contains(&control.runtime.official_resolution_watch_retention_secs)
-        {
+        if !(1..=60_000).contains(&control.runtime.strategy_interval_ms) {
             return Err(HttpError::bad_request(
                 "BTC runtime timings exceed the supported process safety bounds",
             ));
         }
         let runtime = BtcRuntimeConfig {
             enabled: true,
-            gamma_base_url: self.config.gamma_base_url.clone(),
-            clob_rest_base_url: self.config.clob_rest_base_url.clone(),
-            clob_ws_url: self.config.clob_ws_url.clone(),
-            rtds_ws_url: self.config.btc.rtds_ws_url.clone(),
-            binance_ws_url: self.config.btc.binance_ws_url.clone(),
-            binance_rest_base_url: self.config.btc.binance_rest_base_url.clone(),
             strategy_interval: Duration::from_millis(control.runtime.strategy_interval_ms),
             max_book_age: Duration::from_millis(strategy.max_book_age_ms as u64),
             max_reference_age: Duration::from_millis(strategy.max_reference_age_ms as u64),
-            boundary_tick_max_delay: Duration::from_millis(
-                strategy.max_chainlink_open_delay_ms as u64,
-            ),
-            official_resolution_audit_grace: Duration::from_secs(
-                control.runtime.official_resolution_audit_grace_secs,
-            ),
-            official_resolution_watch_retention: Duration::from_secs(
-                control.runtime.official_resolution_watch_retention_secs,
-            ),
             ..BtcRuntimeConfig::default()
         };
         runtime
@@ -3398,103 +3344,6 @@ impl RuntimeControl {
     }
 }
 
-fn append_clob_source_lag_prometheus_metrics(
-    output: &mut String,
-    metrics: Option<&serde_json::Value>,
-) {
-    let source_lag = metrics
-        .and_then(|value| value.get("clob_active_last_source_to_receive_lag_milliseconds"))
-        .and_then(serde_json::Value::as_i64);
-    let unavailable_transitions = metrics
-        .and_then(|value| value.get("clob_source_to_receive_lag_unavailable_transitions"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-
-    output.push_str(
-        "# HELP polymarket_btc_clob_source_to_receive_lag_milliseconds Latest observed difference between the CLOB event timestamp and local receipt time in milliseconds.\n\
-# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n",
-    );
-    if let Some(source_lag) = source_lag {
-        output.push_str(&format!(
-            "polymarket_btc_clob_source_to_receive_lag_milliseconds {source_lag}\n"
-        ));
-    }
-    output.push_str(
-        "# HELP polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total Number of transitions into source-to-receive-lag CLOB unavailability.\n\
-# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n",
-    );
-    output.push_str(&format!(
-        "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total {unavailable_transitions}\n"
-    ));
-}
-
-fn append_clob_transport_prometheus_metrics(
-    output: &mut String,
-    metrics: Option<&serde_json::Value>,
-) {
-    let value_u64 = |name: &str| {
-        metrics
-            .and_then(|value| value.get(name))
-            .and_then(serde_json::Value::as_u64)
-    };
-    let repoll_delay = value_u64("clob_socket_read_repoll_delay_max_milliseconds").unwrap_or(0);
-    let inbound_silence = value_u64("clob_socket_inbound_silence_milliseconds");
-    let recovery_duration = value_u64("clob_transport_recovery_duration_milliseconds");
-
-    output.push_str(
-        "# HELP polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds Maximum delay between handing an inbound frame to the bounded ingress queue and beginning the next socket read poll, for the active connection.\n\
-# TYPE polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds gauge\n",
-    );
-    output.push_str(&format!(
-        "polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds {repoll_delay}\n"
-    ));
-    output.push_str(
-        "# HELP polymarket_btc_clob_socket_inbound_silence_seconds Seconds since the active CLOB reader received any WebSocket frame.\n\
-# TYPE polymarket_btc_clob_socket_inbound_silence_seconds gauge\n",
-    );
-    if let Some(inbound_silence) = inbound_silence {
-        output.push_str(&format!(
-            "polymarket_btc_clob_socket_inbound_silence_seconds {}\n",
-            inbound_silence as f64 / 1_000.0
-        ));
-    }
-    output.push_str(
-        "# HELP polymarket_btc_clob_transport_disconnects_total CLOB transport disconnects classified by bounded reason.\n\
-# TYPE polymarket_btc_clob_transport_disconnects_total counter\n",
-    );
-    for (reason, field) in [
-        (
-            "remote_close_1013",
-            "clob_transport_disconnects_remote_close_1013",
-        ),
-        (
-            "reset_without_close",
-            "clob_transport_disconnects_reset_without_close",
-        ),
-        (
-            "heartbeat_ack_timeout",
-            "clob_transport_disconnects_heartbeat_ack_timeout",
-        ),
-        ("websocket_eof", "clob_transport_disconnects_websocket_eof"),
-        ("other", "clob_transport_disconnects_other"),
-    ] {
-        let count = value_u64(field).unwrap_or(0);
-        output.push_str(&format!(
-            "polymarket_btc_clob_transport_disconnects_total{{reason=\"{reason}\"}} {count}\n"
-        ));
-    }
-    output.push_str(
-        "# HELP polymarket_btc_clob_transport_recovery_duration_seconds Duration of the most recently completed recovery from transport loss until replacement CLOB books became usable.\n\
-# TYPE polymarket_btc_clob_transport_recovery_duration_seconds gauge\n",
-    );
-    if let Some(recovery_duration) = recovery_duration {
-        output.push_str(&format!(
-            "polymarket_btc_clob_transport_recovery_duration_seconds {}\n",
-            recovery_duration as f64 / 1_000.0
-        ));
-    }
-}
-
 #[async_trait]
 impl ControlApi for RuntimeControl {
     async fn health(&self) -> Result<HealthResponse, HttpError> {
@@ -3579,8 +3428,6 @@ impl ControlApi for RuntimeControl {
                 "polymarket_btc_polygon_oracle_age_seconds {oracle_age}\n"
             ));
         }
-        append_clob_source_lag_prometheus_metrics(&mut output, metrics);
-        append_clob_transport_prometheus_metrics(&mut output, metrics);
         output.push_str(&polymarket_bot::market_data_stream::prometheus_metrics());
         Ok(output)
     }
@@ -4370,11 +4217,6 @@ async fn main() -> Result<()> {
         live_user_ws_enabled,
         btc_realtime_enabled = true,
         btc_paper_enabled = true,
-        btc_clob_heartbeat_interval_secs = config.btc.data_source_heartbeat.clob_interval.as_secs(),
-        btc_clob_pong_timeout_secs = config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
-        btc_rtds_heartbeat_interval_secs = config.btc.data_source_heartbeat.rtds_interval.as_secs(),
-        btc_binance_heartbeat_interval_secs =
-            config.btc.data_source_heartbeat.binance_interval.as_secs(),
         grafana_live_enabled = config.grafana_live.enabled,
         compiled_source_identity = COMPILED_SOURCE_IDENTITY,
         "starting Polymarket bot"
@@ -4396,10 +4238,6 @@ async fn main() -> Result<()> {
                 "live_user_ws_enabled": live_user_ws_enabled,
                 "btc_realtime_enabled": true,
                 "btc_paper_enabled": true,
-                "btc_clob_heartbeat_interval_secs": config.btc.data_source_heartbeat.clob_interval.as_secs(),
-                "btc_clob_pong_timeout_secs": config.btc.data_source_heartbeat.clob_pong_timeout.as_secs(),
-                "btc_rtds_heartbeat_interval_secs": config.btc.data_source_heartbeat.rtds_interval.as_secs(),
-                "btc_binance_heartbeat_interval_secs": config.btc.data_source_heartbeat.binance_interval.as_secs(),
                 "grafana_live_enabled": config.grafana_live.enabled,
                 "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
                 "kafka_required": false
@@ -4425,10 +4263,6 @@ async fn main() -> Result<()> {
             pool.clone(),
             repository,
             BtcProcessManagerConfig {
-                btc: config.btc.clone(),
-                gamma_base_url: config.gamma_base_url.clone(),
-                clob_rest_base_url: config.clob_base_url.clone(),
-                clob_ws_url: config.clob_ws_url.clone(),
                 live_venue: live_venue.clone(),
                 live_reconcile_interval: config.live.reconcile_interval,
             },
@@ -4582,64 +4416,6 @@ mod lifecycle_tests {
     use super::*;
     use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
 
-    #[test]
-    fn prometheus_exposition_includes_clob_source_lag_gauge_and_transition_counter() {
-        let metrics = serde_json::json!({
-            "clob_active_last_source_to_receive_lag_milliseconds": 2_417,
-            "clob_source_to_receive_lag_unavailable_transitions": 9
-        });
-        let mut output = String::new();
-
-        append_clob_source_lag_prometheus_metrics(&mut output, Some(&metrics));
-
-        assert!(output
-            .contains("# TYPE polymarket_btc_clob_source_to_receive_lag_milliseconds gauge\n"));
-        assert!(output.contains("polymarket_btc_clob_source_to_receive_lag_milliseconds 2417\n"));
-        assert!(output.contains(
-            "# TYPE polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total counter\n"
-        ));
-        assert!(output.contains(
-            "polymarket_btc_clob_source_to_receive_lag_unavailable_transitions_total 9\n"
-        ));
-    }
-
-    #[test]
-    fn prometheus_exposition_includes_bounded_clob_transport_health_metrics() {
-        let metrics = serde_json::json!({
-            "clob_socket_read_repoll_delay_max_milliseconds": 17,
-            "clob_socket_inbound_silence_milliseconds": 2_500,
-            "clob_transport_disconnects_remote_close_1013": 1,
-            "clob_transport_disconnects_reset_without_close": 2,
-            "clob_transport_disconnects_heartbeat_ack_timeout": 3,
-            "clob_transport_disconnects_websocket_eof": 4,
-            "clob_transport_disconnects_other": 5,
-            "clob_transport_recovery_duration_milliseconds": 1_250
-        });
-        let mut output = String::new();
-
-        append_clob_transport_prometheus_metrics(&mut output, Some(&metrics));
-
-        assert!(
-            output.contains("polymarket_btc_clob_socket_read_repoll_delay_max_milliseconds 17\n")
-        );
-        assert!(output.contains("polymarket_btc_clob_socket_inbound_silence_seconds 2.5\n"));
-        assert!(output.contains(
-            "polymarket_btc_clob_transport_disconnects_total{reason=\"remote_close_1013\"} 1\n"
-        ));
-        assert!(output.contains(
-            "polymarket_btc_clob_transport_disconnects_total{reason=\"reset_without_close\"} 2\n"
-        ));
-        assert!(output.contains(
-            "polymarket_btc_clob_transport_disconnects_total{reason=\"heartbeat_ack_timeout\"} 3\n"
-        ));
-        assert!(output.contains(
-            "polymarket_btc_clob_transport_disconnects_total{reason=\"websocket_eof\"} 4\n"
-        ));
-        assert!(output
-            .contains("polymarket_btc_clob_transport_disconnects_total{reason=\"other\"} 5\n"));
-        assert!(output.contains("polymarket_btc_clob_transport_recovery_duration_seconds 1.25\n"));
-    }
-
     #[tokio::test]
     async fn inactive_runtime_status_reports_configured_mode_without_unbound_live_status() {
         let pool = PgPoolOptions::new()
@@ -4650,17 +4426,6 @@ mod lifecycle_tests {
             pool.clone(),
             BtcRepository::from_pool(pool),
             BtcProcessManagerConfig {
-                btc: BtcConfig {
-                    rtds_ws_url: String::new(),
-                    binance_ws_url: String::new(),
-                    binance_rest_base_url: String::new(),
-                    data_source_heartbeat: polymarket_bot::btc::BtcHeartbeatConfig::default(),
-                    directional_external:
-                        polymarket_bot::btc::DirectionalExternalRuntimeConfig::default(),
-                },
-                gamma_base_url: String::new(),
-                clob_rest_base_url: String::new(),
-                clob_ws_url: String::new(),
                 live_venue: None,
                 live_reconcile_interval: Duration::from_secs(1),
             },
@@ -6104,7 +5869,7 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn shared_market_data_accepts_playbook_only_runtime_differences() {
+    fn shared_market_data_accepts_playbook_runtime_differences() {
         let shared = BtcRuntimeConfig::default();
         let mut playbook = shared.clone();
         playbook.strategy_interval = Duration::from_millis(500);
@@ -6113,8 +5878,8 @@ mod lifecycle_tests {
 
         assert!(shared_market_data_config_compatible(&shared, &playbook));
 
-        playbook.writer_capacity += 1;
-        assert!(!shared_market_data_config_compatible(&shared, &playbook));
+        playbook.strategy_interval += Duration::from_millis(1);
+        assert!(shared_market_data_config_compatible(&shared, &playbook));
     }
 
     #[test]

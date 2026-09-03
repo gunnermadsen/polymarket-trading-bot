@@ -39,8 +39,7 @@ pub use binance_spot_l2::{
 };
 pub use directional_external_runtime::{
     BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
-    DirectionalExternalRuntimeConfig, DirectionalExternalSourceStatus, DirectionalExternalState,
-    PolygonOraclePoint,
+    DirectionalExternalSourceStatus, DirectionalExternalState, PolygonOraclePoint,
 };
 pub use directional_features::{
     build_directional_features, build_directional_features_for_schema,
@@ -109,9 +108,9 @@ pub use repository::{
     BtcRunManifest, PersistedOfficialResolution,
 };
 pub use runtime::{
-    runtime_status_from_inputs, BtcHeartbeatConfig, BtcPlaybookRuntimeHandle, BtcRuntime,
-    BtcRuntimeConfig, BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner,
-    NoopStrategyRunner, StrategyObservation,
+    runtime_status_from_inputs, BtcPlaybookRuntimeHandle, BtcRuntime, BtcRuntimeConfig,
+    BtcRuntimeHandle, BtcRuntimeMetrics, BtcRuntimeStatus, BtcStrategyRunner, NoopStrategyRunner,
+    StrategyObservation,
 };
 pub use strategy::*;
 pub use types::*;
