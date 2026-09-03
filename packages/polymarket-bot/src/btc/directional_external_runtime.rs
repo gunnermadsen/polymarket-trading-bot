@@ -254,7 +254,7 @@ impl DirectionalExternalState {
         Ok(())
     }
 
-    fn merge_oracle(&mut self, points: Vec<PolygonOraclePoint>, at: DateTime<Utc>) {
+    pub(crate) fn merge_oracle(&mut self, points: Vec<PolygonOraclePoint>, at: DateTime<Utc>) {
         for point in points {
             let identity = (point.phase_id, point.round_id);
             if self
@@ -275,7 +275,11 @@ impl DirectionalExternalState {
         self.record_success("oracle", at);
     }
 
-    fn merge_open_interest(&mut self, points: Vec<BinanceOpenInterestPoint>, at: DateTime<Utc>) {
+    pub(crate) fn merge_open_interest(
+        &mut self,
+        points: Vec<BinanceOpenInterestPoint>,
+        at: DateTime<Utc>,
+    ) {
         for point in points {
             if self
                 .open_interest

@@ -11,6 +11,9 @@ use std::{
     time::Duration as StdDuration,
 };
 
+use crate::market_data_stream::{
+    legacy_default_sources, MarketDataStreamRuntime, SourceSelector, StreamMetrics,
+};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -35,12 +38,11 @@ use tokio_tungstenite::{
     },
     MaybeTlsStream, WebSocketStream,
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
-    directional_external_runtime::{
-        run_directional_external_supervisor, DirectionalExternalRuntimeConfig,
-    },
+    directional_external_runtime::DirectionalExternalRuntimeConfig,
     feeds::{
         parse_binance_agg_trade_with_details, parse_clob_messages, parse_rtds_chainlink_twap_60,
         parse_rtds_reference_tick, BookRegistry,
@@ -1960,6 +1962,7 @@ pub struct BtcRuntime {
     books: Option<Arc<RwLock<BookRegistry>>>,
     state: Option<Arc<RwLock<RealtimeState>>>,
     directional_external: DirectionalExternalRuntimeConfig,
+    sources: Vec<SourceSelector>,
 }
 
 async fn apply_directional_chainlink_history(
@@ -2034,6 +2037,7 @@ impl BtcRuntime {
             books: None,
             state: None,
             directional_external: DirectionalExternalRuntimeConfig::default(),
+            sources: legacy_default_sources(),
         }
     }
 
@@ -2052,6 +2056,11 @@ impl BtcRuntime {
     /// Uses a caller-owned registry so every paper venue reads the same arrival-time book state.
     pub fn with_shared_book_registry(mut self, books: Arc<RwLock<BookRegistry>>) -> Self {
         self.books = Some(books);
+        self
+    }
+
+    pub fn with_sources(mut self, sources: Vec<SourceSelector>) -> Self {
+        self.sources = sources;
         self
     }
 
@@ -2088,92 +2097,38 @@ impl BtcRuntime {
             .unwrap_or_else(|| Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))));
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let running = Arc::new(AtomicBool::new(true));
-        let boundaries = Arc::new(RwLock::new(BoundaryTracker::default()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let (market_tx, market_rx) = watch::channel(Vec::<BtcIntervalMarket>::new());
-        let (writer_tx, writer_rx) = mpsc::channel(self.config.writer_capacity);
-        let mut tasks = vec![
-            spawn_runtime_task(
-                "writer",
-                run_writer(
-                    self.repository.clone(),
-                    writer_rx,
-                    state.clone(),
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-            spawn_runtime_task(
-                "discovery",
-                run_discovery(
-                    self.config.clone(),
-                    self.repository.clone(),
-                    market_tx,
-                    state.clone(),
-                    boundaries.clone(),
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-            spawn_runtime_task(
-                "clob",
-                run_clob_supervisor(
-                    self.config.clone(),
-                    self.heartbeat.clob_interval,
-                    self.heartbeat.clob_pong_timeout,
-                    market_rx,
-                    writer_tx.clone(),
-                    state.clone(),
-                    books.clone(),
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-            spawn_runtime_task(
-                "rtds",
-                run_rtds_supervisor(
-                    self.config.clone(),
-                    self.heartbeat.rtds_interval,
-                    self.repository.clone(),
-                    writer_tx.clone(),
-                    state.clone(),
-                    boundaries,
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-            spawn_runtime_task(
-                "binance",
-                run_binance_supervisor(
-                    self.config.clone(),
-                    self.heartbeat.binance_interval,
-                    writer_tx.clone(),
-                    state.clone(),
-                    metrics.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-            spawn_runtime_task(
-                "directional_external",
-                run_directional_external_supervisor(
-                    self.directional_external,
-                    state.clone(),
-                    shutdown_rx.clone(),
-                ),
-                running.clone(),
-                metrics.clone(),
-            ),
-        ];
+        let (sources_tx, sources_rx) = watch::channel(self.sources);
+        let stream_shutdown = CancellationToken::new();
+        let stream_shutdown_task = stream_shutdown.clone();
+        let stream_metrics = Arc::new(StreamMetrics::default());
+        crate::market_data_stream::install_metrics(stream_metrics.clone());
+        let master_url = std::env::var("INGESTER_MASTER_URL")
+            .context("INGESTER_MASTER_URL is required for BTC market data")?;
+        let stream_token = std::env::var("INGESTER_ADMIN_TOKEN")
+            .or_else(|_| std::env::var("MARKET_DATA_INGESTER_ADMIN_TOKEN"))
+            .context("INGESTER_ADMIN_TOKEN is required for BTC market data")?;
+        let stream_runtime = MarketDataStreamRuntime::new(
+            master_url,
+            stream_token,
+            "polymarket-bot".to_owned(),
+            self.repository.clone(),
+            state.clone(),
+            books.clone(),
+            stream_metrics,
+        )?;
+        let watch_shutdown = stream_shutdown.clone();
+        let mut stream_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let _ = stream_shutdown_rx.changed().await;
+            watch_shutdown.cancel();
+        });
+        let mut tasks = vec![spawn_runtime_task(
+            "market_data_grpc",
+            stream_runtime.run(sources_rx, stream_shutdown_task),
+            running.clone(),
+            metrics.clone(),
+        )];
         if directional_chainlink_hydration_failed {
             tasks.push(spawn_runtime_task(
                 "directional_chainlink_hydration",
@@ -2187,7 +2142,6 @@ impl BtcRuntime {
             ));
         }
         drop(shutdown_rx);
-        drop(writer_tx);
 
         Ok(BtcRuntimeHandle {
             enabled: self.config.enabled,
@@ -2198,6 +2152,7 @@ impl BtcRuntime {
             metrics,
             config: self.config,
             running,
+            sources: sources_tx,
         })
     }
 }
@@ -2236,6 +2191,7 @@ pub struct BtcRuntimeHandle {
     metrics: Arc<RwLock<BtcRuntimeMetrics>>,
     config: BtcRuntimeConfig,
     running: Arc<AtomicBool>,
+    sources: watch::Sender<Vec<SourceSelector>>,
 }
 
 impl BtcRuntimeHandle {
@@ -2249,6 +2205,10 @@ impl BtcRuntimeHandle {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn update_sources(&self, sources: Vec<SourceSelector>) {
+        self.sources.send_replace(sources);
     }
 
     pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
@@ -7836,6 +7796,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
         let (shutdown, _) = watch::channel(false);
+        let (sources, _) = watch::channel(legacy_default_sources());
         let handle = BtcRuntimeHandle {
             enabled: true,
             shutdown,
@@ -7845,6 +7806,7 @@ mod tests {
             metrics: Arc::new(RwLock::new(BtcRuntimeMetrics::default())),
             config: BtcRuntimeConfig::default(),
             running: running.clone(),
+            sources,
         };
 
         drop(handle);
@@ -7883,6 +7845,7 @@ mod tests {
 
         let running = Arc::new(AtomicBool::new(true));
         let (shutdown, _) = watch::channel(false);
+        let (sources, _) = watch::channel(legacy_default_sources());
         let handle = BtcRuntimeHandle {
             enabled: true,
             shutdown,
@@ -7892,6 +7855,7 @@ mod tests {
             metrics: Arc::new(RwLock::new(BtcRuntimeMetrics::default())),
             config: BtcRuntimeConfig::default(),
             running: running.clone(),
+            sources,
         };
 
         assert!(

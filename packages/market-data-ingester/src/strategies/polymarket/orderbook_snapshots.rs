@@ -409,7 +409,7 @@ pub struct PolymarketBtcFiveMinuteOrderbooksStrategy {
     client: Client,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 enum Outcome {
     Up,
     Down,
@@ -424,7 +424,7 @@ impl Outcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct MarketContract {
     event_slug: String,
     market_id: String,
@@ -1970,7 +1970,7 @@ impl BookRegistry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct BookSample {
     market: MarketContract,
     token_id: String,
@@ -4010,15 +4010,20 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 return Err(error);
             }
         };
+        let mut frame_tokens = BTreeSet::new();
         for message in messages {
             let source_timestamp = message_source_timestamp(&message);
             let changed_tokens = match &message {
+                ClobMessage::Book { token_id, .. }
+                | ClobMessage::BestBidAsk { token_id, .. }
+                | ClobMessage::TickSizeChange { token_id, .. } => vec![token_id.clone()],
                 ClobMessage::PriceChange { changes, .. } => changes
                     .iter()
                     .map(|change| change.token_id.clone())
                     .collect::<Vec<_>>(),
                 _ => Vec::new(),
             };
+            frame_tokens.extend(changed_tokens.iter().cloned());
             match registry.apply(message, received_at, self.config.max_levels_per_side) {
                 Ok(_) => {}
                 Err(error) => {
@@ -4043,6 +4048,23 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     return Err(error);
                 }
             }
+        }
+        for sample in registry
+            .samples(self.config.top_n)
+            .into_iter()
+            .filter(|sample| frame_tokens.contains(&sample.token_id))
+        {
+            crate::streaming::publish(
+                STRATEGY_KEY.as_str(),
+                format!("{}:{}", sample.token_id, sample.ingest_sequence),
+                sample.source_timestamp,
+                sample.source_timestamp,
+                sample.received_at,
+                sample.source_hash.clone().unwrap_or_default(),
+                true,
+                &sample,
+            )
+            .await;
         }
         Ok(())
     }

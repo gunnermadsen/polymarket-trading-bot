@@ -13,6 +13,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use subtle::ConstantTimeEq;
@@ -74,6 +75,7 @@ impl ControlApi {
             .route("/backfills/:job_id/retry", post(retry_backfill))
             .route("/backfills/:job_id/events", get(get_backfill_events))
             .route("/workers", get(list_workers))
+            .route("/stream/routes", post(resolve_stream_routes))
             .route("/internal/workers/register", post(register_worker))
             .route(
                 "/internal/workers/:worker_id/heartbeat",
@@ -330,6 +332,128 @@ async fn list_workers(State(state): State<ApiState>) -> Result<Json<Vec<WorkerRe
         .await
         .map(Json)
         .map_err(ApiError::internal)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StreamRouteRequest {
+    products: Vec<StreamProductRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StreamProductRequest {
+    key: String,
+    contract_version: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamRouteResponse {
+    routes: Vec<WorkerStreamRoute>,
+    unresolved: Vec<StreamProductRejection>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerStreamRoute {
+    worker_id: String,
+    endpoint: String,
+    source_revision: String,
+    products: Vec<StreamProductRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamProductRejection {
+    product: StreamProductRequest,
+    reason: &'static str,
+}
+
+async fn resolve_stream_routes(
+    State(state): State<ApiState>,
+    Json(request): Json<StreamRouteRequest>,
+) -> Result<Json<StreamRouteResponse>, ApiError> {
+    if request.products.is_empty() || request.products.len() > IngesterStrategyKey::ALL.len() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_stream_products",
+            "stream route request must contain at least one registered product",
+        ));
+    }
+    let profiles = state.profiles.list().await.map_err(ApiError::internal)?;
+    let workers = state
+        .backfills
+        .list_workers()
+        .await
+        .map_err(ApiError::internal)?;
+    let now = Utc::now();
+    let mut grouped = std::collections::BTreeMap::<String, WorkerStreamRoute>::new();
+    let mut unresolved = Vec::new();
+    for product in request.products {
+        let Ok(key) = IngesterStrategyKey::from_str(&product.key) else {
+            unresolved.push(StreamProductRejection {
+                product,
+                reason: "unknown_product",
+            });
+            continue;
+        };
+        if product.contract_version != crate::streaming::CONTRACT_VERSION {
+            unresolved.push(StreamProductRejection {
+                product,
+                reason: "contract_version_mismatch",
+            });
+            continue;
+        }
+        let Some(profile) = profiles.iter().find(|profile| profile.strategy_key == key) else {
+            unresolved.push(StreamProductRejection {
+                product,
+                reason: "profile_not_found",
+            });
+            continue;
+        };
+        let Some(owner) = profile
+            .lease_owner
+            .as_deref()
+            .filter(|_| profile.lease_is_current(now))
+        else {
+            unresolved.push(StreamProductRejection {
+                product,
+                reason: "no_current_owner",
+            });
+            continue;
+        };
+        let Some(worker) = workers.iter().find(|worker| {
+            worker.worker_id == owner
+                && worker.lifecycle_state == "active"
+                && worker.heartbeat_at >= now - ChronoDuration::seconds(30)
+                && worker
+                    .realtime_strategies
+                    .as_array()
+                    .is_some_and(|strategies| {
+                        strategies
+                            .iter()
+                            .any(|strategy| strategy.as_str() == Some(product.key.as_str()))
+                    })
+        }) else {
+            unresolved.push(StreamProductRejection {
+                product,
+                reason: "owner_unavailable",
+            });
+            continue;
+        };
+        grouped
+            .entry(worker.worker_id.clone())
+            .or_insert_with(|| WorkerStreamRoute {
+                worker_id: worker.worker_id.clone(),
+                endpoint: format!("http://{}:50051", worker.hostname),
+                source_revision: worker.source_revision.clone(),
+                products: Vec::new(),
+            })
+            .products
+            .push(product);
+    }
+    Ok(Json(StreamRouteResponse {
+        routes: grouped.into_values().collect(),
+        unresolved,
+    }))
 }
 
 async fn register_worker(

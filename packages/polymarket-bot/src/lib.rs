@@ -11,5 +11,6 @@ pub mod grafana_live;
 pub mod http;
 pub mod idempotency;
 pub mod ingestion;
+pub mod market_data_stream;
 pub mod models;
 pub mod store;

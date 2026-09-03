@@ -156,7 +156,7 @@ struct RtdsPayload {
     window_s: i16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct TwapObservation {
     source_timestamp: DateTime<Utc>,
     published_at: DateTime<Utc>,
@@ -470,6 +470,16 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                         let Some(observation) = decode_observation(&bytes, received_at)? else {
                             continue;
                         };
+                        crate::streaming::publish(
+                            STRATEGY_KEY.as_str(),
+                            format!("{}:{}", observation.window_seconds, observation.source_timestamp.timestamp_micros()),
+                            observation.source_timestamp,
+                            observation.published_at,
+                            observation.received_at,
+                            observation.payload_sha256.clone(),
+                            true,
+                            &observation,
+                        ).await;
                         self.persist_observation(checkpoint, &observation).await?;
                         if observation.window_seconds == 30 { thirty_seen_at = Some(Instant::now()); }
                         else { sixty_seen_at = Some(Instant::now()); }

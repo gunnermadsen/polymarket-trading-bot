@@ -4,6 +4,8 @@ use anyhow::{bail, Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
 const DEFAULT_API_BIND: &str = "0.0.0.0:8098";
+const DEFAULT_GRPC_BIND: &str = "0.0.0.0:50051";
+const DEFAULT_WORKER_METRICS_BIND: &str = "0.0.0.0:8099";
 const DEFAULT_POOL_CONNECTIONS: u32 = 4;
 const DEFAULT_CONTROL_POOL_CONNECTIONS: u32 = 1;
 const DEFAULT_DATABASE_ACQUIRE_TIMEOUT_SECS: u64 = 10;
@@ -19,6 +21,8 @@ pub(crate) struct BootstrapSettings {
     pub control_database_acquire_timeout: Duration,
     pub service_instance: String,
     pub api_bind: SocketAddr,
+    pub grpc_bind: SocketAddr,
+    pub worker_metrics_bind: SocketAddr,
     pub admin_token: String,
 }
 
@@ -43,13 +47,22 @@ impl BootstrapSettings {
             .or_else(|_| env::var("MARKET_DATA_INGESTER_INSTANCE"))
             .unwrap_or_else(|_| match mode {
                 IngesterMode::Master => "ingester-master".to_owned(),
-                IngesterMode::Worker => "ingester-worker".to_owned(),
+                IngesterMode::Worker => {
+                    env::var("HOSTNAME").unwrap_or_else(|_| "ingester-worker".to_owned())
+                }
             });
         let api_bind = env::var("INGESTER_API_BIND")
             .or_else(|_| env::var("MARKET_DATA_INGESTER_API_BIND"))
             .unwrap_or_else(|_| DEFAULT_API_BIND.to_owned())
             .parse()
             .context("INGESTER_API_BIND must be a socket address")?;
+        let grpc_bind = env_or("INGESTER_GRPC_BIND", DEFAULT_GRPC_BIND)
+            .parse()
+            .context("INGESTER_GRPC_BIND must be a socket address")?;
+        let worker_metrics_bind =
+            env_or("INGESTER_WORKER_METRICS_BIND", DEFAULT_WORKER_METRICS_BIND)
+                .parse()
+                .context("INGESTER_WORKER_METRICS_BIND must be a socket address")?;
         let database_pool_connections = env_u32(
             "MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS",
             DEFAULT_POOL_CONNECTIONS,
@@ -95,6 +108,8 @@ impl BootstrapSettings {
             control_database_acquire_timeout,
             service_instance,
             api_bind,
+            grpc_bind,
+            worker_metrics_bind,
             admin_token,
         })
     }

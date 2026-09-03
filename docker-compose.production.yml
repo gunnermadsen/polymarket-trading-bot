@@ -128,6 +128,8 @@ services:
     env_file:
       - *app-env-file
       - *postgres-env-file
+      - path: ./.env.market-data-ingester
+        required: true
     environment:
       NODE_ENV: "development"
       POSTGRES_HOST: "timescaledb-0"
@@ -157,6 +159,7 @@ services:
     environment:
       RUST_LOG: "info"
       TOKIO_WORKER_THREADS: "2"
+      INGESTER_MASTER_URL: "http://ingester-master:8098"
       POSTGRES_HOST: "pgbouncer"
       POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"
@@ -256,6 +259,8 @@ services:
       POSTGRES_SSL_MODE: "disable"
       POSTGRES_SSL_CA_FILE: ""
       INGESTER_MODE: "worker"
+      INGESTER_GRPC_BIND: "0.0.0.0:50051"
+      INGESTER_WORKER_METRICS_BIND: "0.0.0.0:8099"
       INGESTER_MASTER_URL: "http://ingester-master:8098"
       INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-production}"
       INGESTER_WORKER_MAX_BACKFILLS: "1"

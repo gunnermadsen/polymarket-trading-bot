@@ -309,7 +309,7 @@ struct FeedMetadata {
     aggregators: BTreeMap<String, u16>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct OracleRound {
     chain_id: i64,
     feed_proxy_address: String,
@@ -2291,6 +2291,19 @@ impl PolygonChainlinkBtcusdOracleStrategy {
         transaction.commit().await.map_err(|error| {
             database_error("polygon_oracle_fact_transaction_commit_failed", error)
         })?;
+        if let Some(round) = inserted.last() {
+            crate::streaming::publish(
+                "polygon_chainlink_btcusd_oracle",
+                format!("{}:{}", round.transaction_hash, round.log_index),
+                round.source_timestamp,
+                round.provider_available_at,
+                round.received_at,
+                round.payload_sha256.clone(),
+                true,
+                *round,
+            )
+            .await;
+        }
         if let Some(artifact) = artifact_after_commit {
             state.artifact = Some(artifact);
         }

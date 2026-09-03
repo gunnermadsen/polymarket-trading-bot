@@ -211,6 +211,8 @@ services:
     environment:
       <<: *ingester-environment
       INGESTER_MODE: "worker"
+      INGESTER_GRPC_BIND: "0.0.0.0:50051"
+      INGESTER_WORKER_METRICS_BIND: "0.0.0.0:8099"
       MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "1"
       INGESTER_MASTER_URL: "http://ingester-master:8098"
       INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-default}"
@@ -264,9 +266,12 @@ services:
       - *app-env-file
       - *postgres-env-file
       - *grafana-env-file
+      - path: ./.env.market-data-ingester
+        required: true
     environment:
       RUST_LOG: "info"
       TOKIO_WORKER_THREADS: "2"
+      INGESTER_MASTER_URL: "http://ingester-master:8098"
       POSTGRES_HOST: "pgbouncer"
       POSTGRES_PORT: "6432"
       POSTGRES_USER: "postgres"

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -55,6 +55,7 @@ use polymarket_bot::{
     ingestion::{
         job::BackfillRequest as IngestionBackfillRequest, repository::IngestionRepository,
     },
+    market_data_stream::{legacy_default_sources, SourceSelector},
     models::{
         EffectiveProcessExecutionConfig, ProcessExecutionConfig, TradingProcess,
         TradingProcessConfig,
@@ -224,6 +225,10 @@ async fn invalidate_shared_market_data_evidence(
 #[serde(default, deny_unknown_fields)]
 struct BtcRealtimePaperControlConfig {
     schema_version: String,
+    #[serde(default)]
+    playbook_version: Option<String>,
+    #[serde(default)]
+    sources: Vec<SourceSelector>,
     next_experiment_key: String,
     preregistration_sha256: String,
     strategy: serde_json::Value,
@@ -236,6 +241,8 @@ impl Default for BtcRealtimePaperControlConfig {
     fn default() -> Self {
         Self {
             schema_version: String::new(),
+            playbook_version: None,
+            sources: Vec::new(),
             next_experiment_key: String::new(),
             preregistration_sha256: String::new(),
             strategy: serde_json::json!({}),
@@ -298,11 +305,39 @@ fn parse_btc_process_control(
         )));
     }
 
-    serde_json::from_value(value).map_err(|error| {
-        HttpError::bad_request(format!(
-            "invalid process config.raw.btc_realtime_paper: {error}"
-        ))
-    })
+    let mut control: BtcRealtimePaperControlConfig =
+        serde_json::from_value(value).map_err(|error| {
+            HttpError::bad_request(format!(
+                "invalid process config.raw.btc_realtime_paper: {error}"
+            ))
+        })?;
+    if control.sources.is_empty() {
+        if definition_use == BtcDefinitionUse::DurableResume {
+            control.sources = legacy_default_sources();
+        } else {
+            return Err(HttpError::bad_request(
+                "BTC process sources are required; update the playbook to version v1.2",
+            ));
+        }
+    } else if control.playbook_version.as_deref() != Some("v1.2") {
+        return Err(HttpError::bad_request(
+            "BTC process sources require playbook_version v1.2",
+        ));
+    }
+    for source in &control.sources {
+        source
+            .validate()
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
+    }
+    let unique = control
+        .sources
+        .iter()
+        .map(|source| source.key.as_str())
+        .collect::<HashSet<_>>();
+    if unique.len() != control.sources.len() {
+        return Err(HttpError::bad_request("BTC process sources must be unique"));
+    }
+    Ok(control)
 }
 
 fn resolve_btc_strategy(
@@ -651,6 +686,7 @@ struct PreparedBtcStartDefinition {
     run_key: String,
     preregistration_sha256: String,
     strategy: BtcStrategyConfig,
+    sources: Vec<SourceSelector>,
     entry_admission: Option<BtcEntryAdmissionConfig>,
     directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
     runtime: BtcRuntimeConfig,
@@ -660,6 +696,25 @@ struct PreparedBtcStartDefinition {
     execution: EffectiveProcessExecutionConfig,
     frozen_process_config: TradingProcessConfig,
     config_hash: String,
+}
+
+fn merge_source_selectors(
+    selectors: impl IntoIterator<Item = SourceSelector>,
+) -> Result<Vec<SourceSelector>, HttpError> {
+    let mut by_key = BTreeMap::new();
+    for selector in selectors {
+        if let Some(existing) = by_key.get(&selector.key) {
+            if existing != &selector {
+                return Err(HttpError::conflict(format!(
+                    "BTC source {} has incompatible selector settings across active processes",
+                    selector.key
+                )));
+            }
+            continue;
+        }
+        by_key.insert(selector.key.clone(), selector);
+    }
+    Ok(by_key.into_values().collect())
 }
 
 const BTC_LIVE_EXECUTION_FRESHNESS_LIMIT_MS: i64 = 2_000;
@@ -877,6 +932,7 @@ fn prepare_btc_start_definition_for_execution(
         paper_stress_previews,
     } = resolved;
     let directional_model_entry_policy = control.paper.directional_model_entry_policy;
+    let sources = control.sources.clone();
     let (pipeline_version, process_schema_version) = match control.schema_version.as_str() {
         BTC_PROCESS_SCHEMA_VERSION => (BTC_PIPELINE_VERSION, BTC_PROCESS_SCHEMA_VERSION),
         SELECTABLE_BTC_PROCESS_SCHEMA_VERSION => (
@@ -920,6 +976,8 @@ fn prepare_btc_start_definition_for_execution(
             "compiled_source_identity": COMPILED_SOURCE_IDENTITY,
         },
         "strategy": &strategy,
+        "playbook_version": "v1.2",
+        "sources": &sources,
         "runtime": &runtime,
         "paper": {
             "execution_enabled": true,
@@ -982,6 +1040,7 @@ fn prepare_btc_start_definition_for_execution(
         run_key,
         preregistration_sha256,
         strategy,
+        sources,
         entry_admission,
         directional_model_entry_policy,
         runtime,
@@ -1029,6 +1088,8 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
             runtime.remove("binance_spot_l2_ws_url");
             runtime.remove("binance_rest_base_url");
         }
+        raw.remove("playbook_version");
+        raw.remove("sources");
         if raw
             .get("process_schema_version")
             .and_then(serde_json::Value::as_str)
@@ -1044,6 +1105,29 @@ fn resume_process_contract_projection(mut config: serde_json::Value) -> serde_js
     config
 }
 
+fn selector_only_config_change(
+    current: &TradingProcessConfig,
+    candidate: &TradingProcessConfig,
+) -> Result<bool, HttpError> {
+    fn remove_selectors(value: &mut serde_json::Value) {
+        if let Some(control) = value
+            .get_mut("raw")
+            .and_then(|raw| raw.get_mut("btc_realtime_paper"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            control.remove("playbook_version");
+            control.remove("sources");
+        }
+    }
+    let mut current =
+        serde_json::to_value(current).map_err(|error| HttpError::internal(error.to_string()))?;
+    let mut candidate =
+        serde_json::to_value(candidate).map_err(|error| HttpError::internal(error.to_string()))?;
+    remove_selectors(&mut current);
+    remove_selectors(&mut candidate);
+    Ok(current == candidate)
+}
+
 struct ActiveBtcPlaybook {
     process_id: uuid::Uuid,
     run_id: uuid::Uuid,
@@ -1051,6 +1135,7 @@ struct ActiveBtcPlaybook {
     config_hash: String,
     execution_mode: BtcExecutionMode,
     strategy: BtcStrategyConfig,
+    sources: Vec<SourceSelector>,
     live_venue: Option<Arc<LiveVenue>>,
     runtime: BtcPlaybookRuntimeHandle,
 }
@@ -1185,6 +1270,7 @@ impl BtcProcessManager {
     async fn ensure_shared_runtime(
         &self,
         config: &BtcRuntimeConfig,
+        sources: &[SourceSelector],
     ) -> Result<
         (
             Arc<tokio::sync::RwLock<polymarket_bot::btc::RealtimeState>>,
@@ -1192,7 +1278,15 @@ impl BtcProcessManager {
         ),
         HttpError,
     > {
-        let active_playbooks = self.active_playbooks.lock().await.len();
+        let active_guard = self.active_playbooks.lock().await;
+        let active_playbooks = active_guard.len();
+        let source_union = merge_source_selectors(
+            active_guard
+                .values()
+                .flat_map(|playbook| playbook.sources.clone())
+                .chain(sources.iter().cloned()),
+        )?;
+        drop(active_guard);
         let retired_runtime = {
             let mut shared = self.shared_runtime.lock().await;
             if let Some(existing) = shared.as_ref() {
@@ -1203,6 +1297,9 @@ impl BtcProcessManager {
                         .as_ref()
                         .is_some_and(BtcRuntimeHandle::is_running)
                 {
+                    if let Some(runtime) = existing.runtime.as_ref() {
+                        runtime.update_sources(source_union.clone());
+                    }
                     return Ok((existing.state.clone(), existing.books.clone()));
                 }
                 if active_playbooks > 0 {
@@ -1240,6 +1337,7 @@ impl BtcProcessManager {
         )));
         let heartbeat = self.config.btc.data_source_heartbeat;
         let runtime = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+            .with_sources(source_union)
             .with_directional_external(self.config.btc.directional_external.clone())
             .with_shared_state(state.clone())
             .with_shared_book_registry(books.clone())
@@ -1319,7 +1417,17 @@ impl BtcProcessManager {
         invalidate_shared_market_data_evidence(&state, &books).await;
 
         let heartbeat = self.config.btc.data_source_heartbeat;
+        let sources = self
+            .active_playbooks
+            .lock()
+            .await
+            .values()
+            .flat_map(|playbook| playbook.sources.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let recovery = BtcRuntime::new(config.clone(), heartbeat, self.repository.clone())
+            .with_sources(sources)
             .with_directional_external(self.config.btc.directional_external.clone())
             .with_shared_state(state)
             .with_shared_book_registry(books)
@@ -2111,6 +2219,7 @@ impl BtcProcessManager {
             run_key,
             preregistration_sha256,
             strategy,
+            sources,
             entry_admission,
             directional_model_entry_policy,
             runtime: runtime_config,
@@ -2140,7 +2249,7 @@ impl BtcProcessManager {
 
         let startup_result: Result<(BtcPlaybookRuntimeHandle, Option<Arc<LiveVenue>>)> = async {
             let (state, books) = self
-                .ensure_shared_runtime(&runtime_config)
+                .ensure_shared_runtime(&runtime_config, &sources)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let components = self.execution_components(
@@ -2209,6 +2318,7 @@ impl BtcProcessManager {
                 config_hash: config_hash.clone(),
                 execution_mode,
                 strategy: active_strategy,
+                sources,
                 live_venue: live_process_venue,
                 runtime,
             },
@@ -2253,6 +2363,7 @@ impl BtcProcessManager {
             run_key,
             preregistration_sha256,
             strategy,
+            sources,
             entry_admission,
             directional_model_entry_policy,
             runtime: runtime_config,
@@ -2316,7 +2427,7 @@ impl BtcProcessManager {
 
         let startup_result: Result<(BtcPlaybookRuntimeHandle, Option<Arc<LiveVenue>>)> = async {
             let (state, books) = self
-                .ensure_shared_runtime(&runtime_config)
+                .ensure_shared_runtime(&runtime_config, &sources)
                 .await
                 .map_err(|error| anyhow::anyhow!("{error:?}"))?;
             let components = self.execution_components(
@@ -2404,6 +2515,7 @@ impl BtcProcessManager {
                 config_hash: config_hash.clone(),
                 execution_mode,
                 strategy,
+                sources,
                 live_venue: live_process_venue,
                 runtime,
             },
@@ -2596,6 +2708,20 @@ impl BtcProcessManager {
             .await
             .remove(&process_id)
             .expect("active BTC playbook exists while lifecycle transition is held");
+        let remaining_sources = merge_source_selectors(
+            self.active_playbooks
+                .lock()
+                .await
+                .values()
+                .flat_map(|playbook| playbook.sources.clone()),
+        )?;
+        if let Some(shared) = self.shared_runtime.lock().await.as_ref() {
+            if let Some(runtime) = shared.runtime.as_ref() {
+                if !remaining_sources.is_empty() {
+                    runtime.update_sources(remaining_sources);
+                }
+            }
+        }
         let provisional_pending = PendingBtcTerminal {
             process_id: active.process_id,
             run_id: active.run_id,
@@ -3424,6 +3550,7 @@ impl ControlApi for RuntimeControl {
         }
         append_clob_source_lag_prometheus_metrics(&mut output, metrics);
         append_clob_transport_prometheus_metrics(&mut output, metrics);
+        output.push_str(&polymarket_bot::market_data_stream::prometheus_metrics());
         Ok(output)
     }
 
@@ -3963,10 +4090,15 @@ impl ControlApi for RuntimeControl {
                 .contains_key(&process_id),
             None => false,
         };
-        if runtime_active
-            || terminal_pending
-            || current.enabled
-            || matches!(current.status.as_str(), "starting" | "running" | "stopping")
+        let active_selector_update = runtime_active
+            && request.name.is_none()
+            && request.metadata.is_none()
+            && request.config.as_ref().is_some_and(|config| {
+                selector_only_config_change(&current.config, config).unwrap_or(false)
+            });
+        if terminal_pending
+            || current.enabled && !active_selector_update
+            || matches!(current.status.as_str(), "starting" | "stopping")
         {
             return Err(HttpError::conflict(
                 "stop the BTC trading process through its /stop endpoint before reconfiguring it",
@@ -3978,7 +4110,11 @@ impl ControlApi for RuntimeControl {
             })?;
             let mut candidate = current.clone();
             candidate.config = config.clone();
-            manager.validate_inactive_definition(&candidate)?;
+            if active_selector_update {
+                manager.validate_resume_definition(&candidate)?;
+            } else {
+                manager.validate_inactive_definition(&candidate)?;
+            }
         }
         let process = self
             .store
@@ -3991,6 +4127,34 @@ impl ControlApi for RuntimeControl {
             .await
             .map_err(|error| HttpError::internal(error.to_string()))?
             .ok_or_else(|| HttpError::not_found("trading process not found"))?;
+        if active_selector_update {
+            let manager = self.btc_manager.as_ref().expect("BTC manager exists");
+            let sources = manager
+                .validate_resume_definition(&process)?
+                .control
+                .sources;
+            {
+                let mut active = manager.active_playbooks.lock().await;
+                active
+                    .get_mut(&process_id)
+                    .expect("active selector update retains its runtime")
+                    .sources = sources;
+                let union = merge_source_selectors(
+                    active
+                        .values()
+                        .flat_map(|playbook| playbook.sources.clone()),
+                )?;
+                if let Some(runtime) = manager
+                    .shared_runtime
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(|shared| shared.runtime.as_ref())
+                {
+                    runtime.update_sources(union);
+                }
+            }
+        }
         drop(lifecycle_guard);
         Ok(TradingProcessResponse { process })
     }
@@ -4636,6 +4800,8 @@ mod lifecycle_tests {
         let control = parse_btc_process_control(
             serde_json::json!({
                 "schema_version": SELECTABLE_BTC_PROCESS_SCHEMA_VERSION,
+                "playbook_version": "v1.2",
+                "sources": legacy_default_sources(),
                 "next_experiment_key": "btc-5m-selectable-paper-v1",
                 "preregistration_sha256": "d".repeat(64),
                 "strategy": {

@@ -275,7 +275,7 @@ struct OhlcvRunState {
     artifact: Option<CaptureArtifact>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct OneSecondOhlcv {
     open_timestamp: DateTime<Utc>,
     close_timestamp: DateTime<Utc>,
@@ -1419,6 +1419,16 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                                     return Err(error);
                                 }
                             };
+                            crate::streaming::publish(
+                                STRATEGY_KEY.as_str(),
+                                candle.open_timestamp.timestamp_micros().to_string(),
+                                candle.close_timestamp,
+                                candle.provider_available_at.unwrap_or(candle.close_timestamp),
+                                candle.received_at,
+                                candle.payload_sha256.clone(),
+                                true,
+                                &candle,
+                            ).await;
                             let last_seen = pending
                                 .last()
                                 .map(|pending| pending.open_timestamp)

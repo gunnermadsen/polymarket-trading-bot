@@ -124,7 +124,7 @@ struct ProviderOpenInterest {
     timestamp: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct OpenInterestObservation {
     source_timestamp: DateTime<Utc>,
     received_at: DateTime<Utc>,
@@ -395,6 +395,21 @@ impl BinanceFuturesOpenInterestStrategy {
             .commit()
             .await
             .map_err(database_error("open_interest_commit_transaction"))?;
+        if persisted.inserted > 0 {
+            if let Some(observation) = observations.last() {
+                crate::streaming::publish(
+                    "binance_futures_btcusdt_open_interest",
+                    observation.source_timestamp.timestamp_millis().to_string(),
+                    observation.source_timestamp,
+                    observation.received_at,
+                    observation.received_at,
+                    observation.payload_sha256.clone(),
+                    true,
+                    observation,
+                )
+                .await;
+            }
+        }
         if new_gap_count > 0 {
             warn!(
                 strategy = %STRATEGY_KEY,

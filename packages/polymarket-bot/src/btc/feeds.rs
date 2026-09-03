@@ -718,6 +718,66 @@ impl BookRegistry {
         self.connection_id
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_canonical_snapshot(
+        &mut self,
+        connection_id: Uuid,
+        market: &BtcIntervalMarket,
+        token_id: &str,
+        outcome: BtcOutcome,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        ingest_sequence: u64,
+        source_hash: Option<String>,
+        bids: Vec<(Decimal, Decimal)>,
+        asks: Vec<(Decimal, Decimal)>,
+    ) -> Result<BookApplyResult> {
+        if self.connection_id != connection_id {
+            self.reset_connection(connection_id);
+        }
+        self.try_register_market(market)?;
+        let Some(book) = self.books.get_mut(token_id) else {
+            bail!("canonical snapshot token is not registered");
+        };
+        if book.outcome != outcome || !book.matches_market(&market.market_id) {
+            bail!("canonical snapshot market identity mismatch");
+        }
+        if book
+            .source_timestamp
+            .is_some_and(|current| source_timestamp < current)
+        {
+            return Ok(book_apply_result(
+                Some(token_id.to_owned()),
+                source_timestamp,
+                false,
+                false,
+                FeedIntegrityStatus::OutOfOrder,
+            ));
+        }
+        book.bids = bids
+            .into_iter()
+            .filter(|(_, size)| !size.is_zero())
+            .collect();
+        book.asks = asks
+            .into_iter()
+            .filter(|(_, size)| !size.is_zero())
+            .collect();
+        book.bootstrapped = true;
+        book.source_timestamp = Some(source_timestamp);
+        book.received_at = Some(received_at);
+        book.source_hash = source_hash;
+        book.ingest_sequence = ingest_sequence;
+        book.validate();
+        self.next_sequence = self.next_sequence.max(ingest_sequence.saturating_add(1));
+        Ok(book_apply_result(
+            Some(token_id.to_owned()),
+            source_timestamp,
+            book.integrity_status == FeedIntegrityStatus::Ok,
+            true,
+            book.integrity_status,
+        ))
+    }
+
     /// Publishes only the books touched by one frame while preserving the rest of the active
     /// connection epoch. Subscription changes and connection promotion still replace the complete
     /// published registry at their explicit publication boundaries.

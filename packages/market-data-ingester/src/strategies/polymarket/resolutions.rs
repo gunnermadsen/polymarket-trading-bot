@@ -636,6 +636,25 @@ impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteResolutionsStrategy {
                     };
                     let result = match notice {
                         ProducerNotice::Fact(fact) => {
+                            crate::streaming::publish(
+                                STRATEGY_KEY.as_str(),
+                                fact.identity.market_id.clone(),
+                                fact.source_timestamp.unwrap_or(fact.received_at),
+                                fact.provider_available_at.unwrap_or(fact.received_at),
+                                fact.received_at,
+                                fact.payload_sha256.clone(),
+                                true,
+                                &serde_json::json!({
+                                    "market_id": fact.identity.market_id,
+                                    "condition_id": fact.identity.condition_id,
+                                    "winning_token_id": fact.winning_token_id,
+                                    "winning_outcome": fact.winning_outcome.as_str(),
+                                    "resolution_source": fact.source.as_str(),
+                                    "source_timestamp": fact.source_timestamp,
+                                    "received_at": fact.received_at,
+                                    "payload_sha256": fact.payload_sha256,
+                                }),
+                            ).await;
                             self.persist_websocket_fact(&mut state, *fact).await
                         }
                         ProducerNotice::Error(error) => Err(error),
