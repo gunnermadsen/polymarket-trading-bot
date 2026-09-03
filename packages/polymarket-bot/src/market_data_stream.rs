@@ -232,14 +232,12 @@ pub fn install_metrics(metrics: Arc<StreamMetrics>) {
 }
 
 pub fn prometheus_metrics() -> String {
-    STREAM_METRICS
-        .get()
-        .map_or_else(String::new, |metrics| {
-            metrics
-                .lock()
-                .expect("stream metrics lock")
-                .render_prometheus()
-        })
+    STREAM_METRICS.get().map_or_else(String::new, |metrics| {
+        metrics
+            .lock()
+            .expect("stream metrics lock")
+            .render_prometheus()
+    })
 }
 
 pub struct MarketDataStreamRuntime {
@@ -562,7 +560,6 @@ impl MarketDataStreamRuntime {
             }
             PRODUCT_BOOKS => {
                 let payload: BookPayload = serde_json::from_slice(&event.payload_json)?;
-                let market = payload.market.clone().into_market();
                 let outcome = if payload.outcome == "up" {
                     BtcOutcome::Up
                 } else if payload.outcome == "down" {
@@ -574,11 +571,13 @@ impl MarketDataStreamRuntime {
                 let asks = parse_levels(payload.asks)?;
                 let epoch = Uuid::parse_str(&event.publisher_epoch)?;
                 let mut books = self.books.write().await;
-                books.apply_canonical_snapshot(
+                books.apply_canonical_snapshot_for_registered_market(
                     epoch,
-                    &market,
+                    &payload.market.market_id,
+                    &payload.market.condition_id,
                     &payload.token_id,
                     outcome,
+                    payload.tick_size,
                     payload.source_timestamp,
                     payload.received_at,
                     u64::try_from(payload.ingest_sequence)?,
@@ -738,15 +737,22 @@ impl MarketPayload {
 
 #[derive(Debug, Deserialize)]
 struct BookPayload {
-    market: MarketPayload,
+    market: BookMarketPayload,
     token_id: String,
     outcome: String,
+    tick_size: Decimal,
     source_timestamp: DateTime<Utc>,
     received_at: DateTime<Utc>,
     source_hash: Option<String>,
     ingest_sequence: i64,
     bids: Vec<[String; 2]>,
     asks: Vec<[String; 2]>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookMarketPayload {
+    market_id: String,
+    condition_id: String,
 }
 #[derive(Debug, Deserialize)]
 struct ReferencePayload {
@@ -910,5 +916,36 @@ mod tests {
         }))
         .expect("selector shape");
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn orderbook_payload_accepts_the_ingester_compact_market_contract() {
+        let payload: BookPayload = serde_json::from_value(serde_json::json!({
+            "market": {
+                "event_slug": "btc-updown-5m-1788370200",
+                "market_id": "market-1",
+                "condition_id": "condition-1",
+                "window_start": "2026-09-03T17:30:00Z",
+                "window_end": "2026-09-03T17:35:00Z",
+                "up_token_id": "up-1",
+                "down_token_id": "down-1",
+                "tick_size": "0.01",
+                "received_at": "2026-09-03T17:30:01Z"
+            },
+            "token_id": "up-1",
+            "outcome": "up",
+            "tick_size": "0.01",
+            "source_timestamp": "2026-09-03T17:30:01Z",
+            "received_at": "2026-09-03T17:30:01.050Z",
+            "source_hash": "sha256:test",
+            "ingest_sequence": 1,
+            "bids": [["0.49", "100"]],
+            "asks": [["0.51", "100"]]
+        }))
+        .expect("ingester orderbook payload");
+
+        assert_eq!(payload.market.market_id, "market-1");
+        assert_eq!(payload.market.condition_id, "condition-1");
+        assert_eq!(payload.tick_size, Decimal::new(1, 2));
     }
 }

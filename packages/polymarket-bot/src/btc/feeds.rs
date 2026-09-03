@@ -736,10 +736,78 @@ impl BookRegistry {
             self.reset_connection(connection_id);
         }
         self.try_register_market(market)?;
+        self.apply_canonical_snapshot_to_registered_market(
+            &market.market_id,
+            &market.condition_id,
+            token_id,
+            outcome,
+            market.tick_size,
+            source_timestamp,
+            received_at,
+            ingest_sequence,
+            source_hash,
+            bids,
+            asks,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_canonical_snapshot_for_registered_market(
+        &mut self,
+        connection_id: Uuid,
+        market_id: &str,
+        condition_id: &str,
+        token_id: &str,
+        outcome: BtcOutcome,
+        tick_size: Decimal,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        ingest_sequence: u64,
+        source_hash: Option<String>,
+        bids: Vec<(Decimal, Decimal)>,
+        asks: Vec<(Decimal, Decimal)>,
+    ) -> Result<BookApplyResult> {
+        if self.connection_id != connection_id {
+            self.reset_connection(connection_id);
+        }
+        self.apply_canonical_snapshot_to_registered_market(
+            market_id,
+            condition_id,
+            token_id,
+            outcome,
+            tick_size,
+            source_timestamp,
+            received_at,
+            ingest_sequence,
+            source_hash,
+            bids,
+            asks,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_canonical_snapshot_to_registered_market(
+        &mut self,
+        market_id: &str,
+        condition_id: &str,
+        token_id: &str,
+        outcome: BtcOutcome,
+        tick_size: Decimal,
+        source_timestamp: DateTime<Utc>,
+        received_at: DateTime<Utc>,
+        ingest_sequence: u64,
+        source_hash: Option<String>,
+        bids: Vec<(Decimal, Decimal)>,
+        asks: Vec<(Decimal, Decimal)>,
+    ) -> Result<BookApplyResult> {
         let Some(book) = self.books.get_mut(token_id) else {
             bail!("canonical snapshot token is not registered");
         };
-        if book.outcome != outcome || !book.matches_market(&market.market_id) {
+        if book.outcome != outcome
+            || book.market_id != market_id
+            || book.wire_market_id != condition_id
+            || book.tick_size != tick_size
+        {
             bail!("canonical snapshot market identity mismatch");
         }
         if book
@@ -2061,6 +2129,48 @@ mod tests {
             registry.checkpoint(&market.up_token_id).unwrap().market_id,
             market.market_id
         );
+    }
+
+    #[test]
+    fn canonical_ingester_snapshot_requires_a_registered_exact_market_identity() {
+        let market = market();
+        let epoch = Uuid::new_v4();
+        let mut registry = BookRegistry::new(epoch);
+        registry.register_market(&market);
+
+        let applied = registry
+            .apply_canonical_snapshot_for_registered_market(
+                epoch,
+                &market.market_id,
+                &market.condition_id,
+                &market.up_token_id,
+                BtcOutcome::Up,
+                market.tick_size,
+                ts(1_783_902_701_000),
+                ts(1_783_902_701_005),
+                1,
+                Some("canonical-hash".to_owned()),
+                vec![(dec!(0.48), dec!(10))],
+                vec![(dec!(0.52), dec!(10))],
+            )
+            .expect("registered canonical snapshot");
+        assert!(applied.applied);
+
+        let rejected = registry.apply_canonical_snapshot_for_registered_market(
+            epoch,
+            "different-market",
+            &market.condition_id,
+            &market.up_token_id,
+            BtcOutcome::Up,
+            market.tick_size,
+            ts(1_783_902_702_000),
+            ts(1_783_902_702_005),
+            2,
+            None,
+            vec![(dec!(0.49), dec!(10))],
+            vec![(dec!(0.51), dec!(10))],
+        );
+        assert!(rejected.is_err());
     }
 
     fn seed_book(registry: &mut BookRegistry, token: &str, millis: i64) {
