@@ -1640,19 +1640,6 @@ impl BookRegistry {
             && matching.next().is_none()
     }
 
-    fn await_authoritative_books<'a>(&mut self, token_ids: impl IntoIterator<Item = &'a str>) {
-        for token_id in token_ids {
-            if let Some(book) = self.books.get_mut(token_id) {
-                book.bids.clear();
-                book.asks.clear();
-                book.bootstrapped = false;
-                book.received_at = None;
-                book.source_hash = None;
-                book.ingest_sequence = 0;
-            }
-        }
-    }
-
     fn apply(
         &mut self,
         message: ClobMessage,
@@ -4040,7 +4027,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 event = io_receiver.recv() => {
                     match event {
                         Some(ClobIoEvent::Frame { bytes, received_at }) => {
-                            let awaiting_authoritative_snapshot = self.apply_frame(
+                            self.apply_frame(
                                 &persistence_sender,
                                 continuity,
                                 &mut registry,
@@ -4048,12 +4035,6 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 &bytes,
                                 received_at,
                             ).await?;
-                            if awaiting_authoritative_snapshot {
-                                bootstrap_deadline = Some(
-                                    Instant::now()
-                                        + Duration::from_millis(self.config.bootstrap_timeout_ms),
-                                );
-                            }
                         }
                         Some(ClobIoEvent::Failed(error)) => return Err(error),
                         None => return Err(source_error(
@@ -4079,7 +4060,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         connection_epoch: Uuid,
         bytes: &[u8],
         received_at: DateTime<Utc>,
-    ) -> Result<bool, StrategyError> {
+    ) -> Result<(), StrategyError> {
         let messages = match parse_clob_frame(bytes, self.config.max_levels_per_side) {
             Ok(messages) => messages,
             Err(error) => {
@@ -4096,7 +4077,6 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             }
         };
         let mut frame_tokens = BTreeSet::new();
-        let mut awaiting_authoritative_snapshot = false;
         for message in messages {
             let source_timestamp = message_source_timestamp(&message);
             let changed_tokens = match &message {
@@ -4113,17 +4093,13 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             match registry.apply(message, received_at, self.config.max_levels_per_side) {
                 Ok(_) => {}
                 Err(error) => {
-                    if recover_from_advertised_top_mismatch(&error, &changed_tokens) {
+                    if requires_fresh_book_epoch(&error, &changed_tokens) {
                         // With custom CLOB events enabled, the venue follows the
-                        // delta with authoritative full books at the same source
-                        // timestamp. This ordering is recoverable, not a proven
-                        // continuity gap. Keep the affected tokens fail closed and
-                        // let the bounded snapshot deadline prove a genuine gap if
-                        // those authoritative books do not arrive.
-                        registry
-                            .await_authoritative_books(changed_tokens.iter().map(String::as_str));
-                        awaiting_authoritative_snapshot = true;
-                        continue;
+                        // delta with an authoritative full book, but that refresh
+                        // is not guaranteed on an established subscription. Reject
+                        // the delta and immediately reconnect into a fresh snapshot
+                        // epoch rather than waiting while the product is unavailable.
+                        return Err(error);
                     }
                     self.record_frame_gap(
                         persistence_sender,
@@ -4155,7 +4131,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             )
             .await;
         }
-        Ok(awaiting_authoritative_snapshot)
+        Ok(())
     }
 
     async fn record_frame_gap(
@@ -4187,7 +4163,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
     }
 }
 
-fn recover_from_advertised_top_mismatch(error: &StrategyError, changed_tokens: &[String]) -> bool {
+fn requires_fresh_book_epoch(error: &StrategyError, changed_tokens: &[String]) -> bool {
     error.code == "polymarket_clob_top_mismatch" && !changed_tokens.is_empty()
 }
 
@@ -4619,7 +4595,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_timestamp_is_ignored_and_top_mismatch_awaits_authoritative_book() {
+    fn stale_timestamp_is_ignored_and_top_mismatch_requires_a_fresh_book_epoch() {
         let mut registry = bootstrapped_registry();
         let market = fixture_market();
         let before = registry
@@ -4679,7 +4655,7 @@ mod tests {
             .apply(crossed, at(1_783_902_601_510), 100)
             .expect_err("crossed");
         assert_eq!(crossed_error.code, "polymarket_clob_crossed_book");
-        assert!(!recover_from_advertised_top_mismatch(
+        assert!(!requires_fresh_book_epoch(
             &crossed_error,
             std::slice::from_ref(&market.up_token_id),
         ));
@@ -4706,16 +4682,16 @@ mod tests {
             .contains(&format!("token_id={}", market.up_token_id)));
         assert!(error.message.contains("advertised_bid=0.49"));
         assert!(error.message.contains("reconstructed_bid=0.48"));
-        assert!(recover_from_advertised_top_mismatch(
+        assert!(requires_fresh_book_epoch(
             &error,
             std::slice::from_ref(&market.up_token_id),
         ));
-        assert!(!recover_from_advertised_top_mismatch(&error, &[]));
+        assert!(!requires_fresh_book_epoch(&error, &[]));
         let after = registry.books.get(&market.up_token_id).expect("Up book");
         assert_eq!(after.bids, before.bids);
         assert_eq!(after.asks, before.asks);
 
-        registry.await_authoritative_books([market.up_token_id.as_str()]);
+        registry.reset_connection(Uuid::new_v4());
         assert!(
             !registry
                 .books
@@ -4745,7 +4721,7 @@ mod tests {
         assert_eq!(
             registry
                 .apply(authoritative, at(1_783_902_601_620), 100)
-                .expect("authoritative book repairs mismatch"),
+                .expect("fresh-epoch authoritative book repairs mismatch"),
             ApplyOutcome::Applied
         );
         let repaired = registry.books.get(&market.up_token_id).expect("Up book");
