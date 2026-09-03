@@ -574,6 +574,14 @@ impl MarketDataStreamRuntime {
             }
             PRODUCT_BOOKS => {
                 let payload: BookPayload = serde_json::from_slice(&event.payload_json)?;
+                // The streamed product is the ingester's canonical aligned
+                // snapshot, so runtime freshness follows the envelope's
+                // sample and publish clocks. The payload retains the original
+                // provider-change clocks for persistence provenance.
+                let sampled_at =
+                    stream_timestamp(event.source_timestamp_micros, "orderbook source timestamp")?;
+                let published_at =
+                    stream_timestamp(event.published_at_micros, "orderbook publish timestamp")?;
                 let outcome = match payload.outcome.as_str() {
                     "Up" | "up" => BtcOutcome::Up,
                     "Down" | "down" => BtcOutcome::Down,
@@ -592,8 +600,8 @@ impl MarketDataStreamRuntime {
                     &payload.token_id,
                     outcome,
                     payload.tick_size,
-                    payload.source_timestamp,
-                    payload.received_at,
+                    sampled_at,
+                    published_at,
                     u64::try_from(payload.ingest_sequence)?,
                     payload.source_hash,
                     bids,
@@ -723,6 +731,10 @@ impl MarketDataStreamRuntime {
     }
 }
 
+fn stream_timestamp(micros: i64, field: &'static str) -> Result<DateTime<Utc>> {
+    DateTime::from_timestamp_micros(micros).with_context(|| format!("invalid {field}"))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct MarketWindowSelection {
     tradable: Option<BtcIntervalMarket>,
@@ -811,8 +823,10 @@ struct BookPayload {
     token_id: String,
     outcome: String,
     tick_size: Decimal,
-    source_timestamp: DateTime<Utc>,
-    received_at: DateTime<Utc>,
+    #[serde(rename = "source_timestamp")]
+    _provider_source_timestamp: DateTime<Utc>,
+    #[serde(rename = "received_at")]
+    _ingester_received_at: DateTime<Utc>,
     source_hash: Option<String>,
     ingest_sequence: i64,
     bids: Vec<[String; 2]>,
@@ -1162,6 +1176,18 @@ mod tests {
         assert_eq!(payload.market.market_id, "market-1");
         assert_eq!(payload.market.condition_id, "condition-1");
         assert_eq!(payload.tick_size, Decimal::new(1, 2));
+    }
+
+    #[test]
+    fn canonical_stream_timestamp_preserves_subsecond_sample_time() {
+        let sampled_at = Utc.with_ymd_and_hms(2026, 9, 3, 18, 30, 1).unwrap()
+            + chrono::Duration::microseconds(234_567);
+
+        assert_eq!(
+            stream_timestamp(sampled_at.timestamp_micros(), "sample").expect("timestamp"),
+            sampled_at
+        );
+        assert!(stream_timestamp(i64::MAX, "sample").is_err());
     }
 
     #[test]
