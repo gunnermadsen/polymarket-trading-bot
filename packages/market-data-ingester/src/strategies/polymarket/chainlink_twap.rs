@@ -513,6 +513,9 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                             reference_seen_at = Some(Instant::now());
                             continue;
                         }
+                        if is_reference_topic(&bytes) {
+                            continue;
+                        }
                         let Some(observation) = decode_observation(&bytes, received_at)? else {
                             continue;
                         };
@@ -1075,6 +1078,19 @@ fn decode_reference_observation(
     }))
 }
 
+fn is_reference_topic(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("topic")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+        == Some(TOPIC_REFERENCE)
+}
+
 fn decode_observation(
     bytes: &[u8],
     received_at: DateTime<Utc>,
@@ -1335,6 +1351,20 @@ mod tests {
             decoded.dedup_key,
             "rtds_chainlink:BTCUSD:1785178800000:-:65000.5123456789"
         );
+    }
+
+    #[test]
+    fn consumes_chainlink_reference_subscription_frames() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_REFERENCE, "type": "subscribe", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"symbol": "btc/usd", "value": 65000.5,
+                "timestamp": 1_785_178_800_000_i64}
+        }))
+        .unwrap();
+        assert!(decode_reference_observation(&bytes, Utc::now())
+            .unwrap()
+            .is_none());
+        assert!(is_reference_topic(&bytes));
     }
 
     #[test]
