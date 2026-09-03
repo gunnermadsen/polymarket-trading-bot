@@ -189,6 +189,7 @@
           "refId": "A"
         }
       ],
+      "hideTimeOverride": true,
       "timeFrom": "5m",
       "title": "BTC 5-Minute Realtime Market",
       "type": "timeseries"
@@ -2085,6 +2086,8 @@
           "refId": "A"
         }
       ],
+      "hideTimeOverride": true,
+      "timeFrom": "5m",
       "title": "5-Minute Market Countdown",
       "type": "stat"
     },
@@ -2504,6 +2507,7 @@
       "id": 21,
       "type": "stat",
       "title": "Data Pipeline Connection",
+      "description": "Current direct gRPC connection from the trading runtime to its owning ingester worker.",
       "gridPos": {
         "h": 5,
         "w": 5,
@@ -2518,13 +2522,14 @@
         {
           "refId": "A",
           "expr": "max(polymarket_market_data_grpc_connections)",
-          "instant": true
+          "instant": true,
+          "legendFormat": "Active worker connections"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "min": 0,
-          "max": 8,
+          "max": 1,
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
@@ -2826,10 +2831,11 @@
     {
       "id": 23,
       "type": "stat",
-      "title": "Pipeline Integrity",
+      "title": "Pipeline Errors · Last Hour",
+      "description": "Delivery sequence gaps, dropped worker events, and data-contract decode errors observed during the last hour.",
       "gridPos": {
         "h": 4,
-        "w": 3,
+        "w": 5,
         "x": 0,
         "y": 45
       },
@@ -2893,13 +2899,14 @@
     },
     {
       "id": 22,
-      "type": "timeseries",
-      "title": "gRPC Apply Latency",
+      "type": "stat",
+      "title": "Data Delivery Latency",
+      "description": "Slowest current worker-publish to trading-runtime apply latency across subscribed products.",
       "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 3,
-        "y": 45
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 49
       },
       "datasource": {
         "type": "prometheus",
@@ -2908,13 +2915,15 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "polymarket_market_data_product_publish_apply_latency_seconds",
-          "legendFormat": "{{product}}"
+          "expr": "1000 * max(polymarket_market_data_product_publish_apply_latency_seconds)",
+          "instant": true,
+          "legendFormat": "Slowest subscribed product"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
+          "decimals": 1,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
@@ -2925,34 +2934,29 @@
               },
               {
                 "color": "yellow",
-                "value": 0.005
+                "value": 25
               },
               {
                 "color": "red",
-                "value": 0.05
+                "value": 100
               }
             ]
-          },
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 16,
-            "showPoints": "never"
           }
         },
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "reduceOptions": {
           "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         }
       }
     },
@@ -3011,7 +3015,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 54
       },
       "id": 24,
       "options": {
@@ -3126,7 +3130,7 @@
         "h": 15,
         "w": 24,
         "x": 0,
-        "y": 62
+        "y": 67
       },
       "id": 20,
       "options": {
@@ -3191,7 +3195,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 82
       },
       "id": 28,
       "panels": [],
@@ -3206,7 +3210,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -3254,12 +3258,13 @@
     {
       "id": 30,
       "type": "stat",
-      "title": "Realtime Product Freshness",
+      "title": "Realtime Delivery Latency",
+      "description": "Latest worker-publish to trading-runtime apply latency for each subscribed realtime product. This measures delivery, not provider update cadence or Prometheus scrape age.",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -3268,14 +3273,32 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(time() - ingester_stream_last_published_timestamp_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"}) * on(product) group_left() (ingester_stream_subscribers > 0)",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"}",
           "instant": true,
-          "legendFormat": "{{product}}"
+          "legendFormat": "Polymarket order book"
+        },
+        {
+          "refId": "B",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"}",
+          "instant": true,
+          "legendFormat": "Chainlink reference price"
+        },
+        {
+          "refId": "C",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"}",
+          "instant": true,
+          "legendFormat": "Chainlink 60-second TWAP"
+        },
+        {
+          "refId": "D",
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}",
+          "instant": true,
+          "legendFormat": "Binance BTC/USDT 1-second candle"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "ms",
           "decimals": 1,
           "thresholds": {
             "mode": "absolute",
@@ -3286,11 +3309,11 @@
               },
               {
                 "color": "yellow",
-                "value": 5
+                "value": 25
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 100
               }
             ]
           }
@@ -3299,7 +3322,7 @@
       },
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "orientation": "horizontal",
         "textMode": "value_and_name",
         "reduceOptions": {
@@ -3319,7 +3342,7 @@
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -3428,6 +3451,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 175,
+  "version": 176,
   "weekStart": ""
 }
