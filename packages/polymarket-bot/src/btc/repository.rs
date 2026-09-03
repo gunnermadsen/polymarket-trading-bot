@@ -106,7 +106,7 @@ const LOAD_MARKET_OPENING_REFERENCE_SQL: &str = r#"
       AND t.source_timestamp >= $2
       AND t.source_timestamp <= $3
       AND t.received_at <= $1
-    ORDER BY t.source_timestamp ASC, t.received_at ASC,
+    ORDER BY t.received_at ASC, t.source_timestamp ASC,
       t.ingest_sequence ASC, t.tick_id ASC
     LIMIT 1
     "#;
@@ -4717,7 +4717,9 @@ mod tests {
         assert!(normalized.contains("source_timestamp >= $2"));
         assert!(normalized.contains("source_timestamp <= $3"));
         assert!(normalized.contains("received_at <= $1"));
-        assert!(normalized.contains("order by t.source_timestamp asc"));
+        assert!(normalized.contains(
+            "order by t.received_at asc, t.source_timestamp asc, t.ingest_sequence asc, t.tick_id asc"
+        ));
         assert!(normalized.contains("limit 1"));
         assert!(!normalized.contains("btc_interval_markets"));
         assert!(!normalized.contains("reference_source_timestamp"));
