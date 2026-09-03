@@ -37,6 +37,7 @@ const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 const DEFAULT_WEBSOCKET_URL: &str = "wss://ws-live-data.polymarket.com";
 const SYMBOL: &str = "btc/usd";
 const PRODUCT_REFERENCE: &str = "polymarket_rtds_chainlink_reference_price";
+const TOPIC_REFERENCE_SNAPSHOT_ALIAS: &str = "crypto_prices";
 const TOPIC_REFERENCE: &str = "crypto_prices_chainlink";
 const TOPIC_THIRTY: &str = "crypto_prices_twap_thirty";
 const TOPIC_SIXTY: &str = "crypto_prices_twap_sixty";
@@ -1115,6 +1116,7 @@ fn decode_observation(
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
+        TOPIC_REFERENCE_SNAPSHOT_ALIAS if envelope.message_type == "subscribe" => return Ok(None),
         _ => {
             return Err(integrity(
                 "polymarket_twap_topic",
@@ -1365,6 +1367,18 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(is_reference_topic(&bytes));
+    }
+
+    #[test]
+    fn ignores_the_provider_reference_snapshot_topic_alias() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_REFERENCE_SNAPSHOT_ALIAS, "type": "subscribe",
+            "timestamp": 1_785_178_800_123_i64,
+            "payload": {"data": [{"timestamp": 1_785_178_800_000_i64, "value": 65000.5}],
+                "symbol": "btc/usd"}
+        }))
+        .unwrap();
+        assert!(decode_observation(&bytes, Utc::now()).unwrap().is_none());
     }
 
     #[test]
