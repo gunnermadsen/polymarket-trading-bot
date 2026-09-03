@@ -248,6 +248,7 @@ pub struct MarketDataStreamRuntime {
     repository: BtcRepository,
     state: Arc<RwLock<RealtimeState>>,
     books: Arc<RwLock<BookRegistry>>,
+    market_contracts: Arc<Mutex<BTreeMap<DateTime<Utc>, BtcIntervalMarket>>>,
     sequence: Arc<Mutex<BTreeMap<String, (String, u64)>>>,
     metrics: Arc<StreamMetrics>,
 }
@@ -269,6 +270,7 @@ impl MarketDataStreamRuntime {
             repository,
             state,
             books,
+            market_contracts: Arc::new(Mutex::new(BTreeMap::new())),
             sequence: Arc::new(Mutex::new(BTreeMap::new())),
             metrics,
         })
@@ -564,18 +566,11 @@ impl MarketDataStreamRuntime {
                 let payload: MarketPayload = serde_json::from_slice(&event.payload_json)?;
                 let market = payload.into_market();
                 self.repository.upsert_interval_market(&market).await?;
-                let now = Utc::now();
-                let mut state = self.state.write().await;
-                let replace = market.is_interval_window(now)
-                    || state
-                        .current_market
-                        .as_ref()
-                        .is_none_or(|current| market.window_start > current.window_start);
-                if replace {
-                    state.set_market(market.clone());
-                }
-                drop(state);
                 self.books.write().await.try_register_market(&market)?;
+                self.market_contracts
+                    .lock()
+                    .expect("market contract catalog lock")
+                    .insert(market.window_start, market);
             }
             PRODUCT_BOOKS => {
                 let payload: BookPayload = serde_json::from_slice(&event.payload_json)?;
@@ -711,8 +706,50 @@ impl MarketDataStreamRuntime {
             }
             other => bail!("unhandled market-data product {other}"),
         }
+        self.reconcile_market_window(Utc::now()).await;
         Ok(())
     }
+
+    async fn reconcile_market_window(&self, now: DateTime<Utc>) {
+        let selection = {
+            let mut contracts = self
+                .market_contracts
+                .lock()
+                .expect("market contract catalog lock");
+            select_market_window(&mut contracts, now)
+        };
+        let mut state = self.state.write().await;
+        apply_market_window_selection(&mut state, selection);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MarketWindowSelection {
+    tradable: Option<BtcIntervalMarket>,
+    display: Option<BtcIntervalMarket>,
+}
+
+fn select_market_window(
+    contracts: &mut BTreeMap<DateTime<Utc>, BtcIntervalMarket>,
+    now: DateTime<Utc>,
+) -> MarketWindowSelection {
+    let retention_start = now - chrono::Duration::minutes(10);
+    contracts.retain(|_, market| market.window_end >= retention_start);
+    MarketWindowSelection {
+        tradable: contracts
+            .values()
+            .find(|market| market.is_trade_window(now))
+            .cloned(),
+        display: contracts
+            .values()
+            .find(|market| market.is_interval_window(now))
+            .cloned(),
+    }
+}
+
+fn apply_market_window_selection(state: &mut RealtimeState, selection: MarketWindowSelection) {
+    state.display_market = selection.display;
+    state.set_current_market(selection.tradable);
 }
 
 fn parse_levels(levels: Vec<[String; 2]>) -> Result<Vec<(Decimal, Decimal)>> {
@@ -937,7 +974,117 @@ impl StreamMetrics {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
+    use crate::grafana_live::{CountdownSnapshot, CountdownStatus, MarketPathPublicationState};
+
     use super::*;
+
+    fn market(
+        market_id: &str,
+        window_start: DateTime<Utc>,
+        active: bool,
+        closed: bool,
+        accepting_orders: bool,
+    ) -> BtcIntervalMarket {
+        MarketPayload {
+            event_id: format!("event-{market_id}"),
+            event_slug: format!("btc-updown-5m-{}", window_start.timestamp()),
+            series_slug: "btc-up-or-down-5m".to_owned(),
+            market_id: market_id.to_owned(),
+            condition_id: format!("condition-{market_id}"),
+            window_start,
+            window_end: window_start + chrono::Duration::minutes(5),
+            up_token_id: format!("up-{market_id}"),
+            down_token_id: format!("down-{market_id}"),
+            tick_size: Decimal::new(1, 2),
+            minimum_order_size: None,
+            resolution_source: "Chainlink BTC/USD".to_owned(),
+            active,
+            closed,
+            accepting_orders,
+            fees_enabled: false,
+            fee_schedule: serde_json::json!({}),
+            source_payload: serde_json::json!({}),
+        }
+        .into_market()
+    }
+
+    #[test]
+    fn future_contract_preloads_without_replacing_the_current_runtime_window() {
+        let current_start = Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap();
+        let now = current_start + chrono::Duration::minutes(2);
+        let current = market("current", current_start, true, false, true);
+        let future = market(
+            "future",
+            current_start + chrono::Duration::minutes(5),
+            true,
+            false,
+            true,
+        );
+        let mut contracts = BTreeMap::from([
+            (current.window_start, current.clone()),
+            (future.window_start, future.clone()),
+        ]);
+
+        let selection = select_market_window(&mut contracts, now);
+        let mut state = RealtimeState::default();
+        apply_market_window_selection(&mut state, selection);
+
+        assert_eq!(contracts.get(&future.window_start), Some(&future));
+        assert_eq!(state.current_market.as_ref(), Some(&current));
+        assert_eq!(state.display_market.as_ref(), Some(&current));
+
+        let rollover = select_market_window(
+            &mut contracts,
+            future.window_start + chrono::Duration::seconds(1),
+        );
+        assert_eq!(rollover.tradable.as_ref(), Some(&future));
+        assert_eq!(rollover.display.as_ref(), Some(&future));
+    }
+
+    #[test]
+    fn current_display_window_does_not_become_tradable_when_exchange_flags_reject_it() {
+        let window_start = Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap();
+        let current = market("closed", window_start, false, true, false);
+        let mut contracts = BTreeMap::from([(current.window_start, current.clone())]);
+
+        let selection =
+            select_market_window(&mut contracts, window_start + chrono::Duration::minutes(2));
+
+        assert_eq!(selection.display.as_ref(), Some(&current));
+        assert!(selection.tradable.is_none());
+    }
+
+    #[test]
+    fn selected_display_market_restores_live_countdown_and_market_path_snapshots() {
+        let window_start = Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap();
+        let now = window_start + chrono::Duration::minutes(2);
+        let current = market("current", window_start, true, false, true);
+        let mut contracts = BTreeMap::from([(current.window_start, current.clone())]);
+        let selection = select_market_window(&mut contracts, now);
+        let mut state = RealtimeState::default();
+        apply_market_window_selection(&mut state, selection);
+
+        let display = state.display_market.clone().expect("display market");
+        let countdown = CountdownSnapshot::resolve(now, 1, vec![display.clone()]);
+        assert_eq!(countdown.status, CountdownStatus::Active);
+        assert_eq!(countdown.seconds_remaining, 180);
+
+        let mut path = MarketPathPublicationState::default();
+        let snapshot = path.observe(
+            now,
+            Some((
+                display,
+                vec![ChainlinkTwap60Point {
+                    price: Decimal::new(81_000, 0),
+                    source_timestamp: window_start,
+                    available_at: window_start,
+                }],
+            )),
+        );
+        assert!(snapshot.is_some());
+    }
 
     #[test]
     fn source_selectors_accept_the_concise_and_configured_contracts() {
