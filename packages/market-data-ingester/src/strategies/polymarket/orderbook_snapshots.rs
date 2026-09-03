@@ -1628,6 +1628,18 @@ impl BookRegistry {
         !self.books.is_empty() && self.books.values().all(|book| book.bootstrapped)
     }
 
+    fn market_bootstrapped(&self, window_start: DateTime<Utc>) -> bool {
+        let mut matching = self
+            .books
+            .values()
+            .filter(|book| book.market.window_start == window_start);
+        let first = matching.next();
+        let second = matching.next();
+        first.is_some_and(|book| book.bootstrapped)
+            && second.is_some_and(|book| book.bootstrapped)
+            && matching.next().is_none()
+    }
+
     fn await_authoritative_books<'a>(&mut self, token_ids: impl IntoIterator<Item = &'a str>) {
         for token_id in token_ids {
             if let Some(book) = self.books.get_mut(token_id) {
@@ -3896,12 +3908,17 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             end_cursor: Some(format!("sampling_bucket:{last_missed}")),
                         }).await?;
                     }
-                    if !registry.all_bootstrapped() {
+                    let current_window = aligned_market_window(scheduled_at);
+                    // Successor books are subscribed ahead of their trading window so
+                    // they can warm without interrupting canonical samples for the
+                    // current market. Only the current market's two outcome books are
+                    // required for this aligned bucket.
+                    if !registry.market_bootstrapped(current_window) {
                         let bucket = scheduled_at.timestamp_millis().div_euclid(
                             i64::try_from(self.config.sample_interval_ms).unwrap_or(i64::MAX)
                         );
                         let message = format!(
-                            "aligned sampling bucket {bucket} had incomplete subscribed books"
+                            "aligned sampling bucket {bucket} had incomplete current-market books"
                         );
                         send_gap(&persistence_sender, GapObservation {
                             kind: "local_sampling_cadence",
@@ -3914,7 +3931,6 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         }).await?;
                         continue;
                     }
-                    let current_window = aligned_market_window(scheduled_at);
                     let has_current = active_markets
                         .iter()
                         .any(|market| market.window_start == current_window);
@@ -4492,6 +4508,20 @@ mod tests {
             .expect("Down sample");
         assert!(down.bids.is_empty());
         assert!(down.asks.is_empty());
+    }
+
+    #[test]
+    fn unbootstrapped_successor_does_not_block_current_market_sampling() {
+        let mut registry = bootstrapped_registry();
+        let current = fixture_market();
+        let successor = shifted_market(&current, 1, '3', "5", "6");
+        registry
+            .install_market_set(&[current.clone(), successor.clone()])
+            .expect("install successor");
+
+        assert!(!registry.all_bootstrapped());
+        assert!(registry.market_bootstrapped(current.window_start));
+        assert!(!registry.market_bootstrapped(successor.window_start));
     }
 
     #[test]
