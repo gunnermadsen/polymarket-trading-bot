@@ -3914,6 +3914,12 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     // current market. Only the current market's two outcome books are
                     // required for this aligned bucket.
                     if !registry.market_bootstrapped(current_window) {
+                        // A new connection has an explicit bounded bootstrap
+                        // deadline. Readiness remains false during that normal
+                        // startup interval; only expiry is a continuity gap.
+                        if bootstrap_deadline.is_some() {
+                            continue;
+                        }
                         let bucket = scheduled_at.timestamp_millis().div_euclid(
                             i64::try_from(self.config.sample_interval_ms).unwrap_or(i64::MAX)
                         );
