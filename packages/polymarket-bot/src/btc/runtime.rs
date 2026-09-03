@@ -10,7 +10,7 @@ use std::{
 
 use crate::market_data_stream::{
     legacy_default_sources, MarketDataStreamRuntime, SourceSelector, StreamMetrics,
-    PRODUCT_CHAINLINK,
+    PRODUCT_BINANCE_OPEN_INTEREST, PRODUCT_CHAINLINK,
 };
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -26,12 +26,15 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
+    directional_external_runtime::BinanceOpenInterestPoint,
     feeds::BookRegistry,
     repository::BtcRepository,
     types::{Readiness, RealtimeState, ReferencePriceTick},
 };
 
 const DIRECTIONAL_CHAINLINK_HYDRATION_RETRY_MAX_DELAY: StdDuration = StdDuration::from_secs(300);
+const DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_POINTS: usize = 13;
+const DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_LOOKBACK_MINUTES: i64 = 70;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtcRuntimeConfig {
@@ -224,6 +227,67 @@ async fn run_directional_chainlink_hydration_recovery(
     }
 }
 
+async fn apply_directional_open_interest_history(
+    state: &Arc<RwLock<RealtimeState>>,
+    points: Vec<BinanceOpenInterestPoint>,
+    hydrated_at: DateTime<Utc>,
+) -> usize {
+    let mut realtime = state.write().await;
+    realtime
+        .directional_external
+        .merge_open_interest(points, hydrated_at);
+    realtime.directional_external.open_interest.len()
+}
+
+async fn run_directional_open_interest_hydration_recovery(
+    repository: BtcRepository,
+    state: Arc<RwLock<RealtimeState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut retry_delay = StdDuration::from_secs(1);
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+            }
+            _ = sleep(retry_delay) => {}
+        }
+        let bootstrap_end = Utc::now();
+        let bootstrap_start = bootstrap_end
+            - chrono::Duration::minutes(DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_LOOKBACK_MINUTES);
+        match repository
+            .load_directional_external_open_interest_history(bootstrap_start, bootstrap_end)
+            .await
+        {
+            Ok(points) => {
+                let point_count =
+                    apply_directional_open_interest_history(&state, points, bootstrap_end).await;
+                if point_count >= DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_POINTS {
+                    tracing::info!(
+                        point_count,
+                        "directional Binance open-interest bootstrap recovered"
+                    );
+                    let _ = shutdown.changed().await;
+                    return;
+                }
+                tracing::warn!(
+                    point_count,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "directional Binance open-interest bootstrap remains incomplete"
+                );
+            }
+            Err(error) => tracing::warn!(
+                error = %error,
+                retry_delay_ms = retry_delay.as_millis(),
+                "directional Binance open-interest bootstrap retry failed"
+            ),
+        }
+        retry_delay = (retry_delay * 2).min(DIRECTIONAL_CHAINLINK_HYDRATION_RETRY_MAX_DELAY);
+    }
+}
+
 impl BtcRuntime {
     pub fn new(config: BtcRuntimeConfig, repository: BtcRepository) -> Self {
         Self {
@@ -288,6 +352,41 @@ impl BtcRuntime {
                 }
             }
         }
+        let mut directional_open_interest_hydration_failed = false;
+        if self
+            .sources
+            .iter()
+            .any(|source| source.key == PRODUCT_BINANCE_OPEN_INTEREST)
+        {
+            let bootstrap_end = Utc::now();
+            let bootstrap_start = bootstrap_end
+                - chrono::Duration::minutes(DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_LOOKBACK_MINUTES);
+            match self
+                .repository
+                .load_directional_external_open_interest_history(bootstrap_start, bootstrap_end)
+                .await
+            {
+                Ok(points) => {
+                    let point_count =
+                        apply_directional_open_interest_history(&state, points, bootstrap_end)
+                            .await;
+                    if point_count < DIRECTIONAL_OPEN_INTEREST_BOOTSTRAP_POINTS {
+                        directional_open_interest_hydration_failed = true;
+                        tracing::warn!(
+                            point_count,
+                            "directional Binance open-interest bootstrap is incomplete"
+                        );
+                    }
+                }
+                Err(error) => {
+                    directional_open_interest_hydration_failed = true;
+                    tracing::warn!(
+                        error = %error,
+                        "directional Binance open-interest bootstrap failed"
+                    );
+                }
+            }
+        }
 
         let books = self
             .books
@@ -330,6 +429,18 @@ impl BtcRuntime {
             tasks.push(spawn_runtime_task(
                 "directional_chainlink_hydration",
                 run_directional_chainlink_hydration_recovery(
+                    self.repository.clone(),
+                    state.clone(),
+                    shutdown_rx.clone(),
+                ),
+                running.clone(),
+                metrics.clone(),
+            ));
+        }
+        if directional_open_interest_hydration_failed {
+            tasks.push(spawn_runtime_task(
+                "directional_open_interest_hydration",
+                run_directional_open_interest_hydration_recovery(
                     self.repository.clone(),
                     state.clone(),
                     shutdown_rx.clone(),
@@ -719,6 +830,8 @@ fn chrono_duration(duration: StdDuration) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal::Decimal;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn runtime_config_rejects_zero_durations() {
@@ -735,5 +848,46 @@ mod tests {
             ..BtcRuntimeMetrics::default()
         })
         .is_some());
+    }
+
+    #[tokio::test]
+    async fn open_interest_hydration_and_live_updates_share_one_contiguous_state() {
+        let start = DateTime::from_timestamp(1_788_436_800, 0).unwrap();
+        let point = |index: i64| BinanceOpenInterestPoint {
+            source_timestamp: start + chrono::Duration::minutes(index * 5),
+            available_at: start
+                + chrono::Duration::minutes(index * 5)
+                + chrono::Duration::seconds(1),
+            sum_open_interest: dec!(100) + Decimal::from(index),
+            sum_open_interest_value: dec!(1000) + Decimal::from(index),
+        };
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let hydrated = (0..13).map(point).collect::<Vec<_>>();
+
+        assert_eq!(
+            apply_directional_open_interest_history(
+                &state,
+                hydrated,
+                start + chrono::Duration::minutes(61),
+            )
+            .await,
+            13
+        );
+        state
+            .write()
+            .await
+            .directional_external
+            .merge_open_interest(vec![point(13)], start + chrono::Duration::minutes(66));
+        let state = state.read().await;
+        assert_eq!(state.directional_external.open_interest.len(), 14);
+        assert_eq!(
+            state
+                .directional_external
+                .open_interest
+                .back()
+                .unwrap()
+                .source_timestamp,
+            start + chrono::Duration::minutes(65)
+        );
     }
 }

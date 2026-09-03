@@ -16,6 +16,7 @@ use super::{
         LossRegimeCandidate, ShadowPredictiveRegimeCandidate, ShadowPredictiveRegimeEvaluation,
         ShadowPredictiveRegimeState, UnsettledEntryExposure,
     },
+    directional_external_runtime::BinanceOpenInterestPoint,
     directional_model::BTC_DIRECTIONAL_MODEL_STRATEGY_VERSION,
     execution_guard::reference_execution_guard,
     execution_lifecycle::BtcExecutionMode,
@@ -111,6 +112,22 @@ const LOAD_MARKET_OPENING_REFERENCE_SQL: &str = r#"
     LIMIT 1
     "#;
 
+const LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL: &str = r#"
+    SELECT source_timestamp, received_at, sum_open_interest, sum_open_interest_value
+    FROM (
+      SELECT source_timestamp, received_at, sum_open_interest, sum_open_interest_value
+      FROM market_data.binance_futures_btcusdt_open_interest
+      WHERE symbol = 'BTCUSDT'
+        AND period_seconds = 300
+        AND source_timestamp >= $1
+        AND source_timestamp <= $2
+        AND received_at <= $2
+      ORDER BY source_timestamp DESC
+      LIMIT 13
+    ) history
+    ORDER BY source_timestamp ASC
+    "#;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, FromRow)]
 pub struct BtcRunManifest {
     pub process_id: Uuid,
@@ -186,6 +203,14 @@ struct ReferenceTickRow {
     source_event_id: Option<String>,
     dedup_key: String,
     raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct OpenInterestHistoryRow {
+    source_timestamp: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+    sum_open_interest: Decimal,
+    sum_open_interest_value: Decimal,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -2298,6 +2323,27 @@ impl BtcRepository {
         rows.into_iter().map(reference_tick_from_row).collect()
     }
 
+    /// Loads the latest bounded contiguous hour of immutable five-minute open-interest facts.
+    /// Availability remains the ingester receipt time so model construction cannot observe a row
+    /// before the ingestion layer did.
+    pub(crate) async fn load_directional_external_open_interest_history(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<BinanceOpenInterestPoint>> {
+        if start >= end || (end - start) > chrono::Duration::hours(2) {
+            bail!("directional open-interest bootstrap range is invalid");
+        }
+        let rows =
+            sqlx::query_as::<_, OpenInterestHistoryRow>(LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL)
+                .bind(start)
+                .bind(end)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to hydrate directional Binance open-interest history")?;
+        Ok(latest_contiguous_open_interest(rows))
+    }
+
     async fn load_market_fee_as_of(
         &self,
         market_id: &str,
@@ -3426,6 +3472,26 @@ fn reference_tick_from_row(row: ReferenceTickRow) -> Result<ReferencePriceTick> 
         source_event_id: row.source_event_id,
         raw_payload: row.raw_payload,
     })
+}
+
+fn latest_contiguous_open_interest(
+    rows: Vec<OpenInterestHistoryRow>,
+) -> Vec<BinanceOpenInterestPoint> {
+    let contiguous_start = rows
+        .windows(2)
+        .rposition(|pair| {
+            pair[1].source_timestamp - pair[0].source_timestamp != Duration::minutes(5)
+        })
+        .map_or(0, |gap| gap + 1);
+    rows.into_iter()
+        .skip(contiguous_start)
+        .map(|row| BinanceOpenInterestPoint {
+            source_timestamp: row.source_timestamp,
+            available_at: row.received_at,
+            sum_open_interest: row.sum_open_interest,
+            sum_open_interest_value: row.sum_open_interest_value,
+        })
+        .collect()
 }
 
 fn market_label_from_row(row: StoredMarketLabelRow) -> Result<BtcMarketLabel> {
@@ -4724,6 +4790,43 @@ mod tests {
         assert!(!normalized.contains("btc_interval_markets"));
         assert!(!normalized.contains("reference_source_timestamp"));
         assert!(!normalized.contains("reference_price ="));
+    }
+
+    #[test]
+    fn directional_open_interest_bootstrap_query_is_causal_indexed_and_bounded_to_thirteen() {
+        let normalized = LOAD_DIRECTIONAL_OPEN_INTEREST_HISTORY_SQL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+
+        assert!(normalized.contains("symbol = 'btcusdt'"));
+        assert!(normalized.contains("period_seconds = 300"));
+        assert!(normalized.contains("source_timestamp >= $1"));
+        assert!(normalized.contains("source_timestamp <= $2"));
+        assert!(normalized.contains("received_at <= $2"));
+        assert!(normalized.contains("order by source_timestamp desc limit 13"));
+        assert!(normalized.ends_with("order by source_timestamp asc"));
+    }
+
+    #[test]
+    fn directional_open_interest_bootstrap_keeps_only_latest_contiguous_suffix() {
+        let start = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
+        let row = |minutes: i64| OpenInterestHistoryRow {
+            source_timestamp: start + Duration::minutes(minutes),
+            received_at: start + Duration::minutes(minutes) + Duration::seconds(1),
+            sum_open_interest: dec!(100),
+            sum_open_interest_value: dec!(1000),
+        };
+        let points = latest_contiguous_open_interest(vec![row(0), row(5), row(15), row(20)]);
+
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].source_timestamp, start + Duration::minutes(15));
+        assert_eq!(
+            points[0].available_at,
+            start + Duration::minutes(15) + Duration::seconds(1)
+        );
+        assert_eq!(points[1].source_timestamp, start + Duration::minutes(20));
     }
 
     #[test]
