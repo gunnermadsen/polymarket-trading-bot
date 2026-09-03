@@ -1984,6 +1984,57 @@ struct BookSample {
     asks: Vec<[String; 2]>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct SampledBookStreamMetadata {
+    source_event_id: String,
+    observed_at: DateTime<Utc>,
+    payload_sha256: String,
+}
+
+fn sampled_book_stream_metadata(
+    sample: &BookSample,
+    sampled_at: DateTime<Utc>,
+) -> Result<SampledBookStreamMetadata, StrategyError> {
+    let observed_at = canonical_timestamp(sampled_at);
+    let payload = serde_json::to_value(sample).map_err(|error| {
+        integrity_error(
+            "polymarket_stream_serialization",
+            format!("failed to serialize sampled Polymarket book: {error}"),
+        )
+    })?;
+    Ok(SampledBookStreamMetadata {
+        source_event_id: format!(
+            "sample:{}:{}:{}",
+            observed_at.timestamp_micros(),
+            sample.token_id,
+            sample.ingest_sequence
+        ),
+        observed_at,
+        payload_sha256: hash_json(&payload)?,
+    })
+}
+
+async fn publish_sampled_books(
+    samples: &[BookSample],
+    sampled_at: DateTime<Utc>,
+) -> Result<(), StrategyError> {
+    for sample in samples {
+        let metadata = sampled_book_stream_metadata(sample, sampled_at)?;
+        crate::streaming::publish(
+            STRATEGY_KEY.as_str(),
+            metadata.source_event_id,
+            metadata.observed_at,
+            metadata.observed_at,
+            metadata.observed_at,
+            metadata.payload_sha256,
+            true,
+            sample,
+        )
+        .await;
+    }
+    Ok(())
+}
+
 fn decimal_string(value: Decimal) -> String {
     value.normalize().to_string()
 }
@@ -3895,11 +3946,17 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     enqueue_samples(
                         &persistence_sender,
                         pending_missed_buckets,
-                        samples,
+                        samples.clone(),
                         sampled_at,
                         connection_epoch,
                         sampling_bucket,
                     )?;
+                    // The websocket emits only changed books, while this
+                    // product's canonical contract is an aligned sampled
+                    // snapshot. Publish each accepted sample immediately after
+                    // handing it to the asynchronous persistence worker so a
+                    // quiet venue does not make the direct gRPC stream stale.
+                    publish_sampled_books(&samples, sampled_at).await?;
                 }
                 event = persistence_events.recv() => match event {
                     Some(PersistenceEvent::Persisted(persisted)) => {
@@ -4827,6 +4884,25 @@ mod tests {
         .expect("later");
         assert_eq!(first.book_sha256, later_sample.book_sha256);
         assert_ne!(first.payload_sha256, later_sample.payload_sha256);
+    }
+
+    #[test]
+    fn sampled_book_stream_identity_advances_on_quiet_sampling_ticks() {
+        let sample = bootstrapped_registry()
+            .samples(1)
+            .into_iter()
+            .find(|sample| sample.outcome == Outcome::Up)
+            .expect("Up sample");
+        let first = sampled_book_stream_metadata(&sample, at(1_783_902_602_001))
+            .expect("first stream metadata");
+        let second = sampled_book_stream_metadata(&sample, at(1_783_902_603_001))
+            .expect("second stream metadata");
+
+        assert_eq!(first.observed_at, at(1_783_902_602_001));
+        assert_eq!(second.observed_at, at(1_783_902_603_001));
+        assert_ne!(first.source_event_id, second.source_event_id);
+        assert_eq!(first.payload_sha256, second.payload_sha256);
+        assert!(first.source_event_id.contains(&sample.token_id));
     }
 
     #[test]
