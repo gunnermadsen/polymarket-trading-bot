@@ -143,6 +143,31 @@ struct StoredOpenInterest {
     payload_sha256: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct DurableOpenInterestSnapshot {
+    source_timestamp: DateTime<Utc>,
+    received_at: DateTime<Utc>,
+    sum_open_interest: Decimal,
+    sum_open_interest_value: Decimal,
+    cmc_circulating_supply: Option<Decimal>,
+    source_payload: Value,
+    payload_sha256: String,
+}
+
+impl DurableOpenInterestSnapshot {
+    fn into_observation(self) -> OpenInterestObservation {
+        OpenInterestObservation {
+            source_timestamp: self.source_timestamp,
+            received_at: self.received_at,
+            sum_open_interest: self.sum_open_interest,
+            sum_open_interest_value: self.sum_open_interest_value,
+            cmc_circulating_supply: self.cmc_circulating_supply,
+            source_payload: self.source_payload,
+            payload_sha256: self.payload_sha256,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BinanceFuturesOpenInterestFactory;
 
@@ -231,6 +256,7 @@ impl RealtimeWorkerStrategy for BinanceFuturesOpenInterestStrategy {
     }
 
     async fn run(&self, shutdown: CancellationToken) -> Result<(), StrategyError> {
+        self.publish_durable_stream_snapshot().await?;
         let mut checkpoint = self.checkpoint.clone();
         let mut ticker =
             tokio::time::interval(Duration::from_secs(self.config.poll_interval_seconds));
@@ -262,6 +288,33 @@ impl RealtimeWorkerStrategy for BinanceFuturesOpenInterestStrategy {
 }
 
 impl BinanceFuturesOpenInterestStrategy {
+    async fn publish_durable_stream_snapshot(&self) -> Result<(), StrategyError> {
+        let freshness_floor = Utc::now() - chrono::Duration::seconds(PERIOD_SECONDS * 2);
+        let snapshot = sqlx::query_as::<_, DurableOpenInterestSnapshot>(
+            r#"
+            SELECT source_timestamp, received_at, sum_open_interest,
+                   sum_open_interest_value, cmc_circulating_supply,
+                   source_payload, payload_sha256
+            FROM market_data.binance_futures_btcusdt_open_interest
+            WHERE symbol = $1
+              AND period_seconds = $2
+              AND source_timestamp >= $3
+            ORDER BY source_timestamp DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&self.config.symbol)
+        .bind(PERIOD_SECONDS as i32)
+        .bind(freshness_floor)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(database_error("open_interest_load_stream_snapshot"))?;
+        if let Some(snapshot) = snapshot {
+            publish_stream_snapshot(&snapshot.into_observation()).await;
+        }
+        Ok(())
+    }
+
     async fn capture(&self, checkpoint: &mut OpenInterestCheckpoint) -> Result<(), StrategyError> {
         let observations = self.fetch_observations(checkpoint).await?;
         if observations.is_empty() {
@@ -397,17 +450,7 @@ impl BinanceFuturesOpenInterestStrategy {
             .map_err(database_error("open_interest_commit_transaction"))?;
         if persisted.inserted > 0 {
             if let Some(observation) = observations.last() {
-                crate::streaming::publish(
-                    "binance_futures_btcusdt_open_interest",
-                    observation.source_timestamp.timestamp_millis().to_string(),
-                    observation.source_timestamp,
-                    observation.received_at,
-                    observation.received_at,
-                    observation.payload_sha256.clone(),
-                    true,
-                    observation,
-                )
-                .await;
+                publish_stream_snapshot(observation).await;
             }
         }
         if new_gap_count > 0 {
@@ -1161,6 +1204,20 @@ impl BinanceFuturesOpenInterestStrategy {
     }
 }
 
+async fn publish_stream_snapshot(observation: &OpenInterestObservation) {
+    crate::streaming::publish(
+        "binance_futures_btcusdt_open_interest",
+        observation.source_timestamp.timestamp_millis().to_string(),
+        observation.source_timestamp,
+        observation.received_at,
+        observation.received_at,
+        observation.payload_sha256.clone(),
+        true,
+        observation,
+    )
+    .await;
+}
+
 #[derive(Debug, Default)]
 struct PersistedBatch {
     inserted: i64,
@@ -1518,6 +1575,31 @@ mod tests {
         );
         assert_eq!(rows[0].received_at, received_at);
         assert_eq!(rows[0].payload_sha256.len(), 64);
+    }
+
+    #[test]
+    fn durable_stream_snapshot_reuses_the_canonical_payload_contract() {
+        let source_timestamp = Utc
+            .with_ymd_and_hms(2026, 9, 3, 19, 35, 0)
+            .single()
+            .expect("valid source timestamp");
+        let received_at = source_timestamp + ChronoDuration::seconds(2);
+        let source_payload = json!({"symbol": "BTCUSDT", "timestamp": 1788464100000_i64});
+        let observation = DurableOpenInterestSnapshot {
+            source_timestamp,
+            received_at,
+            sum_open_interest: Decimal::new(12345, 2),
+            sum_open_interest_value: Decimal::new(98765, 2),
+            cmc_circulating_supply: Some(Decimal::new(21_000_000, 0)),
+            source_payload: source_payload.clone(),
+            payload_sha256: "canonical-hash".to_owned(),
+        }
+        .into_observation();
+
+        assert_eq!(observation.source_timestamp, source_timestamp);
+        assert_eq!(observation.received_at, received_at);
+        assert_eq!(observation.source_payload, source_payload);
+        assert_eq!(observation.payload_sha256, "canonical-hash");
     }
 
     #[test]
