@@ -3,7 +3,7 @@ use std::{
     panic::AssertUnwindSafe,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::Duration as StdDuration,
 };
@@ -394,6 +394,8 @@ impl BtcRuntime {
         let metrics = Arc::new(RwLock::new(BtcRuntimeMetrics::default()));
         let running = Arc::new(AtomicBool::new(true));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let open_interest_hydration_started =
+            Arc::new(AtomicBool::new(includes_open_interest(&self.sources)));
         let (sources_tx, sources_rx) = watch::channel(self.sources);
         let stream_shutdown = CancellationToken::new();
         let stream_shutdown_task = stream_shutdown.clone();
@@ -460,6 +462,9 @@ impl BtcRuntime {
             config: self.config,
             running,
             sources: sources_tx,
+            repository: self.repository,
+            open_interest_hydration_started,
+            dynamic_open_interest_hydration_task: StdMutex::new(None),
         })
     }
 }
@@ -489,6 +494,24 @@ where
     })
 }
 
+fn includes_open_interest(sources: &[SourceSelector]) -> bool {
+    sources
+        .iter()
+        .any(|source| source.key == PRODUCT_BINANCE_OPEN_INTEREST)
+}
+
+fn claim_dynamic_open_interest_hydration(
+    previous: &[SourceSelector],
+    next: &[SourceSelector],
+    hydration_started: &AtomicBool,
+) -> bool {
+    !includes_open_interest(previous)
+        && includes_open_interest(next)
+        && hydration_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
 pub struct BtcRuntimeHandle {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -498,6 +521,9 @@ pub struct BtcRuntimeHandle {
     config: BtcRuntimeConfig,
     running: Arc<AtomicBool>,
     sources: watch::Sender<Vec<SourceSelector>>,
+    repository: BtcRepository,
+    open_interest_hydration_started: Arc<AtomicBool>,
+    dynamic_open_interest_hydration_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl BtcRuntimeHandle {
@@ -514,8 +540,34 @@ impl BtcRuntimeHandle {
     }
 
     pub fn update_sources(&self, sources: Vec<SourceSelector>) {
+        let hydrate_open_interest = {
+            let previous = self.sources.borrow();
+            claim_dynamic_open_interest_hydration(
+                previous.as_slice(),
+                &sources,
+                &self.open_interest_hydration_started,
+            )
+        };
         if self.sources.borrow().as_slice() != sources.as_slice() {
             self.sources.send_replace(sources);
+        }
+        if hydrate_open_interest {
+            let task = spawn_runtime_task(
+                "directional_open_interest_hydration",
+                run_directional_open_interest_hydration_recovery(
+                    self.repository.clone(),
+                    self.state.clone(),
+                    self.shutdown.subscribe(),
+                ),
+                self.running.clone(),
+                self.metrics.clone(),
+            );
+            let previous = self
+                .dynamic_open_interest_hydration_task
+                .lock()
+                .expect("dynamic open-interest hydration task lock")
+                .replace(task);
+            debug_assert!(previous.is_none());
         }
     }
 
@@ -550,6 +602,16 @@ impl BtcRuntimeHandle {
             }
         }
         self.tasks.clear();
+        let dynamic_hydration = self
+            .dynamic_open_interest_hydration_task
+            .lock()
+            .expect("dynamic open-interest hydration task lock")
+            .take();
+        if let Some(task) = dynamic_hydration {
+            if let Err(error) = task.await {
+                join_failures.push(error.to_string());
+            }
+        }
         if !join_failures.is_empty() {
             bail!("BTC runtime task join failed: {}", join_failures.join("; "));
         }
@@ -566,6 +628,14 @@ impl Drop for BtcRuntimeHandle {
         self.running.store(false, Ordering::Relaxed);
         let _ = self.shutdown.send(true);
         for task in &self.tasks {
+            task.abort();
+        }
+        if let Some(task) = self
+            .dynamic_open_interest_hydration_task
+            .lock()
+            .expect("dynamic open-interest hydration task lock")
+            .as_ref()
+        {
             task.abort();
         }
     }
@@ -889,5 +959,39 @@ mod tests {
                 .source_timestamp,
             start + chrono::Duration::minutes(65)
         );
+    }
+
+    #[test]
+    fn seven_to_eight_source_union_claims_open_interest_hydration_exactly_once() {
+        let eight_sources = legacy_default_sources();
+        let seven_sources = eight_sources
+            .iter()
+            .filter(|source| source.key != PRODUCT_BINANCE_OPEN_INTEREST)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(seven_sources.len(), 7);
+        assert_eq!(eight_sources.len(), 8);
+        let hydration_started = AtomicBool::new(false);
+
+        assert!(claim_dynamic_open_interest_hydration(
+            &seven_sources,
+            &eight_sources,
+            &hydration_started,
+        ));
+        assert!(!claim_dynamic_open_interest_hydration(
+            &seven_sources,
+            &eight_sources,
+            &hydration_started,
+        ));
+        assert!(!claim_dynamic_open_interest_hydration(
+            &eight_sources,
+            &seven_sources,
+            &hydration_started,
+        ));
+        assert!(!claim_dynamic_open_interest_hydration(
+            &seven_sources,
+            &eight_sources,
+            &hydration_started,
+        ));
     }
 }
