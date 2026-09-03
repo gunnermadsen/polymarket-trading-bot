@@ -1174,6 +1174,7 @@ struct BtcProcessManager {
     transition: Arc<tokio::sync::Mutex<()>>,
     active_playbooks: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, ActiveBtcPlaybook>>>,
     shared_runtime: Arc<tokio::sync::Mutex<Option<SharedBtcRuntime>>>,
+    shared_runtime_startup: Arc<tokio::sync::Mutex<()>>,
     terminal_pending: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, PendingBtcTerminal>>>,
 }
 
@@ -1193,6 +1194,7 @@ impl BtcProcessManager {
             transition: Arc::new(tokio::sync::Mutex::new(())),
             active_playbooks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             shared_runtime: Arc::new(tokio::sync::Mutex::new(None)),
+            shared_runtime_startup: Arc::new(tokio::sync::Mutex::new(())),
             terminal_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -1278,6 +1280,10 @@ impl BtcProcessManager {
         ),
         HttpError,
     > {
+        // Durable processes resume concurrently after a container restart.
+        // Serialize only shared transport initialization so they converge on
+        // one selector-union consumer instead of racing to create one each.
+        let _startup_guard = self.shared_runtime_startup.lock().await;
         let active_guard = self.active_playbooks.lock().await;
         let active_playbooks = active_guard.len();
         let source_union = merge_source_selectors(
@@ -1364,6 +1370,29 @@ impl BtcProcessManager {
             runtime: Some(runtime),
         });
         Ok((state, books))
+    }
+
+    async fn refresh_shared_sources(&self) -> Result<(), HttpError> {
+        let source_union = merge_source_selectors(
+            self.active_playbooks
+                .lock()
+                .await
+                .values()
+                .flat_map(|playbook| playbook.sources.clone()),
+        )?;
+        if source_union.is_empty() {
+            return Ok(());
+        }
+        if let Some(runtime) = self
+            .shared_runtime
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|shared| shared.runtime.as_ref())
+        {
+            runtime.update_sources(source_union);
+        }
+        Ok(())
     }
 
     async fn recover_shared_runtime(&self) {
@@ -2323,6 +2352,7 @@ impl BtcProcessManager {
                 runtime,
             },
         );
+        self.refresh_shared_sources().await?;
         self.record_event(
             process_id,
             "info",
@@ -2520,6 +2550,7 @@ impl BtcProcessManager {
                 runtime,
             },
         );
+        self.refresh_shared_sources().await?;
         let mut pending_guard = self.terminal_pending.lock().await;
         if pending_guard
             .get(&process_id)

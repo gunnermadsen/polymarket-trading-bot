@@ -2231,7 +2231,9 @@ impl BtcRuntimeHandle {
     }
 
     pub fn update_sources(&self, sources: Vec<SourceSelector>) {
-        self.sources.send_replace(sources);
+        if self.sources.borrow().as_slice() != sources.as_slice() {
+            self.sources.send_replace(sources);
+        }
     }
 
     pub fn status_inputs(&self) -> BtcRuntimeStatusInputs {
