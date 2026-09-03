@@ -127,13 +127,23 @@ struct RtdsEnvelope {
     #[serde(rename = "type")]
     message_type: String,
     timestamp: i64,
-    payload: RtdsPayloadEnvelope,
+    payload: Value,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RtdsPayloadEnvelope {
-    data: RtdsPayload,
+struct RtdsSnapshotPayload {
+    data: Vec<RtdsSnapshotPoint>,
+    symbol: String,
+    window_s: i16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RtdsSnapshotPoint {
+    value: Value,
+    full_accuracy_value: String,
+    timestamp: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -907,7 +917,6 @@ fn decode_observation(
     }
     let envelope: RtdsEnvelope = serde_json::from_value(source_payload.clone())
         .map_err(integrity_err("polymarket_twap_decode"))?;
-    let payload = &envelope.payload.data;
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
@@ -928,10 +937,29 @@ fn decode_observation(
             "RTDS connection identity was empty, non-ASCII, or oversized",
         ));
     }
-    if envelope.message_type != "update"
-        || payload.symbol != SYMBOL
-        || payload.window_s != expected_window
-    {
+    if envelope.message_type == "subscribe" {
+        let snapshot: RtdsSnapshotPayload = serde_json::from_value(envelope.payload)
+            .map_err(integrity_err("polymarket_twap_decode"))?;
+        if snapshot.symbol != SYMBOL
+            || snapshot.window_s != expected_window
+            || snapshot.data.len() > 120
+        {
+            return Err(integrity(
+                "polymarket_twap_identity",
+                "RTDS TWAP subscription snapshot did not match its subscription",
+            ));
+        }
+        return Ok(None);
+    }
+    if envelope.message_type != "update" {
+        return Err(integrity(
+            "polymarket_twap_identity",
+            "RTDS TWAP message type did not match its subscription",
+        ));
+    }
+    let payload: RtdsPayload = serde_json::from_value(envelope.payload)
+        .map_err(integrity_err("polymarket_twap_decode"))?;
+    if payload.symbol != SYMBOL || payload.window_s != expected_window {
         return Err(integrity(
             "polymarket_twap_identity",
             "RTDS TWAP message identity did not match its subscription",
@@ -975,7 +1003,7 @@ fn decode_observation(
             "RTDS TWAP payload exceeded 4 KiB",
         ));
     }
-    let canonical = serde_json::to_vec(&json!({"topic": envelope.topic, "type": envelope.message_type, "timestamp": envelope.timestamp, "payload": envelope.payload}))
+    let canonical = serde_json::to_vec(&json!({"topic": envelope.topic, "type": envelope.message_type, "timestamp": envelope.timestamp, "payload": payload}))
         .map_err(integrity_err("polymarket_twap_hash_encode"))?;
     Ok(Some(TwapObservation {
         source_timestamp,
@@ -1095,9 +1123,9 @@ mod tests {
             let bytes = serde_json::to_vec(&json!({
                 "connection_id": "90bc5f25-3f12-4f11-b961-0af0b37a6da2",
                 "topic": topic, "type": "update", "timestamp": 1_785_178_800_123_i64,
-                "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
+                "payload": {"symbol": "btc/usd", "value": 65000.5,
                     "full_accuracy_value": "65000500000000000000000",
-                    "timestamp": 1_785_178_800_000_i64, "window_s": window}}
+                    "timestamp": 1_785_178_800_000_i64, "window_s": window}
             }))
             .unwrap();
             let received = Utc.timestamp_millis_opt(1_785_178_800_500).unwrap();
@@ -1111,9 +1139,9 @@ mod tests {
     fn rejects_topic_window_mismatch() {
         let bytes = serde_json::to_vec(&json!({
             "topic": TOPIC_THIRTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
-            "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
+            "payload": {"symbol": "btc/usd", "value": 65000.5,
                 "full_accuracy_value": "65000500000000000000000",
-                "timestamp": 1_785_178_800_000_i64, "window_s": 60}}
+                "timestamp": 1_785_178_800_000_i64, "window_s": 60}
         }))
         .unwrap();
         assert!(
@@ -1129,29 +1157,32 @@ mod tests {
     }
 
     #[test]
-    fn rejects_flattened_twap_payload_without_data_envelope() {
+    fn ignores_valid_subscription_snapshot_with_data_array() {
         let bytes = serde_json::to_vec(&json!({
-            "topic": TOPIC_SIXTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
-            "payload": {"symbol": "btc/usd", "value": 65000.5,
-                "full_accuracy_value": "65000500000000000000000",
-                "timestamp": 1_785_178_800_000_i64, "window_s": 60}
+            "topic": TOPIC_SIXTY, "type": "subscribe", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"data": [
+                {"full_accuracy_value": "65000500000000000000000",
+                    "timestamp": 1_785_178_799_000_i64, "value": 65000.5},
+                {"full_accuracy_value": "65001500000000000000000",
+                    "timestamp": 1_785_178_800_000_i64, "value": 65001.5}
+            ], "symbol": "btc/usd", "window_s": 60}
         }))
         .unwrap();
 
-        let error =
+        assert!(
             decode_observation(&bytes, Utc.timestamp_millis_opt(1_785_178_800_500).unwrap())
-                .unwrap_err();
-        assert_eq!(error.code, "polymarket_twap_decode");
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
-    fn rejects_unknown_fields_inside_twap_data() {
+    fn rejects_malformed_subscription_snapshot_data() {
         let bytes = serde_json::to_vec(&json!({
-            "topic": TOPIC_SIXTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
-            "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
-                "full_accuracy_value": "65000500000000000000000",
-                "timestamp": 1_785_178_800_000_i64, "window_s": 60,
-                "unexpected": true}}
+            "topic": TOPIC_SIXTY, "type": "subscribe", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"data": {"full_accuracy_value": "65000500000000000000000",
+                "timestamp": 1_785_178_800_000_i64, "value": 65000.5},
+                "symbol": "btc/usd", "window_s": 60}
         }))
         .unwrap();
 
