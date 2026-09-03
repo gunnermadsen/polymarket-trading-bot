@@ -127,7 +127,13 @@ struct RtdsEnvelope {
     #[serde(rename = "type")]
     message_type: String,
     timestamp: i64,
-    payload: RtdsPayload,
+    payload: RtdsPayloadEnvelope,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RtdsPayloadEnvelope {
+    data: RtdsPayload,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -901,6 +907,7 @@ fn decode_observation(
     }
     let envelope: RtdsEnvelope = serde_json::from_value(source_payload.clone())
         .map_err(integrity_err("polymarket_twap_decode"))?;
+    let payload = &envelope.payload.data;
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
@@ -922,21 +929,21 @@ fn decode_observation(
         ));
     }
     if envelope.message_type != "update"
-        || envelope.payload.symbol != SYMBOL
-        || envelope.payload.window_s != expected_window
+        || payload.symbol != SYMBOL
+        || payload.window_s != expected_window
     {
         return Err(integrity(
             "polymarket_twap_identity",
             "RTDS TWAP message identity did not match its subscription",
         ));
     }
-    if !envelope.payload.value.is_number() {
+    if !payload.value.is_number() {
         return Err(integrity(
             "polymarket_twap_display_value",
             "RTDS display value was not numeric",
         ));
     }
-    let raw = &envelope.payload.full_accuracy_value;
+    let raw = &payload.full_accuracy_value;
     let digits = raw.strip_prefix('-').unwrap_or(raw);
     if digits.is_empty() || digits.len() > 29 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(integrity(
@@ -952,7 +959,7 @@ fn decode_observation(
             "RTDS TWAP price must be positive",
         ));
     }
-    let source_timestamp = timestamp_ms(envelope.payload.timestamp, "polymarket_twap_source_time")?;
+    let source_timestamp = timestamp_ms(payload.timestamp, "polymarket_twap_source_time")?;
     let published_at = timestamp_ms(envelope.timestamp, "polymarket_twap_publish_time")?;
     if published_at < source_timestamp
         || published_at > received_at + chrono::Duration::milliseconds(MAX_CLOCK_LEAD_MS)
@@ -1088,9 +1095,9 @@ mod tests {
             let bytes = serde_json::to_vec(&json!({
                 "connection_id": "90bc5f25-3f12-4f11-b961-0af0b37a6da2",
                 "topic": topic, "type": "update", "timestamp": 1_785_178_800_123_i64,
-                "payload": {"symbol": "btc/usd", "value": 65000.5,
+                "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
                     "full_accuracy_value": "65000500000000000000000",
-                    "timestamp": 1_785_178_800_000_i64, "window_s": window}
+                    "timestamp": 1_785_178_800_000_i64, "window_s": window}}
             }))
             .unwrap();
             let received = Utc.timestamp_millis_opt(1_785_178_800_500).unwrap();
@@ -1104,9 +1111,9 @@ mod tests {
     fn rejects_topic_window_mismatch() {
         let bytes = serde_json::to_vec(&json!({
             "topic": TOPIC_THIRTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
-            "payload": {"symbol": "btc/usd", "value": 65000.5,
+            "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
                 "full_accuracy_value": "65000500000000000000000",
-                "timestamp": 1_785_178_800_000_i64, "window_s": 60}
+                "timestamp": 1_785_178_800_000_i64, "window_s": 60}}
         }))
         .unwrap();
         assert!(
@@ -1119,5 +1126,38 @@ mod tests {
     fn ignores_connection_control_frame() {
         let bytes = br#"{"connection_id":"90bc5f25-3f12-4f11-b961-0af0b37a6da2"}"#;
         assert!(decode_observation(bytes, Utc::now()).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_flattened_twap_payload_without_data_envelope() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_SIXTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"symbol": "btc/usd", "value": 65000.5,
+                "full_accuracy_value": "65000500000000000000000",
+                "timestamp": 1_785_178_800_000_i64, "window_s": 60}
+        }))
+        .unwrap();
+
+        let error =
+            decode_observation(&bytes, Utc.timestamp_millis_opt(1_785_178_800_500).unwrap())
+                .unwrap_err();
+        assert_eq!(error.code, "polymarket_twap_decode");
+    }
+
+    #[test]
+    fn rejects_unknown_fields_inside_twap_data() {
+        let bytes = serde_json::to_vec(&json!({
+            "topic": TOPIC_SIXTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"data": {"symbol": "btc/usd", "value": 65000.5,
+                "full_accuracy_value": "65000500000000000000000",
+                "timestamp": 1_785_178_800_000_i64, "window_s": 60,
+                "unexpected": true}}
+        }))
+        .unwrap();
+
+        let error =
+            decode_observation(&bytes, Utc.timestamp_millis_opt(1_785_178_800_500).unwrap())
+                .unwrap_err();
+        assert_eq!(error.code, "polymarket_twap_decode");
     }
 }
