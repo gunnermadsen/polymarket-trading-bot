@@ -164,6 +164,8 @@ struct RtdsPayload {
 struct RtdsReferencePayload {
     symbol: String,
     value: Value,
+    #[serde(rename = "full_accuracy_value")]
+    _full_accuracy_value: Option<String>,
     timestamp: i64,
 }
 
@@ -1338,6 +1340,7 @@ mod tests {
             "connection_id": "90bc5f25-3f12-4f11-b961-0af0b37a6da2",
             "topic": TOPIC_REFERENCE, "type": "update", "timestamp": 1_785_178_800_123_i64,
             "payload": {"symbol": "btc/usd", "value": 65000.512345678912,
+                "full_accuracy_value": "65000512345678912000000",
                 "timestamp": 1_785_178_800_000_i64}
         }))
         .unwrap();
