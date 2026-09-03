@@ -639,9 +639,16 @@ impl MarketDataStreamRuntime {
                 }
             }
             PRODUCT_BINANCE_1S => {
-                let payload: KlinePayload = serde_json::from_slice(&event.payload_json)?;
+                let raw_payload: serde_json::Value = serde_json::from_slice(&event.payload_json)?;
+                let payload: KlinePayload = serde_json::from_value(raw_payload.clone())?;
+                let reference = payload.reference_tick(event, raw_payload)?;
                 let kline = payload.into_kline();
                 let mut state = self.state.write().await;
+                // The one-second close replaces the retired aggregate-trade
+                // socket as the canonical direct Binance reference while the
+                // existing model adapter continues to consume its unchanged
+                // ReferencePriceTick contract.
+                state.update_reference_price(reference);
                 if let Err(error) = state
                     .binance_one_second_window
                     .observe_completed(kline.clone())
@@ -805,7 +812,7 @@ struct ResolutionPayload {
     source_timestamp: Option<DateTime<Utc>>,
     received_at: DateTime<Utc>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct KlinePayload {
     open_timestamp: DateTime<Utc>,
     close_timestamp: DateTime<Utc>,
@@ -822,6 +829,27 @@ struct KlinePayload {
     taker_buy_quote_volume: Decimal,
 }
 impl KlinePayload {
+    fn reference_tick(
+        &self,
+        event: &MarketDataEvent,
+        raw_payload: serde_json::Value,
+    ) -> Result<ReferencePriceTick> {
+        Ok(ReferencePriceTick {
+            tick_id: Uuid::new_v4(),
+            dedup_key: event.payload_sha256.clone(),
+            source: ReferencePriceSource::DirectBinance,
+            symbol: "BTCUSDT".to_owned(),
+            price: self.close_price,
+            source_timestamp: self.close_timestamp,
+            envelope_timestamp: self.provider_available_at,
+            received_at: self.received_at,
+            connection_id: Uuid::parse_str(&event.publisher_epoch)?,
+            ingest_sequence: event.sequence,
+            source_event_id: Some(event.source_event_id.clone()),
+            raw_payload,
+        })
+    }
+
     fn into_kline(self) -> BinanceOneSecondKline {
         BinanceOneSecondKline {
             open_timestamp: self.open_timestamp,
@@ -987,5 +1015,53 @@ mod tests {
         assert_eq!(payload.market.market_id, "market-1");
         assert_eq!(payload.market.condition_id, "condition-1");
         assert_eq!(payload.tick_size, Decimal::new(1, 2));
+    }
+
+    #[test]
+    fn one_second_kline_preserves_the_direct_binance_reference_contract() {
+        let raw = serde_json::json!({
+            "open_timestamp": "2026-09-03T17:30:00Z",
+            "close_timestamp": "2026-09-03T17:30:00.999Z",
+            "provider_available_at": "2026-09-03T17:30:01.001Z",
+            "received_at": "2026-09-03T17:30:01.002Z",
+            "open_price": "81000.00",
+            "high_price": "81002.00",
+            "low_price": "80999.00",
+            "close_price": "81001.25",
+            "base_volume": "1.5",
+            "quote_volume": "121501.875",
+            "trade_count": 12,
+            "taker_buy_base_volume": "0.8",
+            "taker_buy_quote_volume": "64801.0"
+        });
+        let payload: KlinePayload = serde_json::from_value(raw.clone()).expect("kline payload");
+        let event = MarketDataEvent {
+            product_key: PRODUCT_BINANCE_1S.to_owned(),
+            contract_version: CONTRACT_VERSION,
+            worker_id: "worker-1".to_owned(),
+            publisher_epoch: "6675831f-15ea-45ed-a21f-397cd76bf1ec".to_owned(),
+            sequence: 42,
+            source_event_id: "1788456600000000".to_owned(),
+            source_timestamp_micros: 0,
+            provider_available_at_micros: 0,
+            received_at_micros: 0,
+            published_at_micros: 0,
+            payload_sha256: "sha256:kline".to_owned(),
+            integrity: "ok".to_owned(),
+            persistence_healthy: true,
+            payload_json: Vec::new(),
+        };
+
+        let reference = payload
+            .reference_tick(&event, raw.clone())
+            .expect("direct Binance reference");
+        assert_eq!(reference.source, ReferencePriceSource::DirectBinance);
+        assert_eq!(reference.symbol, "BTCUSDT");
+        assert_eq!(reference.price, Decimal::new(8_100_125, 2));
+        assert_eq!(
+            reference.source_event_id.as_deref(),
+            Some("1788456600000000")
+        );
+        assert_eq!(reference.raw_payload, raw);
     }
 }
