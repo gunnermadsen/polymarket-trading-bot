@@ -107,7 +107,7 @@ groups:
           family: clob_market_data
           service: polymarket-bot
           severity: warning
-        isPaused: false
+        isPaused: true
       - uid: clob_book_unavailable_sustained
         title: CLOB order book unavailable for trading
         condition: C

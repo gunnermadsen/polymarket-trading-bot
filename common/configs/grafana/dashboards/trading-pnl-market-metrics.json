@@ -2501,248 +2501,60 @@
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Transport status of the shared Polymarket CLOB websocket, using the connected epoch, age of the most recent inbound frame, and source-to-receive market-data lag.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Socket Connection Epoch"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Socket"
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "from": 0,
-                      "result": {
-                        "color": "red",
-                        "index": 0,
-                        "text": "Disconnected"
-                      },
-                      "to": 0
-                    },
-                    "type": "range"
-                  },
-                  {
-                    "options": {
-                      "from": 1,
-                      "result": {
-                        "color": "green",
-                        "index": 1,
-                        "text": "Connected"
-                      },
-                      "to": 2147483647
-                    },
-                    "type": "range"
-                  }
-                ]
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Last Inbound Frame Age"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Inbound age"
-              },
-              {
-                "id": "unit",
-                "value": "ms"
-              },
-              {
-                "id": "mappings",
-                "value": []
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "orange",
-                      "value": 5000
-                    },
-                    {
-                      "color": "red",
-                      "value": 15000
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "noValue",
-                "value": "No inbound frame"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CLOB Source-to-Receive Lag"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Market-data lag"
-              },
-              {
-                "id": "unit",
-                "value": "ms"
-              },
-              {
-                "id": "mappings",
-                "value": []
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "orange",
-                      "value": 1000
-                    },
-                    {
-                      "color": "red",
-                      "value": 2000
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "noValue",
-                "value": "No book frame"
-              }
-            ]
-          }
-        ]
-      },
+      "id": 21,
+      "type": "stat",
+      "title": "Data Pipeline Connection",
       "gridPos": {
         "h": 5,
         "w": 5,
         "x": 0,
         "y": 40
       },
-      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(polymarket_market_data_grpc_connections)",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 8,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
+        "colorMode": "background",
+        "graphMode": "none",
         "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
-              "text": "CLOB Socket Connection Epoch",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_inbound_frame_age_milliseconds",
-              "text": "CLOB Last Inbound Frame Age",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_source_to_receive_lag_milliseconds",
-              "text": "CLOB Source-to-Receive Lag",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Socket Health",
-      "type": "stat"
+      }
     },
     {
       "datasource": {
@@ -3012,188 +2824,137 @@
       "type": "table"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Current consecutive CLOB websocket connection failures. Zero is normal; a non-zero value indicates the active connection/recovery cycle is failing repeatedly.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
+      "id": 23,
+      "type": "stat",
+      "title": "Pipeline Integrity",
       "gridPos": {
         "h": 4,
         "w": 3,
         "x": 0,
         "y": 45
       },
-      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))",
+          "instant": true,
+          "legendFormat": "Sequence gaps"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(ingester_stream_dropped_total[1h]))",
+          "instant": true,
+          "legendFormat": "Dropped events"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(increase(polymarket_market_data_decode_errors_total[1h]))",
+          "instant": true,
+          "legendFormat": "Contract errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
+        "graphMode": "none",
         "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_consecutive_failures",
-              "text": "CLOB Consecutive Failures",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Consecutive Failures",
-      "type": "stat"
+      }
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Most recent correlated ping/pong round-trip time for the Polymarket CLOB websocket. Ordinary inbound market-data frames also prove socket liveness, so a missing value does not mean the socket is disconnected.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "No correlated PONG sample",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 500
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
+      "id": 22,
+      "type": "timeseries",
+      "title": "gRPC Apply Latency",
       "gridPos": {
         "h": 4,
         "w": 2,
         "x": 3,
         "y": 45
       },
-      "id": 22,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value",
-        "wideLayout": true
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "pluginVersion": "12.4.2",
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_pong_round_trip_milliseconds",
-              "text": "CLOB Pong RTT",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "polymarket_market_data_product_publish_apply_latency_seconds",
+          "legendFormat": "{{product}}"
         }
       ],
-      "title": "CLOB Pong RTT",
-      "type": "stat"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.005
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 16,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      }
     },
     {
       "datasource": {
@@ -3434,451 +3195,173 @@
       },
       "id": 28,
       "panels": [],
-      "title": "CLOB Failure Diagnostics",
+      "title": "Data Pipeline Diagnostics",
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Backpressure evidence from the single active CLOB market stream. Queue depth and dwell expose local processing delay; overflows prove frame loss at ingress.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 10
-              },
-              {
-                "color": "red",
-                "value": 100
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last queue dwell"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "ms"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Max queue dwell"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "ms"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Ingress overflows"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "red",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
+      "id": 29,
+      "type": "timeseries",
+      "title": "Pipeline Throughput",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 0,
         "y": 78
       },
-      "id": 29,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "pluginVersion": "12.4.2",
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_ingress_queue_depth",
-              "text": "Queue depth",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_ingress_queue_dwell_milliseconds",
-              "text": "Last queue dwell",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_max_ingress_queue_dwell_milliseconds",
-              "text": "Max queue dwell",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_ingress_overflows",
-              "text": "Ingress overflows",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "sum by (product) (rate(ingester_stream_published_total[2m]))",
+          "legendFormat": "published · {{product}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (product) (rate(polymarket_market_data_product_events_applied_total[2m]))",
+          "legendFormat": "applied · {{product}}"
         }
       ],
-      "title": "CLOB Ingress Backpressure",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Heartbeat scheduling and acknowledgement evidence for the single active CLOB market stream. Scheduler lateness distinguishes local runtime stalls from remote transport behavior.",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "Unavailable",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 100
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Heartbeat probes"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Heartbeat acknowledgements"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              }
-            ]
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "showPoints": "never"
           }
-        ]
+        },
+        "overrides": []
       },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Realtime Product Freshness",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 8,
         "y": 78
       },
-      "id": 30,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(time() - ingester_stream_last_published_timestamp_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"}) * on(product) group_left() (ingester_stream_subscribers > 0)",
+          "instant": true,
+          "legendFormat": "{{product}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
-        "justifyMode": "center",
         "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
+        "textMode": "value_and_name",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_active_last_heartbeat_send_lateness_milliseconds",
-              "text": "Last send lateness",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_max_heartbeat_send_lateness_milliseconds",
-              "text": "Max send lateness",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_heartbeat_probes",
-              "text": "Heartbeat probes",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_active_heartbeat_acknowledgements",
-              "text": "Heartbeat acknowledgements",
-              "type": "number"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
-          "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
         }
-      ],
-      "title": "CLOB Heartbeat Scheduling",
-      "type": "stat"
+      }
     },
     {
-      "datasource": {
-        "type": "yesoreyeram-infinity-datasource",
-        "uid": "polymarket-bot-runtime"
-      },
-      "description": "Connection lifecycle counters and the most recent disconnect reason for the single active CLOB market stream.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "noValue": "No disconnect observed",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 3
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last disconnect reason"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed-color"
-                }
-              },
-              {
-                "id": "color.fixedColor",
-                "value": "orange"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Connection epoch"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
+      "id": 31,
+      "type": "timeseries",
+      "title": "Connection Stability",
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 16,
         "y": 78
       },
-      "id": 31,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value_and_name",
-        "wideLayout": true
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "pluginVersion": "12.4.2",
       "targets": [
         {
-          "columns": [
-            {
-              "selector": "shared_market_data.metrics.clob_connected_connection_epoch",
-              "text": "Connection epoch",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_connections_established",
-              "text": "Connections established",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_transport_disconnects",
-              "text": "Transport disconnects",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_consecutive_failures",
-              "text": "Consecutive failures",
-              "type": "number"
-            },
-            {
-              "selector": "shared_market_data.metrics.clob_last_disconnect_reason",
-              "text": "Last disconnect reason",
-              "type": "string"
-            }
-          ],
-          "datasource": {
-            "type": "yesoreyeram-infinity-datasource",
-            "uid": "polymarket-bot-runtime"
-          },
-          "format": "table",
-          "json_options": {
-            "root_is_not_array": true
-          },
-          "parser": "backend",
           "refId": "A",
-          "root_selector": "",
-          "source": "url",
-          "type": "json",
-          "url": "http://polymarket-bot:8097/admin/strategy/btc-5m/readiness",
-          "url_options": {
-            "data": "",
-            "method": "GET"
-          }
+          "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])",
+          "legendFormat": "Reconnects / 15m"
+        },
+        {
+          "refId": "B",
+          "expr": "increase(polymarket_market_data_duplicates_total[15m])",
+          "legendFormat": "Deduplicated / 15m"
         }
       ],
-      "title": "CLOB Connection Failure Evidence",
-      "type": "stat"
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ],
   "preload": false,
@@ -3945,6 +3428,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 174,
+  "version": 175,
   "weekStart": ""
 }

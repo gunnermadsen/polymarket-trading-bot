@@ -179,7 +179,7 @@ groups:
           family: clob_market_data
           service: polymarket-bot
           severity: warning
-        isPaused: false
+        isPaused: true
       - uid: clob_abrupt_upstream_disconnect
         title: CLOB abrupt upstream disconnect observed
         condition: C
@@ -237,7 +237,7 @@ groups:
           family: clob_market_data
           service: polymarket-bot
           severity: warning
-        isPaused: false
+        isPaused: true
       - uid: clob_silent_watchdog_disconnect
         title: CLOB silent connection watchdog disconnect observed
         condition: C
@@ -295,4 +295,4 @@ groups:
           family: clob_market_data
           service: polymarket-bot
           severity: warning
-        isPaused: false
+        isPaused: true
