@@ -129,9 +129,9 @@ impl SourceSelector {
         }
         if self
             .maximum_age_ms
-            .is_some_and(|age| age == 0 || age > 60_000)
+            .is_some_and(|age| age == 0 || age > 600_000)
         {
-            bail!("source maximum_age_ms must be between 1 and 60000");
+            bail!("source maximum_age_ms must be between 1 and 600000");
         }
         Ok(())
     }
@@ -139,7 +139,8 @@ impl SourceSelector {
     fn effective_maximum_age_ms(&self) -> u64 {
         self.maximum_age_ms.unwrap_or(match self.key.as_str() {
             PRODUCT_BOOKS | PRODUCT_CHAINLINK | PRODUCT_BINANCE_1S => 10_000,
-            PRODUCT_TWAP | PRODUCT_POLYGON_ORACLE | PRODUCT_BINANCE_OPEN_INTEREST => 120_000,
+            PRODUCT_BINANCE_OPEN_INTEREST => 360_000,
+            PRODUCT_TWAP | PRODUCT_POLYGON_ORACLE => 120_000,
             PRODUCT_MARKETS | PRODUCT_RESOLUTIONS => 0,
             _ => 60_000,
         })
@@ -943,6 +944,18 @@ mod tests {
         }))
         .expect("selector shape");
         assert!(invalid.validate().is_err());
+
+        let too_old: SourceSelector = serde_json::from_value(serde_json::json!({
+            "key": PRODUCT_BINANCE_OPEN_INTEREST,
+            "maximum_age_ms": 600_001
+        }))
+        .expect("selector shape");
+        assert!(too_old.validate().is_err());
+
+        let open_interest: SourceSelector =
+            serde_json::from_str(&format!("\"{PRODUCT_BINANCE_OPEN_INTEREST}\""))
+                .expect("open-interest selector");
+        assert_eq!(open_interest.effective_maximum_age_ms(), 360_000);
     }
 
     #[test]
