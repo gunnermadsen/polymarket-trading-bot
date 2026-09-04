@@ -7,12 +7,12 @@ WITH legacy AS (
     candle.high_price,
     candle.low_price,
     candle.close_price,
-    'polymarket.chainlink_btcusd_one_minute_candles'::text AS source_relation,
-    candle.artifact_id::text AS source_artifact_id,
+    'market_data.chainlink_btcusd_one_minute_candles'::text AS source_relation,
+    candle.capture_artifact_id::text AS source_artifact_id,
     1 AS source_priority
-  FROM polymarket.chainlink_btcusd_one_minute_candles candle
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = candle.artifact_id
+  FROM market_data.chainlink_btcusd_one_minute_candles candle
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = candle.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE candle.symbol = %(candle_symbol)s
     AND candle.close_timestamp >=

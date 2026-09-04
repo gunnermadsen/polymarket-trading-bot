@@ -177,7 +177,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "final_price_role": "audit_only",
     },
     "binance_one_second": {
-        "relation": "polymarket.binance_one_second_klines",
+        "relation": "market_data.binance_spot_btcusdt_one_second_ohlcv",
         "symbol": "BTCUSDT",
         "provider_policy": "completed backfill artifact recorded daily",
     },
@@ -190,7 +190,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "execution_schema_version": EXECUTION_EVIDENCE_SCHEMA_VERSION,
     },
     "polygon_chainlink_oracle": {
-        "relation": "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+        "relation": "market_data.polygon_chainlink_btcusd_oracle_rounds",
         "feed_proxy_address": POLYGON_CHAINLINK_BTCUSD_PROXY,
         "source_schema_version": CORE_ORACLE_ROUND_SCHEMA_VERSION,
         "provider_policy": "completed backfill artifact recorded daily",
@@ -213,7 +213,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "information_columns": list(L2_INFORMATION_COLUMNS),
     },
     "chainlink_candles": {
-        "relation": "polymarket.chainlink_btcusd_one_minute_candles",
+        "relation": "market_data.chainlink_btcusd_one_minute_candles",
         "symbol": "BTCUSD",
         "source_schema_version": CANDLE_SOURCE_SCHEMA_VERSION,
         "provider_policy": "completed backfill artifact recorded daily",
@@ -222,7 +222,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "polymarket.chainlink_btcusd_archive_ticks": (
             "historical local receipt availability is not proven"
         ),
-        "polymarket.binance_btcusdt_five_minute_open_interest": (
+        "market_data.binance_futures_btcusdt_open_interest": (
             "not included in the approved asymmetric-value candidate matrix"
         ),
         "market_data.binance_spot_btcusdt_aggregate_trades": (
@@ -238,11 +238,11 @@ _SQL_CONTRACTS = {
     "btc-core-source.sql": (
         "polymarket.btc_interval_markets",
         "polymarket.btc_market_reference_facts",
-        "polymarket.binance_one_second_klines",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
         "polymarket.backfill_artifacts",
     ),
     "btc-core-oracle-source.sql": (
-        "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+        "market_data.polygon_chainlink_btcusd_oracle_rounds",
         "round.source_timestamp <= round.block_timestamp",
         "polymarket.backfill_artifacts",
     ),
@@ -259,17 +259,17 @@ _SQL_CONTRACTS = {
         "feature.available_at < %(batch_end)s",
     ),
     "btc-chainlink-one-minute-candles-source.sql": (
-        "polymarket.chainlink_btcusd_one_minute_candles",
+        "market_data.chainlink_btcusd_one_minute_candles",
         "candle.close_timestamp = candle.open_timestamp + interval '1 minute'",
         "polymarket.backfill_artifacts",
     ),
     "btc-asymmetric-training-readiness.sql": (
         "polymarket.btc_interval_markets",
         "polymarket.btc_market_reference_facts",
-        "polymarket.binance_one_second_klines",
-        "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
+        "market_data.polygon_chainlink_btcusd_oracle_rounds",
         "polymarket.binance_spot_btcusdt_l2_training_features",
-        "polymarket.chainlink_btcusd_one_minute_candles",
+        "market_data.chainlink_btcusd_one_minute_candles",
         PMXT_PROVIDER,
         LEGACY_SNAPSHOT_SCHEMA_VERSION,
     ),
@@ -278,13 +278,13 @@ _SQL_CONTRACTS = {
 _NEW_DAY_SQL_CONTRACT = (
     "polymarket.btc_interval_markets",
     "polymarket.btc_market_reference_facts",
-    "polymarket.binance_one_second_klines",
+    "market_data.binance_spot_btcusdt_one_second_ohlcv",
     "polymarket.binance_spot_btcusdt_l2_training_features",
     "polymarket.binance_spot_btcusdt_l2_one_second_features",
     "polymarket.btc_market_execution_snapshots",
     "polymarket.backfill_artifacts",
-    "polymarket.polygon_chainlink_btcusd_oracle_rounds",
-    "polymarket.chainlink_btcusd_one_minute_candles",
+    "market_data.polygon_chainlink_btcusd_oracle_rounds",
+    "market_data.chainlink_btcusd_one_minute_candles",
     PMXT_PROVIDER,
     LEGACY_SNAPSHOT_SCHEMA_VERSION,
     CRYPTOHFT_L2_MATERIALIZATION_CONTRACT,

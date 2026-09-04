@@ -485,11 +485,11 @@ def _validate_sources(sources: ChainlinkOiSourceConfig) -> None:
     expected_tables = (
         "polymarket.btc_interval_markets",
         "polymarket.btc_market_reference_facts",
-        "polymarket.binance_one_second_klines",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
         "polymarket.chainlink_btcusd_archive_ticks",
-        "polymarket.polygon_chainlink_btcusd_oracle_rounds",
-        "polymarket.chainlink_btcusd_one_minute_candles",
-        "polymarket.binance_btcusdt_five_minute_open_interest",
+        "market_data.polygon_chainlink_btcusd_oracle_rounds",
+        "market_data.chainlink_btcusd_one_minute_candles",
+        "market_data.binance_futures_btcusdt_open_interest",
         "polymarket.btc_market_execution_snapshots",
     )
     actual_tables = (

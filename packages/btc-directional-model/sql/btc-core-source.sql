@@ -55,7 +55,7 @@ SELECT
   kline.taker_buy_base_volume::double precision AS btc_taker_buy_base_volume,
   kline.taker_buy_quote_volume::double precision AS btc_taker_buy_quote_volume
 FROM eligible_markets market
-JOIN polymarket.binance_one_second_klines kline
+JOIN market_data.binance_spot_btcusdt_one_second_ohlcv kline
   ON kline.symbol = 'BTCUSDT'
  AND kline.open_timestamp >= %(batch_start)s - interval '1 second'
  AND kline.open_timestamp < %(batch_end)s - interval '1 second'
@@ -63,6 +63,6 @@ JOIN polymarket.binance_one_second_klines kline
  AND kline.open_timestamp < market.window_end - interval '1 second'
  AND kline.close_timestamp < kline.open_timestamp + interval '1 second'
 JOIN polymarket.backfill_artifacts kline_artifact
-  ON kline_artifact.artifact_id = kline.artifact_id
+  ON kline_artifact.artifact_id = kline.capture_artifact_id
  AND kline_artifact.status = 'completed'
 ORDER BY market.window_start, kline.open_timestamp;

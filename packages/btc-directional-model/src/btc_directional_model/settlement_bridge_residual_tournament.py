@@ -2060,9 +2060,9 @@ def _source_query_manifest(config: TournamentConfig, dataset: dict[str, Any]) ->
         "queries": dataset["sql_sha256"],
         "sources": [
             "polymarket.btc_interval_markets",
-            "polymarket.binance_one_second_klines",
             "market_data.binance_spot_btcusdt_one_second_ohlcv",
-            "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+            "market_data.binance_spot_btcusdt_one_second_ohlcv",
+            "market_data.polygon_chainlink_btcusd_oracle_rounds",
             "market_data.polygon_chainlink_btcusd_oracle_rounds",
             "market_data.chainlink_btcusd_reference_prices",
             "market_data.pmdata_chainlink_btcusd_twap",

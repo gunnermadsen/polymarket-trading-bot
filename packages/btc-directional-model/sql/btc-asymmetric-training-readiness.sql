@@ -48,9 +48,9 @@ binance AS (
       WHERE kline.close_timestamp >= kline.open_timestamp + interval '1 second'
     )::bigint AS causality_violations,
     array_agg(DISTINCT artifact.provider ORDER BY artifact.provider) AS providers
-  FROM polymarket.binance_one_second_klines kline
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = kline.artifact_id
+  FROM market_data.binance_spot_btcusdt_one_second_ohlcv kline
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = kline.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE kline.symbol = 'BTCUSDT'
     AND kline.open_timestamp >= %(range_start)s
@@ -65,9 +65,9 @@ oracle AS (
       WHERE round.source_timestamp > round.block_timestamp
     )::bigint AS causality_violations,
     array_agg(DISTINCT artifact.provider ORDER BY artifact.provider) AS providers
-  FROM polymarket.polygon_chainlink_btcusd_oracle_rounds round
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = round.artifact_id
+  FROM market_data.polygon_chainlink_btcusd_oracle_rounds round
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = round.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE round.feed_proxy_address = %(oracle_feed_proxy_address)s
     AND round.block_timestamp >= %(range_start)s
@@ -140,9 +140,9 @@ candles AS (
       WHERE candle.close_timestamp <> candle.open_timestamp + interval '1 minute'
     )::bigint AS causality_violations,
     array_agg(DISTINCT artifact.provider ORDER BY artifact.provider) AS providers
-  FROM polymarket.chainlink_btcusd_one_minute_candles candle
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = candle.artifact_id
+  FROM market_data.chainlink_btcusd_one_minute_candles candle
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = candle.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE candle.symbol = 'BTCUSD'
     AND candle.open_timestamp >= %(range_start)s

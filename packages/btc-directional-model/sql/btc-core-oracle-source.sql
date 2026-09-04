@@ -7,9 +7,9 @@ WITH daily_rounds AS (
     round.aggregator_round_id AS oracle_round_id,
     round.block_number AS oracle_block_number,
     round.log_index AS oracle_log_index
-  FROM polymarket.polygon_chainlink_btcusd_oracle_rounds round
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = round.artifact_id
+  FROM market_data.polygon_chainlink_btcusd_oracle_rounds round
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = round.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE round.feed_proxy_address = %(oracle_feed_proxy_address)s
     AND round.source_timestamp >=
@@ -29,9 +29,9 @@ prior_causal_round AS (
     round.aggregator_round_id AS oracle_round_id,
     round.block_number AS oracle_block_number,
     round.log_index AS oracle_log_index
-  FROM polymarket.polygon_chainlink_btcusd_oracle_rounds round
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = round.artifact_id
+  FROM market_data.polygon_chainlink_btcusd_oracle_rounds round
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = round.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE round.feed_proxy_address = %(oracle_feed_proxy_address)s
     AND round.source_timestamp >=

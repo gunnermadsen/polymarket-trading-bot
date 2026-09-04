@@ -177,7 +177,7 @@ def test_sql_uses_only_confirmed_sources_and_prior_completed_second() -> None:
     for table in (
         "polymarket.btc_interval_markets",
         "polymarket.btc_market_reference_facts",
-        "polymarket.binance_one_second_klines",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
         "polymarket.btc_market_decision_execution_snapshots",
     ):
         assert table in sql

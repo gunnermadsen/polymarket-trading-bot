@@ -8,9 +8,9 @@ WITH legacy AS (
     round.block_number AS oracle_block_number,
     round.log_index AS oracle_log_index,
     1 AS source_priority
-  FROM polymarket.polygon_chainlink_btcusd_oracle_rounds round
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = round.artifact_id
+  FROM market_data.polygon_chainlink_btcusd_oracle_rounds round
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = round.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE round.source_timestamp >= %(range_start)s - interval '30 minutes'
     AND round.source_timestamp < %(range_end)s

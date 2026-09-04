@@ -71,11 +71,11 @@ binance AS (
     count(*) FILTER (
       WHERE kline.close_timestamp >= kline.open_timestamp + interval '1 second'
     )::bigint AS causality_violations
-  FROM polymarket.binance_one_second_klines kline
-  JOIN polymarket.backfill_artifacts artifact
-   ON artifact.artifact_id = kline.artifact_id
+  FROM market_data.binance_spot_btcusdt_one_second_ohlcv kline
+  JOIN ingester.capture_artifacts artifact
+   ON artifact.artifact_id = kline.capture_artifact_id
    AND artifact.status = 'completed'
-   AND artifact.ingester_key = 'binance_btcusdt_one_second_klines'
+   AND artifact.strategy_key = 'binance_spot_btcusdt_one_second_ohlcv'
   WHERE kline.symbol = 'BTCUSDT'
     AND kline.open_timestamp >= %(range_start)s
     AND kline.open_timestamp < %(range_end)s
@@ -286,11 +286,11 @@ oracle AS (
     count(*) FILTER (
       WHERE round.source_timestamp > round.block_timestamp
     )::bigint AS causality_violations
-  FROM polymarket.polygon_chainlink_btcusd_oracle_rounds round
-  JOIN polymarket.backfill_artifacts artifact
-   ON artifact.artifact_id = round.artifact_id
+  FROM market_data.polygon_chainlink_btcusd_oracle_rounds round
+  JOIN ingester.capture_artifacts artifact
+   ON artifact.artifact_id = round.capture_artifact_id
    AND artifact.status = 'completed'
-   AND artifact.ingester_key = 'polygon_chainlink_btcusd_oracle_rounds'
+   AND artifact.strategy_key = 'polygon_chainlink_btcusd_oracle'
   WHERE round.feed_proxy_address = %(oracle_feed_proxy_address)s
     AND round.source_timestamp >= %(range_start)s
     AND round.source_timestamp < %(range_end)s
@@ -304,11 +304,11 @@ candles AS (
       WHERE candle.close_timestamp <>
         candle.open_timestamp + interval '1 minute'
     )::bigint AS causality_violations
-  FROM polymarket.chainlink_btcusd_one_minute_candles candle
-  JOIN polymarket.backfill_artifacts artifact
-   ON artifact.artifact_id = candle.artifact_id
+  FROM market_data.chainlink_btcusd_one_minute_candles candle
+  JOIN ingester.capture_artifacts artifact
+   ON artifact.artifact_id = candle.capture_artifact_id
    AND artifact.status = 'completed'
-   AND artifact.ingester_key = 'chainlink_btcusd_one_minute_candles'
+   AND artifact.strategy_key = 'chainlink_btcusd_one_minute_ohlc'
   WHERE candle.symbol = 'BTCUSD'
     AND candle.open_timestamp >= %(range_start)s
     AND candle.open_timestamp < %(range_end)s
@@ -389,11 +389,11 @@ LEFT JOIN oracle USING (day_start)
 LEFT JOIN candles USING (day_start)
 LEFT JOIN small_artifact_lineage binance_artifact
   ON binance_artifact.day_start = days.day_start
- AND binance_artifact.ingester_key = 'binance_btcusdt_one_second_klines'
+ AND binance_artifact.strategy_key = 'binance_spot_btcusdt_one_second_ohlcv'
 LEFT JOIN small_artifact_lineage oracle_artifact
   ON oracle_artifact.day_start = days.day_start
- AND oracle_artifact.ingester_key = 'polygon_chainlink_btcusd_oracle_rounds'
+ AND oracle_artifact.strategy_key = 'polygon_chainlink_btcusd_oracle'
 LEFT JOIN small_artifact_lineage candle_artifact
   ON candle_artifact.day_start = days.day_start
- AND candle_artifact.ingester_key = 'chainlink_btcusd_one_minute_candles'
+ AND candle_artifact.strategy_key = 'chainlink_btcusd_one_minute_ohlc'
 ORDER BY days.day_start;
