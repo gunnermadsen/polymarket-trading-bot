@@ -1,10 +1,10 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
+import { createHash } from 'node:crypto';
 
 const SOURCE = 'market_data.polymarket_btc_five_minute_orderbook_snapshots';
 const TARGET = 'polymarket.btc_five_minute_orderbook_snapshots';
 const LEGACY = 'polymarket.orderbook_checkpoints';
 const STRATEGY = 'polymarket_btc_five_minute_orderbooks';
-const LEGACY_ARTIFACT = '2e1df48e-9e29-5fb7-87fb-7f3859541b73';
 
 export class ConsolidatePolymarketOrderbooks1788645600000
   implements MigrationInterface
@@ -32,18 +32,14 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         return;
       }
 
-      await this.ensureLegacyArtifact(
-        queryRunner,
-        new Date(bounds[0].minimum),
-        new Date(bounds[0].maximum),
-      );
-
       let legacyCount = 0n;
       let canonicalCount = 0n;
       for (const [start, end] of this.hourRanges(
         new Date(bounds[0].minimum),
         new Date(bounds[0].maximum),
       )) {
+        const artifactId = this.legacyArtifactId(start);
+        await this.ensureLegacyArtifact(queryRunner, artifactId, start, end);
         const result = await queryRunner.query(
           `
           WITH source_rows AS MATERIALIZED (
@@ -132,7 +128,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
               encode(digest(convert_to(
                 checkpoint_id::text || '|' || book::text, 'UTF8'
               ), 'sha256'), 'hex'),
-              '${STRATEGY}', '${LEGACY_ARTIFACT}', persisted_at,
+              '${STRATEGY}', $3::uuid, persisted_at,
               checkpoint_id, book, bootstrap_source, integrity_status
             FROM prepared
             WHERE condition_id IS NOT NULL AND outcome IS NOT NULL
@@ -156,7 +152,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
           SELECT legacy_count, canonical_count, unmapped_count, inserted_count
           FROM accounting
           `,
-          [start, end],
+          [start, end, artifactId],
         );
         const row = result[0];
         if (row.unmapped_count !== '0') {
@@ -166,6 +162,16 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         }
         legacyCount += BigInt(row.legacy_count);
         canonicalCount += BigInt(row.canonical_count);
+        await queryRunner.query(`
+          UPDATE ingester.capture_artifacts
+          SET record_count = $2,
+              minimum_source_timestamp = CASE WHEN $2::bigint = 0 THEN NULL ELSE $3 END,
+              maximum_source_timestamp = CASE WHEN $2::bigint = 0 THEN NULL ELSE $4 END,
+              minimum_received_at = CASE WHEN $2::bigint = 0 THEN NULL ELSE $3 END,
+              maximum_received_at = CASE WHEN $2::bigint = 0 THEN NULL ELSE $4 END,
+              status = 'completed', completed_at = now(), updated_at = now()
+          WHERE artifact_id = $1
+        `, [artifactId, row.legacy_count, start, end]);
         await this.pause();
       }
       if (legacyCount !== canonicalCount) {
@@ -173,17 +179,6 @@ export class ConsolidatePolymarketOrderbooks1788645600000
           `${LEGACY} accounting differs: ${legacyCount} legacy, ${canonicalCount} canonical`,
         );
       }
-
-      await queryRunner.query(`
-        UPDATE ingester.capture_artifacts
-        SET record_count = $1,
-            minimum_source_timestamp = $2,
-            maximum_source_timestamp = $3,
-            minimum_received_at = $2,
-            maximum_received_at = $3,
-            status = 'completed', completed_at = now(), updated_at = now()
-        WHERE artifact_id = '${LEGACY_ARTIFACT}'
-      `, [legacyCount.toString(), bounds[0].minimum, bounds[0].maximum]);
       await this.replaceLegacyWithCompatibilityView(queryRunner);
     } finally {
       await queryRunner.query(
@@ -212,6 +207,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
 
   private async ensureLegacyArtifact(
     queryRunner: QueryRunner,
+    artifactId: string,
     minimum: Date,
     maximum: Date,
   ): Promise<void> {
@@ -222,17 +218,17 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         capture_window_end, record_count, content_sha256, status,
         created_at, updated_at, completed_at
       )
-      SELECT '${LEGACY_ARTIFACT}', '${STRATEGY}', desired_generation,
+      SELECT $3::uuid, '${STRATEGY}', desired_generation,
         config_schema_version,
         encode(digest(convert_to(config::text, 'UTF8'), 'sha256'), 'hex'),
         config, $1::timestamptz, $2::timestamptz + interval '1 microsecond', 0,
         encode(digest(convert_to(
-          'legacy-orderbook-checkpoints:${LEGACY_ARTIFACT}', 'UTF8'
+          'legacy-orderbook-checkpoints:' || $3::text, 'UTF8'
         ), 'sha256'), 'hex'),
         'completed', now(), now(), now()
       FROM ingester.profiles WHERE strategy_key = '${STRATEGY}'
       ON CONFLICT DO NOTHING
-    `, [minimum, maximum]);
+    `, [minimum, maximum, artifactId]);
   }
 
   private async replaceLegacyWithCompatibilityView(
@@ -301,6 +297,14 @@ export class ConsolidatePolymarketOrderbooks1788645600000
       start = end;
     }
     return result;
+  }
+
+  private legacyArtifactId(start: Date): string {
+    const value = createHash('sha256')
+      .update(`polymarket-orderbook-checkpoints:${start.toISOString()}`)
+      .digest('hex')
+      .slice(0, 32);
+    return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
   }
 
   private async pause(): Promise<void> {
