@@ -11,11 +11,13 @@ RUN apt-get update \
 
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
 COPY packages/polymarket-bot/build.rs ./build.rs
+COPY common/proto /common/proto
 
 RUN mkdir -p src/bin \
     && printf 'pub fn placeholder() {}\n' > src/lib.rs \
     && printf 'fn main() {}\n' > src/main.rs \
-    && printf 'fn main() {}\n' > src/bin/derive-clob-creds.rs
+    && printf 'fn main() {}\n' > src/bin/derive-clob-creds.rs \
+    && printf 'fn main() {}\n' > src/bin/fit-chainlink-reliability-calibration.rs
 
 # Keep compiled dependencies in a normal layer so remote BuildKit cache exporters
 # can reuse them on ephemeral GitHub Actions runners.
