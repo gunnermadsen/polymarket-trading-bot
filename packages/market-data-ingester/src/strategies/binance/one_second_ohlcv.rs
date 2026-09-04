@@ -20,7 +20,12 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use tokio::time::{Instant, MissedTickBehavior};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::mpsc,
+    task::JoinHandle,
+};
+use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -47,6 +52,7 @@ const INTERVAL: &str = "1s";
 const DEFAULT_WEBSOCKET_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@kline_1s";
 const DEFAULT_REST_BASE_URL: &str = "https://data-api.binance.vision";
 const MAX_REST_BODY_BYTES: usize = 1_048_576;
+const PERSISTENCE_QUEUE_CAPACITY: usize = 1_024;
 const MAX_PROVIDER_CLOCK_SKEW: chrono::Duration = chrono::Duration::minutes(5);
 const ALLOWED_WEBSOCKET_URLS: [&str; 3] = [
     DEFAULT_WEBSOCKET_URL,
@@ -273,6 +279,130 @@ pub struct BinanceSpotOneSecondOhlcvStrategy {
 struct OhlcvRunState {
     last_open: Option<DateTime<Utc>>,
     artifact: Option<CaptureArtifact>,
+}
+
+struct SocketPump {
+    shutdown: CancellationToken,
+    task: JoinHandle<Result<(), StrategyError>>,
+}
+
+impl Drop for SocketPump {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.task.abort();
+        crate::streaming::set_persistence_queue_depth(STRATEGY_KEY.as_str(), 0);
+    }
+}
+
+async fn pump_websocket<S>(
+    mut socket: WebSocketStream<S>,
+    candle_tx: mpsc::Sender<OneSecondOhlcv>,
+    shutdown: CancellationToken,
+    read_idle_timeout: Duration,
+) -> Result<(), StrategyError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let idle = tokio::time::sleep(read_idle_timeout);
+    tokio::pin!(idle);
+    loop {
+        let next = tokio::select! {
+            _ = shutdown.cancelled() => {
+                let _ = socket.close(None).await;
+                return Ok(());
+            }
+            _ = &mut idle => {
+                return Err(source_error(
+                    "binance_ohlcv_read_idle",
+                    "Binance one-second kline websocket exceeded its read-idle timeout",
+                ));
+            }
+            next = socket.next() => next,
+        };
+        idle.as_mut().reset(Instant::now() + read_idle_timeout);
+        let message = match next {
+            Some(Ok(message)) => message,
+            Some(Err(error)) => {
+                return Err(source_error(
+                    "binance_ohlcv_websocket_read_failed",
+                    format!("failed to read Binance one-second kline websocket: {error}"),
+                ));
+            }
+            None => {
+                return Err(source_error(
+                    "binance_ohlcv_websocket_ended",
+                    "Binance one-second kline websocket ended",
+                ));
+            }
+        };
+        match message {
+            Message::Text(text) => {
+                let received_at = Utc::now();
+                let Some(candle) = OneSecondOhlcv::from_websocket(text.as_ref(), received_at)?
+                else {
+                    continue;
+                };
+                if candle_tx.capacity() == 0 {
+                    crate::streaming::observe_persistence_queue_overflow(STRATEGY_KEY.as_str());
+                    return Err(source_error(
+                        "binance_ohlcv_persistence_backpressure",
+                        "Binance one-second persistence queue reached capacity",
+                    ));
+                }
+                crate::streaming::publish(
+                    STRATEGY_KEY.as_str(),
+                    candle.open_timestamp.timestamp_micros().to_string(),
+                    candle.close_timestamp,
+                    candle
+                        .provider_available_at
+                        .unwrap_or(candle.close_timestamp),
+                    candle.received_at,
+                    candle.payload_sha256.clone(),
+                    true,
+                    &candle,
+                )
+                .await;
+                match candle_tx.try_send(candle) {
+                    Ok(()) => crate::streaming::set_persistence_queue_depth(
+                        STRATEGY_KEY.as_str(),
+                        candle_tx.max_capacity() - candle_tx.capacity(),
+                    ),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        crate::streaming::observe_persistence_queue_overflow(STRATEGY_KEY.as_str());
+                        return Err(source_error(
+                            "binance_ohlcv_persistence_backpressure",
+                            "Binance one-second persistence queue reached capacity",
+                        ));
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                }
+            }
+            Message::Ping(payload) => {
+                crate::streaming::observe_websocket_ping(STRATEGY_KEY.as_str());
+                let started = Instant::now();
+                socket.send(Message::Pong(payload)).await.map_err(|error| {
+                    source_error(
+                        "binance_ohlcv_pong_failed",
+                        format!("failed to answer Binance websocket ping: {error}"),
+                    )
+                })?;
+                crate::streaming::observe_websocket_pong(STRATEGY_KEY.as_str(), started.elapsed());
+            }
+            Message::Pong(_) => {}
+            Message::Close(frame) => {
+                return Err(source_error(
+                    "binance_ohlcv_websocket_closed",
+                    format!("Binance one-second kline websocket closed: {frame:?}"),
+                ));
+            }
+            Message::Binary(_) | Message::Frame(_) => {
+                return Err(source_error(
+                    "binance_ohlcv_unexpected_frame",
+                    "received an unexpected Binance websocket frame",
+                ));
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -628,6 +758,7 @@ impl RealtimeWorkerStrategy for BinanceSpotOneSecondOhlcvStrategy {
                         StrategyErrorKind::TransientSource | StrategyErrorKind::TransientDatabase
                     ) =>
                 {
+                    crate::streaming::observe_source_reconnect(STRATEGY_KEY.as_str(), error.code);
                     if state.last_open != cursor_before_session {
                         reconnect_delay = self.config.reconnect_initial_delay_ms;
                     }
@@ -1338,7 +1469,7 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                 connect_async(&self.config.websocket_url),
             ) => result,
         };
-        let (mut socket, _) = connection
+        let (socket, _) = connection
             .map_err(|_| {
                 source_error(
                     "binance_ohlcv_connect_timeout",
@@ -1356,20 +1487,31 @@ impl BinanceSpotOneSecondOhlcvStrategy {
             last_open_timestamp = ?state.last_open,
             "connected to Binance one-second kline websocket"
         );
+        let (candle_tx, mut candle_rx) = mpsc::channel(PERSISTENCE_QUEUE_CAPACITY);
+        let socket_shutdown = shutdown.child_token();
+        let pump_shutdown = socket_shutdown.clone();
+        let read_idle_timeout = Duration::from_millis(self.config.read_idle_timeout_ms);
+        let socket_task = tokio::spawn(pump_websocket(
+            socket,
+            candle_tx,
+            pump_shutdown,
+            read_idle_timeout,
+        ));
+        let mut socket_pump = SocketPump {
+            shutdown: socket_shutdown,
+            task: socket_task,
+        };
         let mut pending = Vec::<OneSecondOhlcv>::with_capacity(self.config.batch_size);
         let mut flush = tokio::time::interval(Duration::from_millis(self.config.flush_interval_ms));
         flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
         flush.tick().await;
-        let idle = tokio::time::sleep(Duration::from_millis(self.config.read_idle_timeout_ms));
-        tokio::pin!(idle);
 
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     let flush_result = self
-                        .persist_candles(state, std::mem::take(&mut pending))
+                        .persist_candles_observed(state, std::mem::take(&mut pending))
                         .await;
-                    let _ = socket.close(None).await;
                     if let Err(error) = flush_result {
                         if error.kind != StrategyErrorKind::LeaseLost {
                             return Err(error);
@@ -1378,107 +1520,78 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                     return Err(shutdown_error());
                 }
                 _ = flush.tick() => {
-                    self.persist_candles(state, std::mem::take(&mut pending)).await?;
+                    self.persist_candles_observed(state, std::mem::take(&mut pending)).await?;
                 }
-                _ = &mut idle => {
-                    self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                    return Err(source_error(
-                        "binance_ohlcv_read_idle",
-                        "Binance one-second kline websocket exceeded its read-idle timeout",
-                    ));
-                }
-                next = socket.next() => {
-                    idle.as_mut().reset(
-                        Instant::now() + Duration::from_millis(self.config.read_idle_timeout_ms),
+                Some(candle) = candle_rx.recv() => {
+                    crate::streaming::set_persistence_queue_depth(
+                        STRATEGY_KEY.as_str(),
+                        candle_rx.len(),
                     );
-                    let message = match next {
-                        Some(Ok(message)) => message,
-                        Some(Err(error)) => {
-                            self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                            return Err(source_error(
-                                "binance_ohlcv_websocket_read_failed",
-                                format!("failed to read Binance one-second kline websocket: {error}"),
-                            ));
-                        }
-                        None => {
-                            self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                            return Err(source_error(
-                                "binance_ohlcv_websocket_ended",
-                                "Binance one-second kline websocket ended",
-                            ));
-                        }
-                    };
-                    match message {
-                        Message::Text(text) => {
-                            let received_at = Utc::now();
-                            let candle = match OneSecondOhlcv::from_websocket(text.as_ref(), received_at) {
-                                Ok(Some(candle)) => candle,
-                                Ok(None) => continue,
-                                Err(error) => {
-                                    self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                                    return Err(error);
-                                }
-                            };
-                            crate::streaming::publish(
-                                STRATEGY_KEY.as_str(),
-                                candle.open_timestamp.timestamp_micros().to_string(),
-                                candle.close_timestamp,
-                                candle.provider_available_at.unwrap_or(candle.close_timestamp),
-                                candle.received_at,
-                                candle.payload_sha256.clone(),
-                                true,
-                                &candle,
-                            ).await;
-                            let last_seen = pending
-                                .last()
-                                .map(|pending| pending.open_timestamp)
-                                .or(state.last_open);
-                            if let Some(last_seen) = last_seen {
-                                let expected = last_seen + chrono::Duration::seconds(1);
-                                if candle.open_timestamp > expected {
-                                    self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                                    self.repair_gap(
-                                        state,
-                                        expected,
-                                        candle.open_timestamp - chrono::Duration::seconds(1),
-                                        shutdown,
-                                    )
-                                    .await?;
-                                }
-                            }
-                            pending.push(candle);
-                            if pending.len() >= self.config.batch_size {
-                                self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                            }
-                        }
-                        Message::Ping(payload) => {
-                            if let Err(error) = socket.send(Message::Pong(payload)).await {
-                                self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                                return Err(source_error(
-                                    "binance_ohlcv_pong_failed",
-                                    format!("failed to answer Binance websocket ping: {error}"),
-                                ));
-                            }
-                        }
-                        Message::Pong(_) => {}
-                        Message::Close(frame) => {
-                            self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                            return Err(source_error(
-                                "binance_ohlcv_websocket_closed",
-                                format!("Binance one-second kline websocket closed: {frame:?}"),
-                            ));
-                        }
-                        Message::Binary(_) | Message::Frame(_) => {
-                            self.persist_candles(state, std::mem::take(&mut pending)).await?;
-                            return Err(source_error(
-                                "binance_ohlcv_unexpected_frame",
-                                "received an unexpected Binance websocket frame",
-                            ));
-                        }
+                    self.accept_live_candle(state, &mut pending, candle, shutdown).await?;
+                }
+                pump_result = &mut socket_pump.task => {
+                    while let Ok(candle) = candle_rx.try_recv() {
+                        self.accept_live_candle(state, &mut pending, candle, shutdown).await?;
                     }
+                    crate::streaming::set_persistence_queue_depth(STRATEGY_KEY.as_str(), 0);
+                    self.persist_candles_observed(state, std::mem::take(&mut pending)).await?;
+                    return match pump_result {
+                        Ok(result) => result,
+                        Err(error) => Err(source_error(
+                            "binance_ohlcv_socket_task_failed",
+                            format!("Binance one-second socket task failed: {error}"),
+                        )),
+                    };
                 }
             }
         }
+    }
+
+    async fn accept_live_candle(
+        &self,
+        state: &mut OhlcvRunState,
+        pending: &mut Vec<OneSecondOhlcv>,
+        candle: OneSecondOhlcv,
+        shutdown: &CancellationToken,
+    ) -> Result<(), StrategyError> {
+        let last_seen = pending
+            .last()
+            .map(|pending| pending.open_timestamp)
+            .or(state.last_open);
+        if let Some(last_seen) = last_seen {
+            let expected = last_seen + chrono::Duration::seconds(1);
+            if candle.open_timestamp > expected {
+                self.persist_candles_observed(state, std::mem::take(pending))
+                    .await?;
+                self.repair_gap(
+                    state,
+                    expected,
+                    candle.open_timestamp - chrono::Duration::seconds(1),
+                    shutdown,
+                )
+                .await?;
+            }
+        }
+        pending.push(candle);
+        if pending.len() >= self.config.batch_size {
+            self.persist_candles_observed(state, std::mem::take(pending))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn persist_candles_observed(
+        &self,
+        state: &mut OhlcvRunState,
+        candles: Vec<OneSecondOhlcv>,
+    ) -> Result<(), StrategyError> {
+        if candles.is_empty() {
+            return Ok(());
+        }
+        let started = Instant::now();
+        let result = self.persist_candles(state, candles).await;
+        crate::streaming::observe_persistence(STRATEGY_KEY.as_str(), started.elapsed());
+        result
     }
 
     async fn recover_before_connect(
@@ -2083,6 +2196,8 @@ fn shutdown_error() -> StrategyError {
 
 #[cfg(test)]
 mod tests {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
     use super::*;
 
     const CLOSED_WEBSOCKET_FIXTURE: &str =
@@ -2091,6 +2206,49 @@ mod tests {
         include_str!("../../../tests/fixtures/binance/one_second_ohlcv_websocket_open_v1.json");
     const REST_FIXTURE: &str =
         include_str!("../../../tests/fixtures/binance/one_second_ohlcv_rest_v1.json");
+
+    #[tokio::test]
+    async fn websocket_pump_answers_ping_while_persistence_is_not_draining() {
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (candle_tx, _candle_rx) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        let pump = tokio::spawn(pump_websocket(
+            client,
+            candle_tx,
+            shutdown.clone(),
+            Duration::from_secs(5),
+        ));
+
+        server
+            .send(Message::Text(CLOSED_WEBSOCKET_FIXTURE.into()))
+            .await
+            .expect("send closed candle");
+        server
+            .send(Message::Ping(vec![1, 2, 3, 4].into()))
+            .await
+            .expect("send ping");
+
+        let pong = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                match server.next().await {
+                    Some(Ok(Message::Pong(payload))) => break payload,
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => panic!("server websocket failed: {error}"),
+                    None => panic!("server websocket ended before pong"),
+                }
+            }
+        })
+        .await
+        .expect("socket pump must not wait for persistence before answering ping");
+        assert_eq!(pong.as_ref(), &[1, 2, 3, 4]);
+
+        shutdown.cancel();
+        pump.await
+            .expect("socket pump task")
+            .expect("socket pump shutdown");
+    }
 
     #[test]
     fn default_config_matches_the_bootstrap_profile() {

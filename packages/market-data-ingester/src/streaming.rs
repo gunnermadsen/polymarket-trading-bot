@@ -48,6 +48,13 @@ pub struct StreamingMetrics {
     subscribers: Mutex<BTreeMap<String, i64>>,
     dropped: Mutex<BTreeMap<String, u64>>,
     last_published_micros: Mutex<BTreeMap<String, i64>>,
+    source_reconnects: Mutex<BTreeMap<(String, String), u64>>,
+    websocket_pings: Mutex<BTreeMap<String, u64>>,
+    websocket_pongs: Mutex<BTreeMap<String, u64>>,
+    websocket_pong_latency_micros: Mutex<BTreeMap<String, u64>>,
+    persistence_latency_micros: Mutex<BTreeMap<String, u64>>,
+    persistence_queue_depth: Mutex<BTreeMap<String, usize>>,
+    persistence_queue_overflows: Mutex<BTreeMap<String, u64>>,
 }
 
 static PUBLISHER: OnceLock<Publisher> = OnceLock::new();
@@ -181,6 +188,86 @@ pub async fn publish<T: Serialize>(
         {
             warn!(product_key, %error, "failed to encode canonical market-data event");
         }
+    }
+}
+
+pub fn observe_source_reconnect(product_key: &str, reason: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut reconnects = publisher
+            .metrics
+            .source_reconnects
+            .lock()
+            .expect("metrics lock");
+        *reconnects
+            .entry((product_key.to_owned(), reason.to_owned()))
+            .or_insert(0) += 1;
+    }
+}
+
+pub fn observe_websocket_ping(product_key: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut pings = publisher
+            .metrics
+            .websocket_pings
+            .lock()
+            .expect("metrics lock");
+        *pings.entry(product_key.to_owned()).or_insert(0) += 1;
+    }
+}
+
+pub fn observe_websocket_pong(product_key: &str, latency: Duration) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut pongs = publisher
+            .metrics
+            .websocket_pongs
+            .lock()
+            .expect("metrics lock");
+        *pongs.entry(product_key.to_owned()).or_insert(0) += 1;
+        publisher
+            .metrics
+            .websocket_pong_latency_micros
+            .lock()
+            .expect("metrics lock")
+            .insert(
+                product_key.to_owned(),
+                u64::try_from(latency.as_micros()).unwrap_or(u64::MAX),
+            );
+    }
+}
+
+pub fn observe_persistence(product_key: &str, latency: Duration) {
+    if let Some(publisher) = PUBLISHER.get() {
+        publisher
+            .metrics
+            .persistence_latency_micros
+            .lock()
+            .expect("metrics lock")
+            .insert(
+                product_key.to_owned(),
+                u64::try_from(latency.as_micros()).unwrap_or(u64::MAX),
+            );
+    }
+}
+
+pub fn set_persistence_queue_depth(product_key: &str, depth: usize) {
+    if let Some(publisher) = PUBLISHER.get() {
+        publisher
+            .metrics
+            .persistence_queue_depth
+            .lock()
+            .expect("metrics lock")
+            .insert(product_key.to_owned(), depth);
+    }
+}
+
+pub fn observe_persistence_queue_overflow(product_key: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut overflows = publisher
+            .metrics
+            .persistence_queue_overflows
+            .lock()
+            .expect("metrics lock");
+        *overflows.entry(product_key.to_owned()).or_insert(0) += 1;
     }
 }
 
@@ -321,6 +408,22 @@ impl StreamingMetrics {
         let subscriptions = self.subscribers.lock().expect("metrics lock");
         let dropped = self.dropped.lock().expect("metrics lock");
         let last = self.last_published_micros.lock().expect("metrics lock");
+        let reconnects = self.source_reconnects.lock().expect("metrics lock");
+        let pings = self.websocket_pings.lock().expect("metrics lock");
+        let pongs = self.websocket_pongs.lock().expect("metrics lock");
+        let pong_latency = self
+            .websocket_pong_latency_micros
+            .lock()
+            .expect("metrics lock");
+        let persistence_latency = self
+            .persistence_latency_micros
+            .lock()
+            .expect("metrics lock");
+        let queue_depth = self.persistence_queue_depth.lock().expect("metrics lock");
+        let queue_overflows = self
+            .persistence_queue_overflows
+            .lock()
+            .expect("metrics lock");
         let mut out = String::from(
             "# HELP ingester_stream_published_total Canonical events published to the worker stream.\n# TYPE ingester_stream_published_total counter\n",
         );
@@ -349,6 +452,84 @@ impl StreamingMetrics {
                 *value as f64 / 1_000_000.0
             ));
         }
+        out.push_str("# HELP ingester_source_reconnects_total Provider source reconnects by bounded reason code.\n# TYPE ingester_source_reconnects_total counter\n");
+        for ((key, reason), value) in reconnects.iter() {
+            out.push_str(&format!(
+                "ingester_source_reconnects_total{{product=\"{key}\",reason=\"{reason}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_websocket_pings_total Provider websocket PING frames received.\n# TYPE ingester_source_websocket_pings_total counter\n");
+        for (key, value) in pings.iter() {
+            out.push_str(&format!(
+                "ingester_source_websocket_pings_total{{product=\"{key}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_websocket_pongs_total Provider websocket PONG frames sent.\n# TYPE ingester_source_websocket_pongs_total counter\n");
+        for (key, value) in pongs.iter() {
+            out.push_str(&format!(
+                "ingester_source_websocket_pongs_total{{product=\"{key}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_websocket_pong_latency_seconds Latest provider PING-to-PONG latency.\n# TYPE ingester_source_websocket_pong_latency_seconds gauge\n");
+        for (key, value) in pong_latency.iter() {
+            out.push_str(&format!(
+                "ingester_source_websocket_pong_latency_seconds{{product=\"{key}\"}} {}\n",
+                *value as f64 / 1_000_000.0
+            ));
+        }
+        out.push_str("# HELP ingester_source_persistence_latency_seconds Latest realtime persistence batch latency.\n# TYPE ingester_source_persistence_latency_seconds gauge\n");
+        for (key, value) in persistence_latency.iter() {
+            out.push_str(&format!(
+                "ingester_source_persistence_latency_seconds{{product=\"{key}\"}} {}\n",
+                *value as f64 / 1_000_000.0
+            ));
+        }
+        out.push_str("# HELP ingester_source_persistence_queue_depth Realtime events awaiting persistence.\n# TYPE ingester_source_persistence_queue_depth gauge\n");
+        for (key, value) in queue_depth.iter() {
+            out.push_str(&format!(
+                "ingester_source_persistence_queue_depth{{product=\"{key}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_persistence_queue_overflows_total Realtime persistence handoff overflows.\n# TYPE ingester_source_persistence_queue_overflows_total counter\n");
+        for (key, value) in queue_overflows.iter() {
+            out.push_str(&format!(
+                "ingester_source_persistence_queue_overflows_total{{product=\"{key}\"}} {value}\n"
+            ));
+        }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_transport_and_persistence_health_metrics() {
+        let metrics = StreamingMetrics::default();
+        metrics
+            .source_reconnects
+            .lock()
+            .expect("metrics lock")
+            .insert(("product".to_owned(), "read_idle".to_owned()), 2);
+        metrics
+            .websocket_pong_latency_micros
+            .lock()
+            .expect("metrics lock")
+            .insert("product".to_owned(), 1_500);
+        metrics
+            .persistence_queue_depth
+            .lock()
+            .expect("metrics lock")
+            .insert("product".to_owned(), 7);
+
+        let rendered = metrics.render();
+        assert!(rendered.contains(
+            "ingester_source_reconnects_total{product=\"product\",reason=\"read_idle\"} 2"
+        ));
+        assert!(rendered.contains(
+            "ingester_source_websocket_pong_latency_seconds{product=\"product\"} 0.0015"
+        ));
+        assert!(rendered.contains("ingester_source_persistence_queue_depth{product=\"product\"} 7"));
     }
 }
