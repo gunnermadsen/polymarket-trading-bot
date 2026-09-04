@@ -101,7 +101,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
                   'latest_valid_subscribed_market_book_at_aligned_wall_clock_slot',
                 'market_interval_seconds', 300,
                 'sample_interval_ms', 1000,
-                'top_n', greatest(1, bid_depth, ask_depth),
+                'top_n', least(1000, greatest(1, bid_depth, ask_depth)),
                 'legacy_event_driven_checkpoint', true
               ) AS policy
             FROM source_rows
@@ -193,6 +193,35 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         ADD COLUMN IF NOT EXISTS legacy_source_payload jsonb,
         ADD COLUMN IF NOT EXISTS bootstrap_source text,
         ADD COLUMN IF NOT EXISTS integrity_status text NOT NULL DEFAULT 'ok';
+
+      ALTER TABLE ${TARGET}
+        DROP CONSTRAINT IF EXISTS
+          chk_market_data_polymarket_btc_five_minute_orderbook_prices,
+        DROP CONSTRAINT IF EXISTS
+          chk_market_data_polymarket_btc_five_minute_orderbook_book;
+      ALTER TABLE ${TARGET}
+        ADD CONSTRAINT
+          chk_market_data_polymarket_btc_five_minute_orderbook_prices
+        CHECK (
+          legacy_checkpoint_id IS NOT NULL OR (
+            tick_size > 0 AND tick_size < 1
+            AND (best_bid IS NULL OR (best_bid > 0 AND best_bid < 1))
+            AND (best_ask IS NULL OR (best_ask > 0 AND best_ask < 1))
+            AND (best_bid IS NULL OR best_ask IS NULL OR best_bid < best_ask)
+          )
+        ) NOT VALID,
+        ADD CONSTRAINT
+          chk_market_data_polymarket_btc_five_minute_orderbook_book
+        CHECK (
+          legacy_checkpoint_id IS NOT NULL OR (
+            octet_length(bids::text) <= 262144
+            AND octet_length(asks::text) <= 262144
+            AND market_data.is_valid_polymarket_btc_five_minute_book(
+              bids, asks, bid_depth, ask_depth, best_bid, best_ask,
+              (sampling_policy ->> 'top_n')::integer
+            )
+          )
+        ) NOT VALID;
     `);
   }
 
