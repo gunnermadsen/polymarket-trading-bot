@@ -19,13 +19,13 @@ use crate::ingestion::job::{
     ArtifactCompletion, ArtifactDisposition, ArtifactSpec, BackfillArtifact,
     BackfillArtifactStatus, BackfillCheckpoint, BackfillEventLevel, BackfillFailureKind,
     BackfillJob, BackfillJobEvent, BackfillJobStatus, BackfillJobSummary, BackfillProgress,
-    BatchWriteResult, BinanceAggregateTradeRecord, BinanceBtcusdtOpenInterestRecord,
-    BinanceL2OneSecondFeature, BinanceOneSecondKlineRecord, BtcExecutionSnapshot,
-    BtcIntervalMarket, BtcOrderbookArchiveEvent, BtcOrderbookMarketScope, BtcOutcome,
-    BtcReferenceFact, BtcResolutionCandidate, ChainlinkBtcusdArchiveTick,
-    ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey, PmdataChainlinkBtcusdRefpriceRecord,
-    PmdataChainlinkBtcusdTwapRecord, PolygonChainlinkBtcusdOracleRound, PreparedArtifact,
-    TrainingReadiness, ValidatedBackfillRequest, WorkerControl,
+    BatchWriteResult, BinanceAggregateTradeRecord, BinanceL2OneSecondFeature,
+    BinanceOneSecondKlineRecord, BtcExecutionSnapshot, BtcIntervalMarket, BtcOrderbookArchiveEvent,
+    BtcOrderbookMarketScope, BtcOutcome, BtcReferenceFact, BtcResolutionCandidate,
+    ChainlinkBtcusdArchiveTick, ChainlinkBtcusdOneMinuteCandle, ClaimedJob, IngesterKey,
+    PmdataChainlinkBtcusdRefpriceRecord, PmdataChainlinkBtcusdTwapRecord,
+    PolygonChainlinkBtcusdOracleRound, PreparedArtifact, TrainingReadiness,
+    ValidatedBackfillRequest, WorkerControl,
 };
 
 const MAX_DATABASE_BATCH_ROWS: usize = 4_000;
@@ -2071,78 +2071,6 @@ impl IngestionRepository {
         Ok(existing.into_iter().collect())
     }
 
-    pub async fn insert_binance_open_interest_batch(
-        &self,
-        claim: &ClaimedJob,
-        artifact_id: Uuid,
-        records: &[BinanceBtcusdtOpenInterestRecord],
-    ) -> Result<BatchWriteResult> {
-        if records.is_empty() {
-            return Ok(BatchWriteResult::default());
-        }
-        if records.len() > MAX_DATABASE_BATCH_ROWS {
-            bail!("Binance open-interest batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
-        }
-        validate_binance_open_interest_batch(records)?;
-        let mut tx = self.pool.begin().await?;
-        require_active_lease(&mut tx, claim).await?;
-        require_writable_artifact(&mut tx, claim, artifact_id).await?;
-        let timestamps = records
-            .iter()
-            .map(|record| record.source_timestamp)
-            .collect::<Vec<_>>();
-        let existing = sqlx::query_as::<_, ExistingBinanceOpenInterestRow>(
-            r#"
-            SELECT symbol, source_timestamp, period_seconds, sum_open_interest,
-              sum_open_interest_value, cmc_circulating_supply, artifact_id
-            FROM polymarket.binance_btcusdt_five_minute_open_interest
-            WHERE symbol = $1 AND source_timestamp = ANY($2)
-            "#,
-        )
-        .bind(&records[0].symbol)
-        .bind(&timestamps)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to inspect existing Binance open-interest rows")?;
-        for stored in &existing {
-            let candidate = records
-                .iter()
-                .find(|record| record.source_timestamp == stored.source_timestamp)
-                .context("stored Binance open-interest identity was absent from candidate batch")?;
-            if !stored.same_as(candidate, artifact_id) {
-                bail!(
-                    "immutable Binance open-interest conflict for {}:{}",
-                    stored.symbol,
-                    stored.source_timestamp
-                );
-            }
-        }
-
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.binance_btcusdt_five_minute_open_interest (symbol, \
-             source_timestamp, period_seconds, sum_open_interest, sum_open_interest_value, \
-             cmc_circulating_supply, artifact_id) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(&record.symbol)
-                .push_bind(record.source_timestamp)
-                .push_bind(record.period_seconds)
-                .push_bind(record.sum_open_interest)
-                .push_bind(record.sum_open_interest_value)
-                .push_bind(record.cmc_circulating_supply)
-                .push_bind(artifact_id);
-        });
-        query.push(" ON CONFLICT (symbol, source_timestamp) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist Binance open-interest batch")?
-            .rows_affected();
-        tx.commit().await?;
-        batch_write_result(records.len(), inserted, "Binance open-interest")
-    }
-
     pub async fn insert_polygon_chainlink_oracle_round_batch(
         &self,
         claim: &ClaimedJob,
@@ -4031,17 +3959,6 @@ struct ExistingChainlinkCandleRow {
 }
 
 #[derive(Debug, FromRow)]
-struct ExistingBinanceOpenInterestRow {
-    symbol: String,
-    source_timestamp: DateTime<Utc>,
-    period_seconds: i32,
-    sum_open_interest: Decimal,
-    sum_open_interest_value: Decimal,
-    cmc_circulating_supply: Option<Decimal>,
-    artifact_id: Uuid,
-}
-
-#[derive(Debug, FromRow)]
 struct ExistingPolygonChainlinkOracleRoundRow {
     chain_id: i64,
     feed_proxy_address: String,
@@ -4137,18 +4054,6 @@ impl ExistingChainlinkCandleRow {
             && self.close_price == row.close_price
             && self.volume == row.volume
             && self.volume_supported == row.volume_supported
-            && self.artifact_id == artifact_id
-    }
-}
-
-impl ExistingBinanceOpenInterestRow {
-    fn same_as(&self, row: &BinanceBtcusdtOpenInterestRecord, artifact_id: Uuid) -> bool {
-        self.symbol == row.symbol
-            && self.source_timestamp == row.source_timestamp
-            && self.period_seconds == row.period_seconds
-            && self.sum_open_interest == row.sum_open_interest
-            && self.sum_open_interest_value == row.sum_open_interest_value
-            && self.cmc_circulating_supply == row.cmc_circulating_supply
             && self.artifact_id == artifact_id
     }
 }
@@ -4639,30 +4544,6 @@ fn validate_chainlink_candle_batch(records: &[ChainlinkBtcusdOneMinuteCandle]) -
             bail!("Chainlink candle timestamps must be strictly increasing within a batch");
         }
         previous = Some(record.open_timestamp);
-    }
-    Ok(())
-}
-
-fn validate_binance_open_interest_batch(
-    records: &[BinanceBtcusdtOpenInterestRecord],
-) -> Result<()> {
-    let mut previous = None;
-    for record in records {
-        if record.symbol != "BTCUSDT"
-            || record.period_seconds != 300
-            || record.source_timestamp.timestamp().rem_euclid(300) != 0
-            || record.sum_open_interest < Decimal::ZERO
-            || record.sum_open_interest_value < Decimal::ZERO
-            || record
-                .cmc_circulating_supply
-                .is_some_and(|value| value < Decimal::ZERO)
-        {
-            bail!("invalid Binance BTCUSDT five-minute open-interest record");
-        }
-        if previous.is_some_and(|timestamp| record.source_timestamp <= timestamp) {
-            bail!("Binance open-interest timestamps must be strictly increasing within a batch");
-        }
-        previous = Some(record.source_timestamp);
     }
     Ok(())
 }

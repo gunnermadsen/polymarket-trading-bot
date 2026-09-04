@@ -59,6 +59,38 @@ pub struct BinanceBtcusdtOpenInterestRecord {
     pub sum_open_interest_value: Decimal,
     pub cmc_circulating_supply: Option<Decimal>,
 }
+
+impl BinanceBtcusdtOpenInterestRecord {
+    pub fn canonical_source_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "CMCCirculatingSupply": self
+                .cmc_circulating_supply
+                .map(|value| value.normalize().to_string()),
+            "sumOpenInterest": self.sum_open_interest.normalize().to_string(),
+            "sumOpenInterestValue": self.sum_open_interest_value.normalize().to_string(),
+            "symbol": self.symbol,
+            "timestamp": self.source_timestamp.timestamp_millis(),
+        })
+    }
+
+    pub fn canonical_payload_sha256(&self) -> String {
+        let canonical = serde_json::json!({
+            "cmc_circulating_supply": self
+                .cmc_circulating_supply
+                .map(|value| value.normalize().to_string()),
+            "sum_open_interest": self.sum_open_interest.normalize().to_string(),
+            "sum_open_interest_value": self.sum_open_interest_value.normalize().to_string(),
+            "symbol": self.symbol,
+            "timestamp": self.source_timestamp.timestamp_millis(),
+        });
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&canonical).expect("canonical open-interest JSON serializes")
+            )
+        )
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainlinkBtcusdArchiveTick {
     pub feed_id: String,
@@ -500,6 +532,7 @@ pub fn contract_for(key: DatasetKey) -> Option<&'static DatasetContract> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::collections::BTreeSet;
 
     #[test]
@@ -530,5 +563,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn open_interest_payload_hash_is_stable_across_realtime_and_backfill() {
+        let record = BinanceBtcusdtOpenInterestRecord {
+            symbol: "BTCUSDT".to_owned(),
+            source_timestamp: Utc.timestamp_millis_opt(1_783_036_800_000).unwrap(),
+            period_seconds: 300,
+            sum_open_interest: "106938.477".parse().unwrap(),
+            sum_open_interest_value: "6581058037.6662".parse().unwrap(),
+            cmc_circulating_supply: Some("20050843".parse().unwrap()),
+        };
+        assert_eq!(
+            record.canonical_payload_sha256(),
+            "858426ba35c3dcef2b7538b76cf1eaa3940bd239c649cffeaf0a25a3ff8c8b3d"
+        );
     }
 }

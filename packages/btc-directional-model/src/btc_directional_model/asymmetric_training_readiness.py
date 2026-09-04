@@ -222,7 +222,7 @@ CANONICAL_SOURCE_CONTRACT: dict[str, Any] = {
         "polymarket.chainlink_btcusd_archive_ticks": (
             "historical local receipt availability is not proven"
         ),
-        "polymarket.binance_btcusdt_five_minute_open_interest": (
+        "market_data.binance_futures_btcusdt_open_interest": (
             "not included in the approved asymmetric-value candidate matrix"
         ),
         "market_data.binance_spot_btcusdt_aggregate_trades": (

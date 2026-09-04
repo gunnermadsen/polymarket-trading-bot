@@ -259,6 +259,24 @@ fn market_data_contracts_have_one_authoritative_definition() {
 }
 
 #[test]
+fn binance_open_interest_strategies_share_the_canonical_table() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let realtime =
+        fs::read_to_string(root.join("src/strategies/binance/futures_open_interest.rs")).unwrap();
+    let backfill = fs::read_to_string(
+        root.join("src/strategies/binance/five_minute_open_interest_backfill.rs"),
+    )
+    .unwrap();
+    let canonical = "market_data.binance_futures_btcusdt_open_interest";
+    let legacy = "polymarket.binance_btcusdt_five_minute_open_interest";
+
+    assert!(realtime.contains(canonical));
+    assert!(backfill.contains(canonical));
+    assert!(!realtime.contains(legacy));
+    assert!(!backfill.contains(legacy));
+}
+
+#[test]
 fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() {
     let root = repository_root();
     let repository = fs::read_to_string(

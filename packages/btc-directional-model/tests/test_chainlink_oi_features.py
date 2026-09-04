@@ -330,6 +330,7 @@ def test_external_source_sql_is_completed_bounded_and_read_only() -> None:
     assert "chainlink_btcusd_one_minute_candles" in candles
     assert "candle.close_timestamp" in candles
     assert "volume" not in candles
-    assert "binance_btcusdt_five_minute_open_interest" in interest
+    assert "market_data.binance_futures_btcusdt_open_interest" in interest
+    assert "polymarket.binance_btcusdt_five_minute_open_interest" not in interest
     assert "interest.source_timestamp < %(range_end)s" in interest
     assert "interest.period_seconds = 300" in interest

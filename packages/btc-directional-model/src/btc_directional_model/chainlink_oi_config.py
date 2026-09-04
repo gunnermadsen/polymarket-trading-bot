@@ -489,7 +489,7 @@ def _validate_sources(sources: ChainlinkOiSourceConfig) -> None:
         "polymarket.chainlink_btcusd_archive_ticks",
         "polymarket.polygon_chainlink_btcusd_oracle_rounds",
         "polymarket.chainlink_btcusd_one_minute_candles",
-        "polymarket.binance_btcusdt_five_minute_open_interest",
+        "market_data.binance_futures_btcusdt_open_interest",
         "polymarket.btc_market_execution_snapshots",
     )
     actual_tables = (

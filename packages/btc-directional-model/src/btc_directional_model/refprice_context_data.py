@@ -56,10 +56,7 @@ SOURCE_RELATIONS = {
         "polymarket.chainlink_btcusd_one_minute_candles",
         "market_data.chainlink_btcusd_one_minute_candles",
     ),
-    "open_interest": (
-        "polymarket.binance_btcusdt_five_minute_open_interest",
-        "market_data.binance_futures_btcusdt_open_interest",
-    ),
+    "open_interest": ("market_data.binance_futures_btcusdt_open_interest",),
     "aggregate_trades": (
         "market_data.binance_spot_btcusdt_aggregate_trades",
     ),

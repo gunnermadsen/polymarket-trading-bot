@@ -5,7 +5,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use reqwest::{Client, Url};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use tokio::time::MissedTickBehavior;
@@ -15,8 +17,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        CaptureArtifact, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
-        StrategyError, StrategyErrorKind,
+        BinanceBtcusdtOpenInterestRecord, CaptureArtifact, IngesterProfile, IngesterStrategyKey,
+        RealtimeWorkerStrategy, StrategyError, StrategyErrorKind,
     },
     persistence::{
         ArtifactBatch, ArtifactRepository, GapRepository, NewCaptureArtifact, NewDataGap,
@@ -1367,15 +1369,18 @@ fn canonical_payload_sha256(
     open_interest_value: Decimal,
     circulating_supply: Option<Decimal>,
 ) -> String {
-    let canonical = json!({
-        "cmc_circulating_supply": circulating_supply.map(|value| value.normalize().to_string()),
-        "sum_open_interest": open_interest.normalize().to_string(),
-        "sum_open_interest_value": open_interest_value.normalize().to_string(),
-        "symbol": symbol,
-        "timestamp": timestamp,
-    });
-    let encoded = serde_json::to_vec(&canonical).expect("canonical JSON values serialize");
-    hex_digest(Sha256::digest(encoded))
+    BinanceBtcusdtOpenInterestRecord {
+        symbol: symbol.to_owned(),
+        source_timestamp: Utc
+            .timestamp_millis_opt(timestamp)
+            .single()
+            .expect("validated provider timestamp is representable"),
+        period_seconds: PERIOD_SECONDS as i32,
+        sum_open_interest: open_interest,
+        sum_open_interest_value: open_interest_value,
+        cmc_circulating_supply: circulating_supply,
+    }
+    .canonical_payload_sha256()
 }
 
 fn parse_nonnegative_decimal(name: &str, value: &str) -> Result<Decimal, StrategyError> {

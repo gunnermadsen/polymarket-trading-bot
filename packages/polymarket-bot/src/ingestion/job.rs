@@ -76,7 +76,6 @@ pub enum IngesterKey {
     PolymarketBtcFiveMinuteExecutionSnapshots,
     ChainlinkBtcusdReferenceTicks,
     ChainlinkBtcusdOneMinuteCandles,
-    BinanceBtcusdtFiveMinuteOpenInterest,
     PolygonChainlinkBtcusdOracleRounds,
     #[serde(rename = "pmdata_chainlink_btcusd_refprice")]
     PmdataChainlinkBtcusdRefprice,
@@ -87,7 +86,7 @@ pub enum IngesterKey {
 }
 
 impl IngesterKey {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 15] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
@@ -99,14 +98,13 @@ impl IngesterKey {
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
         Self::ChainlinkBtcusdOneMinuteCandles,
-        Self::BinanceBtcusdtFiveMinuteOpenInterest,
         Self::PolygonChainlinkBtcusdOracleRounds,
         Self::PmdataChainlinkBtcusdRefprice,
         Self::PmdataChainlinkBtcusdTwap30s,
         Self::PmdataChainlinkBtcusdTwap60s,
     ];
 
-    pub const DEFAULT_WORKER: [Self; 13] = [
+    pub const DEFAULT_WORKER: [Self; 12] = [
         Self::BtcFiveMinuteMarkets,
         Self::BtcFiveMinuteResolutions,
         Self::BinanceBtcusdtAggTrades,
@@ -118,7 +116,6 @@ impl IngesterKey {
         Self::PolymarketBtcFiveMinuteExecutionSnapshots,
         Self::ChainlinkBtcusdReferenceTicks,
         Self::ChainlinkBtcusdOneMinuteCandles,
-        Self::BinanceBtcusdtFiveMinuteOpenInterest,
         Self::PolygonChainlinkBtcusdOracleRounds,
     ];
 
@@ -141,9 +138,6 @@ impl IngesterKey {
             }
             Self::ChainlinkBtcusdReferenceTicks => "chainlink_btcusd_reference_ticks",
             Self::ChainlinkBtcusdOneMinuteCandles => "chainlink_btcusd_one_minute_candles",
-            Self::BinanceBtcusdtFiveMinuteOpenInterest => {
-                "binance_btcusdt_five_minute_open_interest"
-            }
             Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
             Self::PmdataChainlinkBtcusdRefprice => "pmdata_chainlink_btcusd_refprice",
             Self::PmdataChainlinkBtcusdTwap30s => "pmdata_chainlink_btcusd_twap_30s",
@@ -171,7 +165,6 @@ impl IngesterKey {
             | Self::BinanceBtcusdtOneSecondKlines
             | Self::ChainlinkBtcusdReferenceTicks
             | Self::ChainlinkBtcusdOneMinuteCandles
-            | Self::BinanceBtcusdtFiveMinuteOpenInterest
             | Self::PolygonChainlinkBtcusdOracleRounds
             | Self::PmdataChainlinkBtcusdRefprice
             | Self::PmdataChainlinkBtcusdTwap30s
@@ -220,9 +213,6 @@ impl FromStr for IngesterKey {
             }
             "chainlink_btcusd_reference_ticks" => Ok(Self::ChainlinkBtcusdReferenceTicks),
             "chainlink_btcusd_one_minute_candles" => Ok(Self::ChainlinkBtcusdOneMinuteCandles),
-            "binance_btcusdt_five_minute_open_interest" => {
-                Ok(Self::BinanceBtcusdtFiveMinuteOpenInterest)
-            }
             "polygon_chainlink_btcusd_oracle_rounds" => {
                 Ok(Self::PolygonChainlinkBtcusdOracleRounds)
             }
@@ -1022,16 +1012,6 @@ pub struct ChainlinkBtcusdOneMinuteCandle {
     pub close_price: Decimal,
     pub volume: Option<Decimal>,
     pub volume_supported: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinanceBtcusdtOpenInterestRecord {
-    pub symbol: String,
-    pub source_timestamp: DateTime<Utc>,
-    pub period_seconds: i32,
-    pub sum_open_interest: Decimal,
-    pub sum_open_interest_value: Decimal,
-    pub cmc_circulating_supply: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

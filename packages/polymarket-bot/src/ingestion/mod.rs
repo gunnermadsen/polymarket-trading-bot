@@ -1,5 +1,4 @@
 pub mod binance_archive;
-pub mod binance_open_interest;
 pub mod chainlink_archive;
 pub mod chainlink_candlestick;
 pub mod cryptohft_binance_l2;
