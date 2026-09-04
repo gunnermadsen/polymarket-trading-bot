@@ -327,6 +327,32 @@ fn binance_open_interest_strategies_share_the_canonical_table() {
 }
 
 #[test]
+fn polymarket_orderbooks_have_one_final_physical_table_contract() {
+    let root = repository_root();
+    let dataset =
+        fs::read_to_string(root.join("packages/market-data-ingester/src/domain/dataset.rs"))
+            .unwrap();
+    let strategy = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/polymarket/orderbook_snapshots.rs"),
+    )
+    .unwrap();
+    let final_table = "polymarket.btc_five_minute_orderbook_snapshots";
+    let retired_table = "market_data.polymarket_btc_five_minute_orderbook_snapshots";
+    assert!(dataset.contains(final_table));
+    assert!(strategy.contains(final_table));
+    assert!(!dataset.contains(retired_table));
+    assert!(!strategy.contains(retired_table));
+
+    let migration = fs::read_to_string(root.join(
+        "packages/db-migrate/src/migrations/1788646000000-FinalizePolymarketOrderbookStorage.ts",
+    ))
+    .unwrap();
+    assert!(migration.contains("DROP TABLE ${LEGACY}"));
+    assert!(migration.contains("must be fully stopped before table cutover"));
+    assert!(migration.contains("advanced beyond archived watermark"));
+}
+
+#[test]
 fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() {
     let root = repository_root();
     let repository = fs::read_to_string(

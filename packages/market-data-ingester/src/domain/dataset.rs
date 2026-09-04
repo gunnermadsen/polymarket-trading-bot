@@ -557,7 +557,7 @@ pub const CONTRACTS: &[DatasetContract] = &[
     ),
     contract(
         DatasetKey::PolymarketBtcFiveMinuteOrderbookSnapshots,
-        "market_data.polymarket_btc_five_minute_orderbook_snapshots",
+        "polymarket.btc_five_minute_orderbook_snapshots",
         &["source", "token_id", "sampled_at"],
         &[
             "sampled_at",
