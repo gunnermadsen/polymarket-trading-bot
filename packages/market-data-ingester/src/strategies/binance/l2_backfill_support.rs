@@ -189,7 +189,7 @@ fn combined_checksum<'a>(
     format!("{:x}", hasher.finalize())
 }
 
-async fn persist(
+pub(super) async fn persist(
     context: &BackfillContext,
     artifact_id: Uuid,
     target: &str,

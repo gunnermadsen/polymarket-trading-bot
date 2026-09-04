@@ -34,6 +34,51 @@ fn polymarket_image_has_no_backfill_runtime() {
 }
 
 #[test]
+fn coinapi_uses_only_the_canonical_backfill_strategy() {
+    let root = repository_root();
+    for legacy in [
+        "scripts/materialize-coinapi-binance-spot-l2.mjs",
+        "scripts/run-coinapi-binance-spot-l2-gap-backfill.mjs",
+    ] {
+        assert!(
+            !root.join(legacy).exists(),
+            "legacy CoinAPI runtime remains: {legacy}"
+        );
+    }
+    let source = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/binance/coinapi_spot_l2_one_second_features_backfill.rs"),
+    )
+    .unwrap();
+    assert_eq!(source.matches("impl BackfillWorkerStrategy for").count(), 1);
+    assert!(!source.contains("RealtimeWorkerStrategy"));
+    assert!(source.contains("ingester.backfill_artifacts") || source.contains("create_artifact"));
+}
+
+#[test]
+fn weather_package_has_no_parallel_queue_runtime() {
+    let root = repository_root();
+    assert!(!root
+        .join("packages/nyc-temperature-model/src/nyc_temperature_model/jobs.py")
+        .exists());
+    for relative in [
+        "packages/nyc-temperature-model/src/nyc_temperature_model/cli.py",
+        "packages/nyc-temperature-model/src/nyc_temperature_model/config.py",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        for forbidden in [
+            "weather.ingestion_jobs",
+            "WEATHER_WORKER_INGESTERS",
+            "run_worker",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative} contains {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
 fn compose_exposes_only_standard_ingester_roles() {
     let root = repository_root();
     let base = fs::read_to_string(root.join("docker-compose.yml")).unwrap();

@@ -106,6 +106,35 @@ pub fn daily_shards(
     Ok(shards)
 }
 
+pub fn hourly_shards(
+    request: &ValidatedBackfillRequest,
+    maximum: usize,
+) -> Result<Vec<BackfillShard>, BackfillExecutionError> {
+    let mut cursor = request.range_start;
+    let mut shards = Vec::new();
+    while cursor < request.range_end {
+        let end = (cursor + chrono::Duration::hours(1)).min(request.range_end);
+        shards.push(BackfillShard {
+            shard_key: format!(
+                "{}-{}",
+                cursor.format("%Y%m%dT%H%M%SZ"),
+                end.format("%Y%m%dT%H%M%SZ")
+            ),
+            range_start: cursor,
+            range_end: end,
+            parameters: json!({}),
+        });
+        if shards.len() > maximum {
+            return Err(BackfillExecutionError::invalid(
+                "too_many_shards",
+                format!("request exceeds {maximum} hourly shards"),
+            ));
+        }
+        cursor = end;
+    }
+    Ok(shards)
+}
+
 pub async fn completed_outcome(
     context: &BackfillContext,
     strategy_key: &str,
