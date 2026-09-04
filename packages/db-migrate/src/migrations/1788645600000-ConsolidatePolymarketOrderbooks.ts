@@ -165,10 +165,14 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         await queryRunner.query(`
           UPDATE ingester.capture_artifacts
           SET record_count = $2,
-              minimum_source_timestamp = CASE WHEN $2::bigint = 0 THEN NULL ELSE $3 END,
-              maximum_source_timestamp = CASE WHEN $2::bigint = 0 THEN NULL ELSE $4 END,
-              minimum_received_at = CASE WHEN $2::bigint = 0 THEN NULL ELSE $3 END,
-              maximum_received_at = CASE WHEN $2::bigint = 0 THEN NULL ELSE $4 END,
+              minimum_source_timestamp = CASE WHEN $2::bigint = 0
+                THEN NULL ELSE $3::timestamptz END,
+              maximum_source_timestamp = CASE WHEN $2::bigint = 0
+                THEN NULL ELSE $4::timestamptz END,
+              minimum_received_at = CASE WHEN $2::bigint = 0
+                THEN NULL ELSE $3::timestamptz END,
+              maximum_received_at = CASE WHEN $2::bigint = 0
+                THEN NULL ELSE $4::timestamptz END,
               status = 'completed', completed_at = now(), updated_at = now()
           WHERE artifact_id = $1
         `, [artifactId, row.legacy_count, start, end]);
