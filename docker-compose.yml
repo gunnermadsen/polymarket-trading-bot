@@ -232,6 +232,7 @@ services:
       POLYGON_RPC_URL: "${POLYMARKET_POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}"
       POLYGON_ARCHIVE_LOG_RPC_URL: "${POLYMARKET_POLYGON_ARCHIVE_LOG_RPC_URL:-https://tenderly.rpc.polygon.community}"
       PMDATA_BASE_URL: "https://api.pmdata.dev"
+      PMDATA_API_KEY: "${PM_DATA_API_KEY:-}"
       INGESTER_PMDATA_ARCHIVE_ROOT: "/tmp/pmdata"
       KRAKEN_FUTURES_BASE_URL: "https://futures.kraken.com"
       KRAKEN_SPOT_BASE_URL: "https://api.kraken.com"
