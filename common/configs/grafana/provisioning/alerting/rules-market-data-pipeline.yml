@@ -7,7 +7,7 @@ groups:
     interval: 20s
     rules:
       - uid: mdp_worker_stream_down
-        title: Required market-data worker stream unavailable
+        title: Required market-data worker route deficit
         condition: C
         data:
           - refId: A
@@ -17,7 +17,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
-              expr: '1 - clamp_max(max(polymarket_market_data_grpc_connections), 1)'
+              expr: 'clamp_min(max(polymarket_market_data_grpc_desired_connections) - max(polymarket_market_data_grpc_connections), 0)'
               instant: true
               refId: A
           - refId: B
@@ -33,8 +33,8 @@ groups:
               refId: C
         noDataState: Alerting
         execErrState: Error
-        for: 1m
-        annotations: {summary: Required bot-to-worker market-data stream is unavailable}
+        for: 30s
+        annotations: {summary: One or more selector-required bot-to-worker routes are unavailable}
         labels: {service: polymarket-bot, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false
       - uid: mdp_stream_drop
@@ -79,7 +79,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
-              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product=~"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv"}) * on(product) group_left() (ingester_stream_subscribers > 0))'
+              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product=~"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|binance_spot_btcusdt_one_second_ohlcv"}) * on(instance, product) (ingester_stream_subscribers > 0))'
               instant: true
               refId: A
           - refId: B
@@ -98,4 +98,254 @@ groups:
         for: 1m
         annotations: {summary: A selected market-data product has not published within 30 seconds}
         labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_twap_stream_stale
+        title: Selected TWAP product is stale
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max((time() - ingester_stream_last_published_timestamp_seconds{product="polymarket_chainlink_btcusd_twap"}) * on(instance, product) (ingester_stream_subscribers > 0))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [120], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations: {summary: The selected 60-second TWAP product has not published within two minutes}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_route_flapping
+        title: Market-data worker route flapping
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'increase(polymarket_market_data_grpc_reconnects_total[5m])'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [3], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations: {summary: Worker routes are reconnecting repeatedly instead of remaining stable}
+        labels: {service: polymarket-bot, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_required_product_unready
+        title: Required market-data product unavailable
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: '1 - min(polymarket_market_data_product_ready)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 30s
+        annotations: {summary: At least one selector-required product is not ready on its owning worker route}
+        labels: {service: polymarket-bot, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_binance_source_reconnects
+        title: Binance one-second source reconnecting
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(ingester_source_reconnects_total{product="binance_spot_btcusdt_one_second_ohlcv",reason=~"binance_ohlcv_(websocket_closed|pong_failed|read_idle)"}[10m]))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [1], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations: {summary: Binance one-second provider transport has reconnected repeatedly}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_binance_recovery_unavailable
+        title: Binance one-second recovery unavailable
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(ingester_source_reconnects_total{product="binance_spot_btcusdt_one_second_ohlcv",reason=~"binance_ohlcv_rest_(request_failed|status|body_failed)"}[5m])) and on() (min(polymarket_market_data_product_ready{product="binance_spot_btcusdt_one_second_ohlcv"}) == 0)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [2], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations: {summary: Binance REST repair is repeatedly failing while the required product is unavailable}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_persistence_falling_behind
+        title: Realtime persistence falling behind
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max(ingester_source_persistence_queue_depth)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [30], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations: {summary: Realtime events have queued behind persistence for a sustained interval}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_persistence_backpressure
+        title: Realtime persistence handoff overflow
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(ingester_source_persistence_queue_overflows_total[5m]))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations: {summary: Realtime ingestion outpaced persistence capacity and forced an explicit reconnect}
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: mdp_duplicate_active_owner
+        title: Duplicate active market-data stream owner
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max(sum by (product) (ingester_stream_subscribers > 0))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [1], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: More than one worker is actively subscribed to the same realtime product
+          description: Realtime source ownership is duplicated. Correct lease ownership rather than hiding duplicate delivery with query aggregation.
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false

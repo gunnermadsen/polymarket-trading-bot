@@ -174,24 +174,24 @@ fn validate_selectors(selectors: &[SourceSelector]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RouteResponse {
     routes: Vec<WorkerRoute>,
     unresolved: Vec<RouteRejection>,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct WorkerRoute {
     worker_id: String,
     endpoint: String,
     source_revision: String,
     products: Vec<RouteProduct>,
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct RouteProduct {
     key: String,
     contract_version: u32,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RouteRejection {
     product: RouteProduct,
     reason: String,
@@ -200,6 +200,7 @@ struct RouteRejection {
 #[derive(Default)]
 pub struct StreamMetrics {
     connections: AtomicI64,
+    desired_connections: AtomicI64,
     reconnects: AtomicU64,
     events: AtomicU64,
     duplicates: AtomicU64,
@@ -208,6 +209,8 @@ pub struct StreamMetrics {
     apply_latency_micros: AtomicU64,
     last_event_micros: AtomicI64,
     products: Mutex<BTreeMap<String, ProductStreamMetrics>>,
+    product_ready: Mutex<BTreeMap<String, bool>>,
+    route_failures: Mutex<BTreeMap<String, u64>>,
 }
 
 #[derive(Default)]
@@ -217,12 +220,60 @@ struct ProductStreamMetrics {
     last_event_micros: i64,
 }
 
-struct ConnectionGauge<'a>(&'a AtomicI64);
+struct ConnectionGauge<'a> {
+    metrics: &'a StreamMetrics,
+    products: Vec<String>,
+}
 
 impl Drop for ConnectionGauge<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Relaxed);
+        self.metrics.connections.fetch_sub(1, Ordering::Relaxed);
+        let mut ready = self
+            .metrics
+            .product_ready
+            .lock()
+            .expect("stream readiness lock");
+        for product in &self.products {
+            ready.insert(product.clone(), false);
+        }
     }
+}
+
+fn route_failure_reason(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    if message.contains(" is stale") || message.contains("not contiguous") {
+        "required_product_stale"
+    } else if message.contains("sequence gap") {
+        "sequence_integrity"
+    } else if message.contains("rejected market-data subscription")
+        || message.contains("unauthenticated")
+    {
+        "subscription_rejected"
+    } else if message.contains("closed market-data stream") {
+        "worker_stream_closed"
+    } else if message.contains("connect worker") || message.contains("transport error") {
+        "worker_connect"
+    } else {
+        "stream_error"
+    }
+}
+
+fn topology_signature(routes: &[WorkerRoute]) -> BTreeSet<String> {
+    routes
+        .iter()
+        .flat_map(|route| {
+            route.products.iter().map(|product| {
+                format!(
+                    "{}|{}|{}|{}|{}",
+                    route.worker_id,
+                    route.endpoint,
+                    route.source_revision,
+                    product.key,
+                    product.contract_version
+                )
+            })
+        })
+        .collect()
 }
 
 static STREAM_METRICS: OnceLock<Mutex<Arc<StreamMetrics>>> = OnceLock::new();
@@ -310,11 +361,15 @@ impl MarketDataStreamRuntime {
             };
             match outcome {
                 Ok(()) if shutdown.is_cancelled() => return,
-                Ok(()) => {}
+                Ok(()) => {
+                    delay = Duration::from_millis(250);
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%error, "market-data gRPC routes unavailable; preserving process intent")
                 }
             }
+            runtime.metrics.observe_route_failure("route_resolution");
             runtime.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
             tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -330,6 +385,69 @@ impl MarketDataStreamRuntime {
         selectors: &[SourceSelector],
         shutdown: CancellationToken,
     ) -> Result<()> {
+        let response = self.resolve_routes(selectors).await?;
+        let signature = topology_signature(&response.routes);
+        self.metrics.desired_connections.store(
+            i64::try_from(response.routes.len()).unwrap_or(i64::MAX),
+            Ordering::Relaxed,
+        );
+        let selector_by_key = Arc::new(
+            selectors
+                .iter()
+                .cloned()
+                .map(|selector| (selector.key.clone(), selector))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let mut tasks = tokio::task::JoinSet::new();
+        for route in response.routes {
+            let runtime = self.clone();
+            let route_shutdown = shutdown.clone();
+            let route_selectors = selector_by_key.clone();
+            tasks.spawn(async move {
+                runtime
+                    .supervise_route(route, route_selectors, route_shutdown)
+                    .await
+            });
+        }
+        let mut topology_tick = tokio::time::interval(Duration::from_secs(30));
+        topology_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        topology_tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    return Ok(());
+                }
+                result = tasks.join_next() => {
+                    tasks.abort_all();
+                    while tasks.join_next().await.is_some() {}
+                    match result {
+                        Some(Ok(())) => bail!("ingester route supervisor stopped unexpectedly"),
+                        Some(Err(error)) => return Err(anyhow::anyhow!(error)),
+                        None => bail!("all ingester route supervisors stopped"),
+                    }
+                }
+                _ = topology_tick.tick() => {
+                    match self.resolve_routes(selectors).await {
+                        Ok(current) if topology_signature(&current.routes) != signature => {
+                            tracing::info!("market-data worker ownership changed; refreshing route topology");
+                            tasks.abort_all();
+                            while tasks.join_next().await.is_some() {}
+                            return Ok(());
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            self.metrics.observe_route_failure("route_resolution");
+                            tracing::warn!(%error, "market-data route refresh failed; preserving established worker streams");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolve_routes(&self, selectors: &[SourceSelector]) -> Result<RouteResponse> {
         let products = selectors
             .iter()
             .map(|selector| RouteProduct {
@@ -369,30 +487,48 @@ impl MarketDataStreamRuntime {
         if response.routes.is_empty() {
             bail!("ingester master returned no stream routes");
         }
-        let mut tasks = tokio::task::JoinSet::new();
-        let selector_by_key = Arc::new(
-            selectors
-                .iter()
-                .cloned()
-                .map(|selector| (selector.key.clone(), selector))
-                .collect::<BTreeMap<_, _>>(),
-        );
-        for route in response.routes {
-            let runtime = self.clone();
-            let route_shutdown = shutdown.clone();
-            let route_selectors = selector_by_key.clone();
-            tasks.spawn(async move {
-                runtime
-                    .consume_route(route, route_selectors, route_shutdown)
-                    .await
-            });
-        }
-        tokio::select! {
-            _ = shutdown.cancelled() => { tasks.abort_all(); while tasks.join_next().await.is_some() {} Ok(()) },
-            result = tasks.join_next() => {
-                tasks.abort_all(); while tasks.join_next().await.is_some() {}
-                match result { Some(Ok(result)) => result, Some(Err(error)) => Err(anyhow::anyhow!(error)), None => bail!("all ingester stream routes stopped") }
+        Ok(response)
+    }
+
+    async fn supervise_route(
+        &self,
+        route: WorkerRoute,
+        selectors: Arc<BTreeMap<String, SourceSelector>>,
+        shutdown: CancellationToken,
+    ) {
+        let mut delay = Duration::from_millis(250);
+        loop {
+            if shutdown.is_cancelled() {
+                return;
             }
+            let attempt_started = tokio::time::Instant::now();
+            match self
+                .consume_route(route.clone(), selectors.clone(), shutdown.clone())
+                .await
+            {
+                Ok(()) if shutdown.is_cancelled() => return,
+                Ok(()) => {}
+                Err(error) => {
+                    let reason = route_failure_reason(&error);
+                    self.metrics.observe_route_failure(reason);
+                    self.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        worker_id = %route.worker_id,
+                        products = route.products.len(),
+                        reason,
+                        %error,
+                        "market-data worker route unavailable; preserving other worker streams"
+                    );
+                }
+            }
+            if attempt_started.elapsed() >= Duration::from_secs(30) {
+                delay = Duration::from_millis(250);
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(delay) => {}
+            }
+            delay = (delay * 2).min(Duration::from_secs(15));
         }
     }
 
@@ -453,7 +589,14 @@ impl MarketDataStreamRuntime {
                 .retain(|product, _| !route_products.contains(product.as_str()));
         }
         self.metrics.connections.fetch_add(1, Ordering::Relaxed);
-        let _connection_gauge = ConnectionGauge(&self.metrics.connections);
+        let _connection_gauge = ConnectionGauge {
+            metrics: &self.metrics,
+            products: route
+                .products
+                .iter()
+                .map(|product| product.key.clone())
+                .collect(),
+        };
         tracing::info!(worker_id=%route.worker_id, source_revision=%route.source_revision, products=route.products.len(), "market-data gRPC route connected");
         loop {
             let next =
@@ -466,6 +609,8 @@ impl MarketDataStreamRuntime {
                     bail!("worker rejected market-data subscription")
                 }
                 Some(Message::Health(health)) => {
+                    self.metrics
+                        .set_product_ready(&health.product_key, health.ready);
                     let selector = selectors
                         .get(&health.product_key)
                         .context("worker reported health outside the selector set")?;
@@ -485,7 +630,9 @@ impl MarketDataStreamRuntime {
                     let selector = selectors
                         .get(&event.product_key)
                         .context("worker emitted a product outside the selector set")?;
+                    let product_key = event.product_key.clone();
                     self.apply_event(event, selector).await?;
+                    self.metrics.set_product_ready(&product_key, true);
                 }
             }
         }
@@ -947,9 +1094,25 @@ struct OpenInterestPayload {
 }
 
 impl StreamMetrics {
+    fn set_product_ready(&self, product: &str, ready: bool) {
+        self.product_ready
+            .lock()
+            .expect("stream readiness lock")
+            .insert(product.to_owned(), ready);
+    }
+
+    fn observe_route_failure(&self, reason: &str) {
+        let mut failures = self
+            .route_failures
+            .lock()
+            .expect("stream route failure lock");
+        *failures.entry(reason.to_owned()).or_insert(0) += 1;
+    }
+
     pub fn render_prometheus(&self) -> String {
         let mut output = format!(
             "# HELP polymarket_market_data_grpc_connections Active direct worker streams.\n# TYPE polymarket_market_data_grpc_connections gauge\npolymarket_market_data_grpc_connections {}\n\
+# HELP polymarket_market_data_grpc_desired_connections Worker streams required by the current selector union.\n# TYPE polymarket_market_data_grpc_desired_connections gauge\npolymarket_market_data_grpc_desired_connections {}\n\
 # HELP polymarket_market_data_grpc_reconnects_total Direct worker stream reconnects.\n# TYPE polymarket_market_data_grpc_reconnects_total counter\npolymarket_market_data_grpc_reconnects_total {}\n\
 # HELP polymarket_market_data_events_applied_total Canonical events applied to the shared trading runtime.\n# TYPE polymarket_market_data_events_applied_total counter\npolymarket_market_data_events_applied_total {}\n\
 # HELP polymarket_market_data_duplicates_total Replayed canonical events ignored.\n# TYPE polymarket_market_data_duplicates_total counter\npolymarket_market_data_duplicates_total {}\n\
@@ -957,7 +1120,7 @@ impl StreamMetrics {
 # HELP polymarket_market_data_decode_errors_total Contract payload failures.\n# TYPE polymarket_market_data_decode_errors_total counter\npolymarket_market_data_decode_errors_total {}\n\
 # HELP polymarket_market_data_publish_apply_latency_seconds Latest worker publish to bot apply latency.\n# TYPE polymarket_market_data_publish_apply_latency_seconds gauge\npolymarket_market_data_publish_apply_latency_seconds {}\n\
 # HELP polymarket_market_data_last_event_timestamp_seconds Latest applied canonical event time.\n# TYPE polymarket_market_data_last_event_timestamp_seconds gauge\npolymarket_market_data_last_event_timestamp_seconds {}\n",
-            self.connections.load(Ordering::Relaxed), self.reconnects.load(Ordering::Relaxed),
+            self.connections.load(Ordering::Relaxed), self.desired_connections.load(Ordering::Relaxed), self.reconnects.load(Ordering::Relaxed),
             self.events.load(Ordering::Relaxed), self.duplicates.load(Ordering::Relaxed), self.gaps.load(Ordering::Relaxed),
             self.decode_errors.load(Ordering::Relaxed), self.apply_latency_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0,
             self.last_event_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0)
@@ -982,6 +1145,30 @@ impl StreamMetrics {
             output.push_str(&format!(
                 "polymarket_market_data_product_last_event_timestamp_seconds{{product=\"{key}\"}} {}\n",
                 metrics.last_event_micros as f64 / 1_000_000.0
+            ));
+        }
+        drop(products);
+        output.push_str("# HELP polymarket_market_data_product_ready Required product readiness reported by its owning worker.\n# TYPE polymarket_market_data_product_ready gauge\n");
+        for (key, ready) in self
+            .product_ready
+            .lock()
+            .expect("stream readiness lock")
+            .iter()
+        {
+            output.push_str(&format!(
+                "polymarket_market_data_product_ready{{product=\"{key}\"}} {}\n",
+                u8::from(*ready)
+            ));
+        }
+        output.push_str("# HELP polymarket_market_data_route_failures_total Worker route failures by bounded reason.\n# TYPE polymarket_market_data_route_failures_total counter\n");
+        for (reason, value) in self
+            .route_failures
+            .lock()
+            .expect("stream route failure lock")
+            .iter()
+        {
+            output.push_str(&format!(
+                "polymarket_market_data_route_failures_total{{reason=\"{reason}\"}} {value}\n"
             ));
         }
         output
@@ -1333,5 +1520,82 @@ mod tests {
             Some("1788456600000000")
         );
         assert_eq!(reference.raw_payload, raw);
+    }
+
+    #[test]
+    fn route_topology_signature_is_stable_across_response_ordering() {
+        let first = vec![
+            WorkerRoute {
+                worker_id: "worker-b".to_owned(),
+                endpoint: "http://worker-b:8100".to_owned(),
+                source_revision: "revision".to_owned(),
+                products: vec![RouteProduct {
+                    key: PRODUCT_BINANCE_1S.to_owned(),
+                    contract_version: CONTRACT_VERSION,
+                }],
+            },
+            WorkerRoute {
+                worker_id: "worker-a".to_owned(),
+                endpoint: "http://worker-a:8100".to_owned(),
+                source_revision: "revision".to_owned(),
+                products: vec![RouteProduct {
+                    key: PRODUCT_BOOKS.to_owned(),
+                    contract_version: CONTRACT_VERSION,
+                }],
+            },
+        ];
+        let mut reversed = first.clone();
+        reversed.reverse();
+
+        assert_eq!(topology_signature(&first), topology_signature(&reversed));
+    }
+
+    #[test]
+    fn route_failure_metrics_use_bounded_operational_reasons() {
+        assert_eq!(
+            route_failure_reason(&anyhow::anyhow!(
+                "required market-data product {PRODUCT_BINANCE_1S} is stale"
+            )),
+            "required_product_stale"
+        );
+        assert_eq!(
+            route_failure_reason(&anyhow::anyhow!(
+                "worker worker-1 closed market-data stream"
+            )),
+            "worker_stream_closed"
+        );
+
+        let metrics = StreamMetrics::default();
+        metrics.desired_connections.store(4, Ordering::Relaxed);
+        metrics.set_product_ready(PRODUCT_BINANCE_1S, false);
+        metrics.observe_route_failure("required_product_stale");
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("polymarket_market_data_grpc_desired_connections 4"));
+        assert!(rendered.contains(&format!(
+            "polymarket_market_data_product_ready{{product=\"{PRODUCT_BINANCE_1S}\"}} 0"
+        )));
+        assert!(rendered.contains(
+            "polymarket_market_data_route_failures_total{reason=\"required_product_stale\"} 1"
+        ));
+    }
+
+    #[test]
+    fn dropping_one_route_preserves_other_route_readiness() {
+        let metrics = StreamMetrics::default();
+        metrics.connections.store(2, Ordering::Relaxed);
+        metrics.set_product_ready(PRODUCT_BINANCE_1S, true);
+        metrics.set_product_ready(PRODUCT_BOOKS, true);
+
+        {
+            let _failed_route = ConnectionGauge {
+                metrics: &metrics,
+                products: vec![PRODUCT_BINANCE_1S.to_owned()],
+            };
+        }
+
+        assert_eq!(metrics.connections.load(Ordering::Relaxed), 1);
+        let readiness = metrics.product_ready.lock().expect("readiness lock");
+        assert_eq!(readiness.get(PRODUCT_BINANCE_1S), Some(&false));
+        assert_eq!(readiness.get(PRODUCT_BOOKS), Some(&true));
     }
 }
