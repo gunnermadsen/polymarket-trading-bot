@@ -225,7 +225,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
       SELECT '${LEGACY_ARTIFACT}', '${STRATEGY}', desired_generation,
         config_schema_version,
         encode(digest(convert_to(config::text, 'UTF8'), 'sha256'), 'hex'),
-        config, $1, $2 + interval '1 microsecond', 0,
+        config, $1::timestamptz, $2::timestamptz + interval '1 microsecond', 0,
         encode(digest(convert_to(
           'legacy-orderbook-checkpoints:${LEGACY_ARTIFACT}', 'UTF8'
         ), 'sha256'), 'hex'),
