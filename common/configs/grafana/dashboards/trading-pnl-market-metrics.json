@@ -22,10 +22,10 @@
   "panels": [
     {
       "datasource": {
-        "type": "datasource",
-        "uid": "-- Dashboard --"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
       },
-      "description": "Lifetime net realized PnL by trading process for the current PnL scope, reusing the Process PnL, Runtime, and Settlement Status result without another PostgreSQL query.",
+      "description": "Lifetime net realized PnL for every BTC five-minute realtime-paper process, independent of the dashboard process-scope filter. Recognized manual live exits use actual net proceeds; other filled entries use official settlement economics.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -104,11 +104,31 @@
       "targets": [
         {
           "datasource": {
-            "type": "datasource",
-            "uid": "-- Dashboard --"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
           },
-          "panelId": 2,
-          "refId": "A"
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), selected_process AS NOT MATERIALIZED (SELECT * FROM eligible_processes),\nfilled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), realized_by_process AS (\n  SELECT process_id,SUM(net_pnl)::numeric AS net_pnl FROM realized GROUP BY process_id\n)\nSELECT p.name||' ['||left(p.process_id::text,8)||']' AS \"Process\",\n       COALESCE(r.net_pnl,0::numeric)::double precision AS \"Lifetime Net Realized PnL\"\nFROM eligible_processes p LEFT JOIN realized_by_process r USING(process_id)\nORDER BY COALESCE(r.net_pnl,0::numeric) DESC,p.created_at DESC,p.process_id;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "Lifetime Net Realized PnL by Trading Process",
