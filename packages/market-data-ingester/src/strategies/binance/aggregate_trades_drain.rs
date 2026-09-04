@@ -123,7 +123,7 @@ impl DrainWorkerStrategy for BinanceAggregateTradesDrain {
         }
         let chunks=sqlx::query_as::<_,Chunk>("SELECT chunk_schema,chunk_name,range_start,range_end FROM timescaledb_information.chunks WHERE hypertable_schema='market_data' AND hypertable_name='binance_spot_btcusdt_aggregate_trades' ORDER BY range_start,chunk_name")
             .fetch_all(&context.pool).await.map_err(db_error)?;
-        let cutoff_covers_all=chunks.iter().all(|chunk|chunk.range_end<=request.cutoff);
+        let cutoff_covers_all = chunks.iter().all(|chunk| chunk.range_end <= request.cutoff);
         if request.dry_run {
             return Ok(DrainOutcome {
                 rows_exported: 0,
@@ -177,8 +177,11 @@ impl DrainWorkerStrategy for BinanceAggregateTradesDrain {
         }
         let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_schema='market_data' AND hypertable_name='binance_spot_btcusdt_aggregate_trades'")
             .fetch_one(&context.pool).await.map_err(db_error)?;
-        if remaining!=0 {
-            return Err(invalid("drain_relation_not_empty",format!("{remaining} source chunks remain after drain")));
+        if remaining != 0 {
+            return Err(invalid(
+                "drain_relation_not_empty",
+                format!("{remaining} source chunks remain after drain"),
+            ));
         }
         let totals=sqlx::query("SELECT COALESCE(sum(row_count),0)::bigint,COALESCE(sum(byte_size),0)::bigint,count(*)::bigint FROM ingester.drain_objects WHERE job_id=$1 AND status='removed'")
             .bind(context.job_id).fetch_one(&context.pool).await.map_err(db_error)?;

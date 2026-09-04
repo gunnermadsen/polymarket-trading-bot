@@ -99,8 +99,9 @@ impl DrainRepository {
         supported: &[String],
     ) -> Result<Option<ClaimedDrainJob>> {
         let mut tx = self.pool.begin().await?;
+        let claim_columns = COLUMNS.replacen("job_id", "job.job_id", 1);
         let q = format!(
-            r#"WITH candidate AS (SELECT job_id FROM ingester.drain_jobs WHERE strategy_key=ANY($3::text[]) AND cancel_requested_at IS NULL AND (required_worker_id IS NULL OR required_worker_id=$1) AND (required_deployment IS NULL OR required_deployment=$2) AND (status='queued' OR (status='running' AND lease_expires_at<clock_timestamp())) AND attempt<max_attempts ORDER BY requested_at,job_id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE ingester.drain_jobs job SET status='running',attempt=attempt+1,assigned_worker_id=$1,lease_token=gen_random_uuid(),lease_expires_at=clock_timestamp()+interval '45 seconds',started_at=COALESCE(started_at,clock_timestamp()),updated_at=clock_timestamp() FROM candidate WHERE job.job_id=candidate.job_id RETURNING {COLUMNS}"#
+            r#"WITH candidate AS (SELECT job_id FROM ingester.drain_jobs WHERE strategy_key=ANY($3::text[]) AND cancel_requested_at IS NULL AND (required_worker_id IS NULL OR required_worker_id=$1) AND (required_deployment IS NULL OR required_deployment=$2) AND (status='queued' OR (status='running' AND lease_expires_at<clock_timestamp())) AND attempt<max_attempts ORDER BY requested_at,job_id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE ingester.drain_jobs job SET status='running',attempt=attempt+1,assigned_worker_id=$1,lease_token=gen_random_uuid(),lease_expires_at=clock_timestamp()+interval '45 seconds',started_at=COALESCE(started_at,clock_timestamp()),updated_at=clock_timestamp() FROM candidate WHERE job.job_id=candidate.job_id RETURNING {claim_columns}"#
         );
         let job: Option<DrainJobRecord> = sqlx::query_as(&q)
             .bind(worker)
