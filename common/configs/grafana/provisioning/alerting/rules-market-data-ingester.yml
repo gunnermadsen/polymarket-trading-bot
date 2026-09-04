@@ -486,7 +486,7 @@ groups:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_one_second_ohlcv",error_code=~"^(binance_one_second_kline_gap|binance_ohlcv_gap_unrecoverable)$"}[5m])) >= 1
+                sum by (strategy, error_code) (count_over_time({service_name="market-data-ingester",strategy="binance_spot_btcusdt_one_second_ohlcv",error_code="binance_ohlcv_gap_unrecoverable"}[5m])) >= 1
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200

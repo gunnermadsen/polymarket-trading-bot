@@ -10,9 +10,13 @@
   ],
   "panels": [
     {
-      "id": 1, "type": "stat", "title": "Data Pipeline Connection", "description": "Active direct gRPC connections from the bot to the worker that owns the selected products.", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
+      "id": 1, "type": "stat", "title": "Worker Route Coverage", "description": "Active direct worker routes compared with the routes required by the deduplicated selector union.", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "max(polymarket_market_data_grpc_connections)", "instant": true, "legendFormat": "Active worker connections"}],
+      "targets": [
+        {"refId": "A", "expr": "max(polymarket_market_data_grpc_connections)", "instant": true, "legendFormat": "Active"},
+        {"refId": "B", "expr": "max(polymarket_market_data_grpc_desired_connections)", "instant": true, "legendFormat": "Required"},
+        {"refId": "C", "expr": "clamp_min(max(polymarket_market_data_grpc_desired_connections) - max(polymarket_market_data_grpc_connections), 0)", "instant": true, "legendFormat": "Missing"}
+      ],
       "fieldConfig": {"defaults": {"min": 0, "max": 8, "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
       "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
     },
@@ -62,21 +66,45 @@
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "single", "sort": "none"}}
     },
     {
-      "id": 6, "type": "state-timeline", "title": "Product Demand and Delivery", "gridPos": {"x": 0, "y": 14, "w": 14, "h": 8},
+      "id": 6, "type": "state-timeline", "title": "Product Demand and Delivery", "description": "One state per required product: selector demand at the owning worker plus bot-side delivery readiness.", "gridPos": {"x": 0, "y": 14, "w": 14, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "ingester_stream_subscribers", "legendFormat": "{{product}}"}],
-      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Unused", "color": "gray"}, "1": {"text": "Subscribed", "color": "green"}}}], "custom": {"fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "max by (product) (ingester_stream_subscribers) + on(product) max by (product) (polymarket_market_data_product_ready)", "legendFormat": "{{product}}"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Not requested", "color": "gray"}, "1": {"text": "Waiting for delivery", "color": "red"}, "2": {"text": "Receiving", "color": "green"}}}], "custom": {"fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
       "options": {"alignValue": "left", "legend": {"displayMode": "list", "placement": "right", "showLegend": true}, "mergeValues": true, "rowHeight": 0.8, "showValue": "never", "tooltip": {"mode": "single", "sort": "none"}}
     },
     {
-      "id": 7, "type": "timeseries", "title": "Connection Stability", "gridPos": {"x": 14, "y": 14, "w": 10, "h": 8},
+      "id": 7, "type": "timeseries", "title": "Route Stability", "description": "Independent worker-route reconnects and their bounded failure classifications.", "gridPos": {"x": 14, "y": 14, "w": 10, "h": 8},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"refId": "A", "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])", "legendFormat": "Reconnects / 15m"},
-        {"refId": "B", "expr": "increase(polymarket_market_data_duplicates_total[15m])", "legendFormat": "Deduplicated / 15m"}
+        {"refId": "A", "expr": "increase(polymarket_market_data_grpc_reconnects_total[5m])", "legendFormat": "Worker reconnects · 5m"},
+        {"refId": "B", "expr": "sum by (reason) (increase(polymarket_market_data_route_failures_total[5m]))", "legendFormat": "{{reason}} · 5m"}
       ],
       "fieldConfig": {"defaults": {"min": 0, "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 8, "type": "state-timeline", "title": "Required Product Readiness", "description": "Readiness reported by each product's owning worker route. A route failure affects only its products.", "gridPos": {"x": 0, "y": 22, "w": 14, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "polymarket_market_data_product_ready", "legendFormat": "{{product}}"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Unavailable", "color": "red"}, "1": {"text": "Ready", "color": "green"}}}], "custom": {"fillOpacity": 80, "lineWidth": 0}}, "overrides": []},
+      "options": {"alignValue": "left", "legend": {"displayMode": "list", "placement": "right", "showLegend": true}, "mergeValues": true, "rowHeight": 0.8, "showValue": "never", "tooltip": {"mode": "single", "sort": "none"}}
+    },
+    {
+      "id": 9, "type": "stat", "title": "Binance 1-Second Source Service", "description": "Keepalive response, persistence handoff, and provider reconnection health for the canonical one-second candle source.", "gridPos": {"x": 14, "y": 22, "w": 10, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max(ingester_source_websocket_pong_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}) * 1000", "instant": true, "legendFormat": "PING to PONG"},
+        {"refId": "B", "expr": "max(ingester_source_persistence_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}) * 1000", "instant": true, "legendFormat": "Persistence batch"},
+        {"refId": "C", "expr": "max(ingester_source_persistence_queue_depth{product=\"binance_spot_btcusdt_one_second_ohlcv\"})", "instant": true, "legendFormat": "Queued events"},
+        {"refId": "D", "expr": "sum(increase(ingester_source_reconnects_total{product=\"binance_spot_btcusdt_one_second_ohlcv\"}[15m]))", "instant": true, "legendFormat": "Source reconnects · 15m"}
+      ],
+      "fieldConfig": {"defaults": {"decimals": 1, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 50}]}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "PING to PONG"}, "properties": [{"id": "unit", "value": "ms"}]},
+        {"matcher": {"id": "byName", "options": "Persistence batch"}, "properties": [{"id": "unit", "value": "ms"}]},
+        {"matcher": {"id": "byName", "options": "Queued events"}, "properties": [{"id": "decimals", "value": 0}]},
+        {"matcher": {"id": "byName", "options": "Source reconnects · 15m"}, "properties": [{"id": "decimals", "value": 0}]}
+      ]},
+      "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
     }
   ],
   "refresh": "10s",
@@ -88,5 +116,5 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 2
+  "version": 3
 }
