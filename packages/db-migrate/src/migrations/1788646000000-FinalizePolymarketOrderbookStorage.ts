@@ -56,14 +56,11 @@ export class FinalizePolymarketOrderbookStorage1788646000000
     }
 
     await queryRunner.query(`LOCK TABLE ${SOURCE} IN ACCESS EXCLUSIVE MODE NOWAIT`);
-    await queryRunner.query(`LOCK TABLE ${LEGACY} IN ACCESS EXCLUSIVE MODE NOWAIT`);
     await queryRunner.query(`ALTER TABLE ${SOURCE} SET SCHEMA polymarket`);
     await queryRunner.query(`
       ALTER TABLE polymarket.polymarket_btc_five_minute_orderbook_snapshots
       RENAME TO btc_five_minute_orderbook_snapshots
     `);
-    await queryRunner.query(`DROP TABLE ${LEGACY}`);
-
     const finalRelations = await queryRunner.query(
       `SELECT to_regclass($1) AS source,
               to_regclass($2) AS target,
@@ -73,9 +70,9 @@ export class FinalizePolymarketOrderbookStorage1788646000000
     if (
       finalRelations[0]?.source ||
       !finalRelations[0]?.target ||
-      finalRelations[0]?.legacy
+      !finalRelations[0]?.legacy
     ) {
-      throw new Error(`Polymarket orderbook cutover did not reach one physical table`);
+      throw new Error(`Polymarket orderbook canonical table move did not complete`);
     }
   }
 
