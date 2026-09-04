@@ -8,10 +8,10 @@ use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::domain::{BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillShard};
+use crate::strategies::backfill_support::{self, ArtifactCompletion};
 
 use super::{
     archive_support::ArchiveCancellation,
-    backfill_support::{self, ArtifactCompletion},
     l2_support::{
         self, CryptoHftBinanceL2Config, CryptoHftBinanceMarket, CryptoHftDayParseRequest,
         CryptoHftHourlySpec, CRYPTOHFT_ARCHIVE_PROVIDER,

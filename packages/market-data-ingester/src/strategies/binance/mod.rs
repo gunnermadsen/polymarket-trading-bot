@@ -3,7 +3,6 @@
 mod aggregate_trades;
 mod aggregate_trades_backfill;
 pub(crate) mod archive_support;
-mod backfill_support;
 mod coinapi_spot_l2_one_second_features_backfill;
 mod five_minute_open_interest_backfill;
 mod futures_l2_one_second_features_backfill;

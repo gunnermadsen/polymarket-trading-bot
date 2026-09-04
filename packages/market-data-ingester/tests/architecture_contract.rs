@@ -337,6 +337,43 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
     }
 }
 
+#[test]
+fn binance_backfills_use_the_authoritative_support_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(root.join("src/strategies/backfill_support.rs").exists());
+    assert!(
+        !root
+            .join("src/strategies/binance/backfill_support.rs")
+            .exists(),
+        "Binance must not define a parallel backfill support module"
+    );
+
+    let module = fs::read_to_string(root.join("src/strategies/binance/mod.rs")).unwrap();
+    assert!(!module.contains("mod backfill_support;"));
+
+    let binance = root.join("src/strategies/binance");
+    for entry in fs::read_dir(binance).unwrap().filter_map(Result::ok) {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.ends_with("backfill.rs") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).unwrap();
+        for forbidden in [
+            "async fn require_lease(",
+            "fn database_error(error: sqlx::Error)",
+            "fn validate_empty_request(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} duplicates authoritative support: {forbidden}"
+            );
+        }
+    }
+}
+
 fn repository_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

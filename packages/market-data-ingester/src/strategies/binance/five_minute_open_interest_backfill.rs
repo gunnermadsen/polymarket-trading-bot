@@ -9,10 +9,10 @@ use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support::{self, ArtifactCompletion};
 
 use super::{
     archive_support::ArchiveCancellation,
-    backfill_support::{self, ArtifactCompletion},
     open_interest_support::{
         BinanceOpenInterestConfig, BINANCE_OPEN_INTEREST_PROVIDER,
         DEFAULT_BINANCE_FUTURES_DATA_BASE_URL, DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,

@@ -14,11 +14,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
-use super::{backfill_support, l2_backfill_support, types::BinanceL2OneSecondFeature};
+use super::{l2_backfill_support, types::BinanceL2OneSecondFeature};
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support;
 
 pub const STRATEGY_KEY: &str = "coinapi_binance_spot_btcusdt_l2_one_second_features_backfill";
 const ARTIFACT_KEY: &str = "binance_spot_btcusdt_l2_one_second_features";

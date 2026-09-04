@@ -106,6 +106,44 @@ pub fn daily_shards(
     Ok(shards)
 }
 
+pub fn hourly_shards(
+    request: &ValidatedBackfillRequest,
+    maximum: usize,
+) -> Result<Vec<BackfillShard>, BackfillExecutionError> {
+    fixed_width_shards(request, maximum, chrono::Duration::hours(1), "hourly")
+}
+
+fn fixed_width_shards(
+    request: &ValidatedBackfillRequest,
+    maximum: usize,
+    width: chrono::Duration,
+    label: &str,
+) -> Result<Vec<BackfillShard>, BackfillExecutionError> {
+    let mut cursor = request.range_start;
+    let mut shards = Vec::new();
+    while cursor < request.range_end {
+        let end = (cursor + width).min(request.range_end);
+        shards.push(BackfillShard {
+            shard_key: format!(
+                "{}-{}",
+                cursor.format("%Y%m%dT%H%M%SZ"),
+                end.format("%Y%m%dT%H%M%SZ")
+            ),
+            range_start: cursor,
+            range_end: end,
+            parameters: json!({}),
+        });
+        if shards.len() > maximum {
+            return Err(BackfillExecutionError::invalid(
+                "too_many_shards",
+                format!("request exceeds {maximum} {label} shards"),
+            ));
+        }
+        cursor = end;
+    }
+    Ok(shards)
+}
+
 pub async fn completed_outcome(
     context: &BackfillContext,
     strategy_key: &str,
@@ -133,13 +171,59 @@ pub async fn create_artifact(
     durable_target: &str,
 ) -> Result<Uuid, BackfillExecutionError> {
     let mut tx = context.pool.begin().await.map_err(database_error)?;
-    require_lease(&mut tx, context).await?;
-    let artifact_id = sqlx::query_scalar(
-        "INSERT INTO ingester.backfill_artifacts (job_id,strategy_key,ingester_key,logical_key,provider,source_uri,durable_target,status,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,'ingesting','{}'::jsonb) ON CONFLICT (strategy_key,logical_key) DO UPDATE SET job_id=EXCLUDED.job_id,status='ingesting',completed_at=NULL RETURNING artifact_id",
-    ).bind(context.job_id).bind(strategy_key).bind(artifact_ingester_key).bind(logical_key).bind(provider).bind(source_uri).bind(durable_target)
-      .fetch_one(&mut *tx).await.map_err(database_error)?;
+    let artifact_id = create_artifact_in(
+        &mut tx,
+        context,
+        strategy_key,
+        artifact_ingester_key,
+        logical_key,
+        provider,
+        source_uri,
+        durable_target,
+    )
+    .await?;
     tx.commit().await.map_err(database_error)?;
     Ok(artifact_id)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_artifact_in(
+    tx: &mut Transaction<'_, Postgres>,
+    context: &BackfillContext,
+    strategy_key: &str,
+    artifact_ingester_key: &str,
+    logical_key: &str,
+    provider: &str,
+    source_uri: &str,
+    durable_target: &str,
+) -> Result<Uuid, BackfillExecutionError> {
+    require_lease(tx, context).await?;
+    sqlx::query_scalar(
+        r#"
+        INSERT INTO ingester.backfill_artifacts (
+          job_id,strategy_key,ingester_key,logical_key,provider,source_uri,
+          durable_target,status,metadata
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,'ingesting','{}'::jsonb)
+        ON CONFLICT (strategy_key,logical_key) DO UPDATE SET
+          job_id=EXCLUDED.job_id,ingester_key=EXCLUDED.ingester_key,
+          provider=EXCLUDED.provider,source_uri=EXCLUDED.source_uri,
+          durable_target=EXCLUDED.durable_target,status='ingesting',
+          completed_at=NULL,updated_at=now()
+        WHERE ingester.backfill_artifacts.status <> 'completed'
+        RETURNING artifact_id
+        "#,
+    )
+    .bind(context.job_id)
+    .bind(strategy_key)
+    .bind(artifact_ingester_key)
+    .bind(logical_key)
+    .bind(provider)
+    .bind(source_uri)
+    .bind(durable_target)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| integrity("completed backfill artifact is immutable"))
 }
 
 pub struct ArtifactCompletion<'a> {
@@ -158,7 +242,7 @@ pub async fn complete_artifact(
     completion: ArtifactCompletion<'_>,
 ) -> Result<(), BackfillExecutionError> {
     require_lease(tx, context).await?;
-    let updated = sqlx::query("UPDATE ingester.backfill_artifacts SET checksum=$2,byte_size=$3,record_count=$4,minimum_source_timestamp=$5,maximum_source_timestamp=$6,status='completed',metadata=$7,completed_at=now() WHERE artifact_id=$1 AND job_id=$8")
+    let updated = sqlx::query("UPDATE ingester.backfill_artifacts SET checksum=$2,actual_checksum=$2,byte_size=$3,record_count=$4,minimum_source_timestamp=$5,maximum_source_timestamp=$6,status='completed',metadata=$7,completed_at=now(),updated_at=now() WHERE artifact_id=$1 AND job_id=$8 AND status <> 'completed'")
         .bind(completion.artifact_id).bind(completion.checksum)
         .bind(i64::try_from(completion.byte_size).map_err(|_| integrity("artifact byte size overflow"))?)
         .bind(completion.record_count).bind(completion.minimum).bind(completion.maximum)
@@ -227,5 +311,49 @@ pub fn request(key: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> BackfillR
         range: crate::domain::BackfillRange { start, end },
         parameters: json!({}),
         execution: crate::domain::ExecutionSelector::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use super::{descriptor, hourly_shards, request, validate_empty_request};
+
+    #[test]
+    fn hourly_shards_are_deterministic_and_preserve_partial_boundaries() {
+        let descriptor = descriptor("test", "Test", "Test strategy").unwrap();
+        let request = request(
+            "test",
+            Utc.with_ymd_and_hms(2026, 9, 3, 10, 15, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 3, 12, 45, 0).unwrap(),
+        );
+        let validated = validate_empty_request(&descriptor, &request).unwrap();
+
+        let shards = hourly_shards(&validated, 3).unwrap();
+
+        assert_eq!(shards.len(), 3);
+        assert_eq!(shards[0].range_start, validated.range_start);
+        assert_eq!(
+            shards[0].range_end,
+            Utc.with_ymd_and_hms(2026, 9, 3, 11, 15, 0).unwrap()
+        );
+        assert_eq!(shards[2].range_end, validated.range_end);
+        assert_eq!(shards[0].shard_key, "20260903T101500Z-20260903T111500Z");
+    }
+
+    #[test]
+    fn hourly_shards_enforce_the_strategy_limit() {
+        let descriptor = descriptor("test", "Test", "Test strategy").unwrap();
+        let request = request(
+            "test",
+            Utc.with_ymd_and_hms(2026, 9, 3, 10, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap(),
+        );
+        let validated = validate_empty_request(&descriptor, &request).unwrap();
+
+        let error = hourly_shards(&validated, 1).unwrap_err();
+
+        assert_eq!(error.code, "too_many_shards");
     }
 }
