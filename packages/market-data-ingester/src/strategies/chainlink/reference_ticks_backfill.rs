@@ -22,7 +22,7 @@ use super::{
 };
 
 pub const STRATEGY_KEY: &str = "chainlink_btcusd_reference_ticks_backfill";
-const DURABLE_TARGET: &str = "market_data.chainlink_btcusd_reference_prices";
+const DURABLE_TARGET: &str = "polymarket.chainlink_btcusd_archive_ticks";
 
 pub struct ChainlinkBtcusdReferenceTicksBackfill {
     descriptor: StrategyDescriptor,
@@ -175,25 +175,18 @@ async fn persist(
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
     for chunk in records.chunks(1_000) {
-        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO market_data.chainlink_btcusd_reference_prices (source,feed_id,source_timestamp,valid_from_timestamp,provider_available_at,received_at,price,bid,ask,report_sha256,payload_sha256,strategy_key,capture_artifact_id,backfill_artifact_id,report_hash_kind) ");
+        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO polymarket.chainlink_btcusd_archive_ticks (feed_id,source_timestamp,valid_from_timestamp,price,bid,ask,report_sha256,artifact_id) ");
         query.push_values(chunk, |mut row, value| {
-            row.push_bind("chainlink_data_streams")
-                .push_bind(&value.feed_id)
+            row.push_bind(&value.feed_id)
                 .push_bind(value.source_timestamp)
                 .push_bind(value.valid_from_timestamp)
-                .push_bind(value.source_timestamp)
-                .push_bind(chrono::Utc::now())
                 .push_bind(value.price)
                 .push_bind(value.bid)
                 .push_bind(value.ask)
                 .push_bind(&value.report_sha256)
-                .push_bind(&value.report_sha256)
-                .push_bind(STRATEGY_KEY)
-                .push_bind(Option::<uuid::Uuid>::None)
-                .push_bind(artifact_id)
-                .push_bind("signed_report");
+                .push_bind(artifact_id);
         });
-        query.push(" ON CONFLICT (feed_id,source_timestamp,report_sha256) DO NOTHING");
+        query.push(" ON CONFLICT (feed_id,source_timestamp) DO NOTHING");
         query
             .build()
             .execute(&mut *tx)

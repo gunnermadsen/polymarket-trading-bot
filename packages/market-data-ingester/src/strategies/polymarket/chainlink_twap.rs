@@ -707,7 +707,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
         };
         sqlx::query(
             r#"
-            INSERT INTO polymarket.chainlink_btcusd_reference_prices (
+            INSERT INTO polymarket.reference_price_ticks (
               tick_id, source_timestamp, received_at, source, symbol, price,
               envelope_timestamp, connection_id, ingest_sequence, source_event_id,
               dedup_key, clock_skew_ms, integrity_status, raw_payload

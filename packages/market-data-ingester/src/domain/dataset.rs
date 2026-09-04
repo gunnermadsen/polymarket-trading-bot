@@ -240,7 +240,6 @@ pub enum DatasetKey {
     ChainlinkBtcusdOneMinuteCandles,
     PolygonChainlinkBtcusdOracleRounds,
     PmdataChainlinkBtcusdTwap,
-    PolymarketChainlinkBtcusdReferencePrices,
     PolymarketChainlinkBtcusdTwap,
     PolymarketBtcFiveMinuteOrderbookSnapshots,
 }
@@ -260,9 +259,6 @@ impl DatasetKey {
             Self::ChainlinkBtcusdOneMinuteCandles => "chainlink_btcusd_one_minute_candles",
             Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
             Self::PmdataChainlinkBtcusdTwap => "pmdata_chainlink_btcusd_twap",
-            Self::PolymarketChainlinkBtcusdReferencePrices => {
-                "polymarket_chainlink_btcusd_reference_prices"
-            }
             Self::PolymarketChainlinkBtcusdTwap => "polymarket_chainlink_btcusd_twap",
             Self::PolymarketBtcFiveMinuteOrderbookSnapshots => {
                 "polymarket_btc_five_minute_orderbook_snapshots"
@@ -540,28 +536,6 @@ pub const CONTRACTS: &[DatasetContract] = &[
         ],
     ),
     contract(
-        DatasetKey::PolymarketChainlinkBtcusdReferencePrices,
-        "polymarket.chainlink_btcusd_reference_prices",
-        &["source", "symbol", "source_timestamp", "dedup_key"],
-        &[
-            "tick_id",
-            "source_timestamp",
-            "received_at",
-            "persisted_at",
-            "source",
-            "symbol",
-            "price",
-            "envelope_timestamp",
-            "connection_id",
-            "ingest_sequence",
-            "source_event_id",
-            "dedup_key",
-            "clock_skew_ms",
-            "integrity_status",
-            "raw_payload",
-        ],
-    ),
-    contract(
         DatasetKey::PolymarketChainlinkBtcusdTwap,
         "market_data.polymarket_chainlink_btcusd_twap",
         &["source", "symbol", "source_timestamp", "window_seconds"],
@@ -583,7 +557,7 @@ pub const CONTRACTS: &[DatasetContract] = &[
     ),
     contract(
         DatasetKey::PolymarketBtcFiveMinuteOrderbookSnapshots,
-        "polymarket.btc_five_minute_orderbook_snapshots",
+        "market_data.polymarket_btc_five_minute_orderbook_snapshots",
         &["source", "token_id", "sampled_at"],
         &[
             "sampled_at",
@@ -615,10 +589,6 @@ pub const CONTRACTS: &[DatasetContract] = &[
             "strategy_key",
             "capture_artifact_id",
             "ingested_at",
-            "legacy_checkpoint_id",
-            "legacy_source_payload",
-            "bootstrap_source",
-            "integrity_status",
         ],
     ),
 ];
@@ -645,10 +615,9 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(keys.len(), CONTRACTS.len());
         assert_eq!(tables.len(), CONTRACTS.len());
-        assert!(CONTRACTS.iter().all(|item| {
-            item.canonical_table.starts_with("market_data.")
-                || item.canonical_table.starts_with("polymarket.")
-        }));
+        assert!(CONTRACTS
+            .iter()
+            .all(|item| item.canonical_table.starts_with("market_data.")));
     }
 
     #[test]
