@@ -131,10 +131,17 @@ export class ConsolidateCanonicalMarketDataTables1788559200000
        OR canonical.trade_count IS DISTINCT FROM legacy.trade_count
        OR canonical.taker_buy_base_volume IS DISTINCT FROM legacy.taker_buy_base_volume
        OR canonical.taker_buy_quote_volume IS DISTINCT FROM legacy.taker_buy_quote_volume`,
-      'open_timestamp', 1);
+      'open_timestamp',
+      1 / 24,
+    );
 
     let insertedCount = 0n;
-    for (const [rangeStart, rangeEnd] of await this.ranges(queryRunner, legacy, 'open_timestamp', 1)) {
+    for (const [rangeStart, rangeEnd] of await this.ranges(
+      queryRunner,
+      legacy,
+      'open_timestamp',
+      1 / 24,
+    )) {
       const inserted = await queryRunner.query(`
       WITH inserted AS (
       INSERT INTO ${canonical} (
@@ -172,6 +179,7 @@ export class ConsolidateCanonicalMarketDataTables1788559200000
       ) SELECT count(*)::bigint AS count FROM inserted
     `, [rangeStart, rangeEnd]);
       insertedCount += BigInt(inserted[0]?.count ?? '-1');
+      await this.pauseBetweenBatches();
     }
     this.assertCompleteAccounting(legacy, before, insertedCount);
     await queryRunner.query(`DROP TABLE ${legacy}`);
@@ -397,6 +405,10 @@ export class ConsolidateCanonicalMarketDataTables1788559200000
       start = end;
     }
     return ranges;
+  }
+
+  private async pauseBetweenBatches(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
   public async down(): Promise<void> {
