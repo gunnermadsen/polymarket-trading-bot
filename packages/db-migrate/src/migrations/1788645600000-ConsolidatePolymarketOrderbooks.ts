@@ -251,12 +251,22 @@ export class ConsolidatePolymarketOrderbooks1788645600000
     queryRunner: QueryRunner,
     artifactId: string,
   ): Promise<void> {
-    await queryRunner.query(`
-      DELETE FROM ${TARGET}
-      WHERE capture_artifact_id = $1::uuid
-        AND sampling_policy ->> 'legacy_event_driven_checkpoint' = 'true'
-        AND NOT sampling_policy ? 'legacy_checkpoint_id'
-    `, [artifactId]);
+    await queryRunner.startTransaction();
+    try {
+      await queryRunner.query(
+        'SET LOCAL session_replication_role = replica',
+      );
+      await queryRunner.query(`
+        DELETE FROM ${TARGET}
+        WHERE capture_artifact_id = $1::uuid
+          AND sampling_policy ->> 'legacy_event_driven_checkpoint' = 'true'
+          AND NOT sampling_policy ? 'legacy_checkpoint_id'
+      `, [artifactId]);
+      await queryRunner.commitTransaction();
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    }
   }
 
   private async ensureLegacyArtifact(
