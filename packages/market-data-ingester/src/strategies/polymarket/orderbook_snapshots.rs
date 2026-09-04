@@ -2675,7 +2675,7 @@ impl CaptureWriter {
                        outcome, tick_size, best_bid, best_ask, bid_depth,
                        ask_depth, bids, asks, source_hash, book_sha256,
                        sampling_policy, payload_sha256
-                FROM market_data.polymarket_btc_five_minute_orderbook_snapshots
+                FROM polymarket.btc_five_minute_orderbook_snapshots
                 WHERE sampled_at = $1
                   AND market_id = $2
                   AND token_id = $3
@@ -3230,7 +3230,7 @@ async fn insert_fact(
 ) -> Result<(), StrategyError> {
     sqlx::query(
         r#"
-        INSERT INTO market_data.polymarket_btc_five_minute_orderbook_snapshots (
+        INSERT INTO polymarket.btc_five_minute_orderbook_snapshots (
           sampled_at, source_timestamp, provider_available_at, received_at,
           source, market_id, condition_id, event_slug, window_start,
           window_end, token_id, outcome, connection_epoch, ingest_sequence,
@@ -3291,7 +3291,7 @@ async fn artifact_seal_in(
     let rows = sqlx::query_as::<_, ArtifactHashRow>(
         r#"
         SELECT sampled_at, market_id, token_id, payload_sha256
-        FROM market_data.polymarket_btc_five_minute_orderbook_snapshots
+        FROM polymarket.btc_five_minute_orderbook_snapshots
         WHERE capture_artifact_id = $1
         ORDER BY sampled_at, market_id, token_id, sampling_policy_sha256
         "#,
