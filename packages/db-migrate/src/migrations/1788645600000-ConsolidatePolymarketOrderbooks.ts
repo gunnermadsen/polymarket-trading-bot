@@ -200,7 +200,9 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         DROP CONSTRAINT IF EXISTS
           chk_market_data_polymarket_btc_five_minute_orderbook_prices,
         DROP CONSTRAINT IF EXISTS
-          chk_market_data_polymarket_btc_five_minute_orderbook_book;
+          chk_market_data_polymarket_btc_five_minute_orderbook_book,
+        DROP CONSTRAINT IF EXISTS
+          chk_market_data_polymarket_btc_five_minute_orderbook_time;
       ALTER TABLE ${TARGET}
         ADD CONSTRAINT
           chk_market_data_polymarket_btc_five_minute_orderbook_prices
@@ -222,6 +224,14 @@ export class ConsolidatePolymarketOrderbooks1788645600000
               bids, asks, bid_depth, ask_depth, best_bid, best_ask,
               (sampling_policy ->> 'top_n')::integer
             )
+          )
+        ) NOT VALID,
+        ADD CONSTRAINT
+          chk_market_data_polymarket_btc_five_minute_orderbook_time
+        CHECK (
+          legacy_checkpoint_id IS NOT NULL OR (
+            provider_available_at = source_timestamp
+            AND received_at <= sampled_at
           )
         ) NOT VALID;
 
