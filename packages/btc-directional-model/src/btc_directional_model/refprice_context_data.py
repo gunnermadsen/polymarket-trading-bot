@@ -44,16 +44,16 @@ SOURCE_SQL = {
 SOURCE_RELATIONS = {
     "labels": ("polymarket.btc_interval_markets",),
     "core": (
-        "polymarket.binance_one_second_klines",
+        "market_data.binance_spot_btcusdt_one_second_ohlcv",
         "market_data.binance_spot_btcusdt_one_second_ohlcv",
     ),
     "refprice": ("market_data.chainlink_btcusd_reference_prices",),
     "oracle": (
-        "polymarket.polygon_chainlink_btcusd_oracle_rounds",
+        "market_data.polygon_chainlink_btcusd_oracle_rounds",
         "market_data.polygon_chainlink_btcusd_oracle_rounds",
     ),
     "candles": (
-        "polymarket.chainlink_btcusd_one_minute_candles",
+        "market_data.chainlink_btcusd_one_minute_candles",
         "market_data.chainlink_btcusd_one_minute_candles",
     ),
     "open_interest": ("market_data.binance_futures_btcusdt_open_interest",),

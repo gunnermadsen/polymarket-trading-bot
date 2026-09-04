@@ -8,9 +8,9 @@ WITH eligible_markets AS MATERIALIZED (
 ),
 prices AS MATERIALIZED (
   SELECT kline.open_timestamp, kline.close_price::double precision AS price
-  FROM polymarket.binance_one_second_klines kline
-  JOIN polymarket.backfill_artifacts artifact
-    ON artifact.artifact_id = kline.artifact_id
+  FROM market_data.binance_spot_btcusdt_one_second_ohlcv kline
+  JOIN ingester.capture_artifacts artifact
+    ON artifact.artifact_id = kline.capture_artifact_id
    AND artifact.status = 'completed'
   WHERE kline.symbol = 'BTCUSDT'
     AND kline.open_timestamp >= %(batch_start)s - interval '60 seconds'

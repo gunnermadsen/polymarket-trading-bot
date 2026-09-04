@@ -653,7 +653,7 @@ async fn connect_test_database() -> Result<Option<PgPool>> {
         SELECT to_regclass('polymarket.backfill_jobs') IS NOT NULL
           AND to_regclass('polymarket.backfill_artifacts') IS NOT NULL
           AND to_regclass('polymarket.binance_aggregate_trades') IS NOT NULL
-          AND to_regclass('polymarket.binance_one_second_klines') IS NOT NULL
+          AND to_regclass('market_data.binance_spot_btcusdt_one_second_ohlcv') IS NOT NULL
           AND to_regclass('polymarket.binance_btcusdt_l2_one_second_features') IS NOT NULL
           AND to_regclass('polymarket.binance_btcusdt_l2_one_second_features_staging') IS NOT NULL
           AND to_regclass('polymarket.binance_btcusdt_l2_training_features') IS NOT NULL
@@ -1104,7 +1104,7 @@ async fn cleanup_tagged_rows(pool: &PgPool, tag: &str) -> Result<()> {
     .await?;
     sqlx::query(
         r#"
-        DELETE FROM polymarket.binance_one_second_klines
+        DELETE FROM market_data.binance_spot_btcusdt_one_second_ohlcv
         WHERE artifact_id IN (
           SELECT artifact.artifact_id
           FROM polymarket.backfill_artifacts AS artifact

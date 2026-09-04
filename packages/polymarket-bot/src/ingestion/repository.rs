@@ -36,9 +36,6 @@ const MAX_ORDERBOOK_EVENT_INSERT_ROWS: usize =
 const EXECUTION_SNAPSHOT_INSERT_COLUMNS: usize = 55;
 const MAX_EXECUTION_SNAPSHOT_INSERT_ROWS: usize =
     POSTGRES_MAX_BIND_PARAMETERS / EXECUTION_SNAPSHOT_INSERT_COLUMNS;
-const POLYGON_CHAINLINK_INSERT_COLUMNS: usize = 15;
-const MAX_POLYGON_CHAINLINK_INSERT_ROWS: usize =
-    POSTGRES_MAX_BIND_PARAMETERS / POLYGON_CHAINLINK_INSERT_COLUMNS;
 const BINANCE_L2_FEATURE_INSERT_COLUMNS: usize = 49;
 const MAX_BINANCE_L2_FEATURE_INSERT_ROWS: usize = 1_000;
 const BINANCE_FUTURES_L2_FEATURE_SCHEMA_VERSION: &str = "binance-btcusdt-l2-one-second-features-v1";
@@ -1975,77 +1972,11 @@ impl IngestionRepository {
 
     pub async fn insert_chainlink_candle_batch(
         &self,
-        claim: &ClaimedJob,
-        artifact_id: Uuid,
-        records: &[ChainlinkBtcusdOneMinuteCandle],
+        _claim: &ClaimedJob,
+        _artifact_id: Uuid,
+        _records: &[ChainlinkBtcusdOneMinuteCandle],
     ) -> Result<BatchWriteResult> {
-        if records.is_empty() {
-            return Ok(BatchWriteResult::default());
-        }
-        if records.len() > MAX_DATABASE_BATCH_ROWS {
-            bail!("Chainlink candle batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
-        }
-        validate_chainlink_candle_batch(records)?;
-        let mut tx = self.pool.begin().await?;
-        require_active_lease(&mut tx, claim).await?;
-        require_writable_artifact(&mut tx, claim, artifact_id).await?;
-        let timestamps = records
-            .iter()
-            .map(|record| record.open_timestamp)
-            .collect::<Vec<_>>();
-        let existing = sqlx::query_as::<_, ExistingChainlinkCandleRow>(
-            r#"
-            SELECT symbol, open_timestamp, close_timestamp, open_price, high_price,
-              low_price, close_price, volume, volume_supported, artifact_id
-            FROM polymarket.chainlink_btcusd_one_minute_candles
-            WHERE symbol = $1 AND open_timestamp = ANY($2)
-            "#,
-        )
-        .bind(&records[0].symbol)
-        .bind(&timestamps)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to inspect existing Chainlink candles")?;
-        for stored in &existing {
-            let candidate = records
-                .iter()
-                .find(|record| record.open_timestamp == stored.open_timestamp)
-                .context("stored Chainlink candle identity was absent from candidate batch")?;
-            if !stored.same_as(candidate, artifact_id) {
-                bail!(
-                    "immutable Chainlink candle conflict for {}:{}",
-                    stored.symbol,
-                    stored.open_timestamp
-                );
-            }
-        }
-
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.chainlink_btcusd_one_minute_candles (symbol, \
-             open_timestamp, close_timestamp, open_price, high_price, low_price, close_price, \
-             volume, volume_supported, artifact_id) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(&record.symbol)
-                .push_bind(record.open_timestamp)
-                .push_bind(record.close_timestamp)
-                .push_bind(record.open_price)
-                .push_bind(record.high_price)
-                .push_bind(record.low_price)
-                .push_bind(record.close_price)
-                .push_bind(record.volume)
-                .push_bind(record.volume_supported)
-                .push_bind(artifact_id);
-        });
-        query.push(" ON CONFLICT (symbol, open_timestamp) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist Chainlink candle batch")?
-            .rows_affected();
-        tx.commit().await?;
-        batch_write_result(records.len(), inserted, "Chainlink candle")
+        bail!("legacy Chainlink candle persistence is retired; schedule the canonical ingester strategy")
     }
 
     pub async fn existing_chainlink_candle_timestamps(
@@ -2059,7 +1990,7 @@ impl IngestionRepository {
         let existing = sqlx::query_scalar::<_, DateTime<Utc>>(
             r#"
             SELECT open_timestamp
-            FROM polymarket.chainlink_btcusd_one_minute_candles
+            FROM market_data.chainlink_btcusd_one_minute_candles
             WHERE symbol = $1 AND open_timestamp = ANY($2)
             "#,
         )
@@ -2073,94 +2004,11 @@ impl IngestionRepository {
 
     pub async fn insert_polygon_chainlink_oracle_round_batch(
         &self,
-        claim: &ClaimedJob,
-        artifact_id: Uuid,
-        records: &[PolygonChainlinkBtcusdOracleRound],
+        _claim: &ClaimedJob,
+        _artifact_id: Uuid,
+        _records: &[PolygonChainlinkBtcusdOracleRound],
     ) -> Result<BatchWriteResult> {
-        if records.is_empty() {
-            return Ok(BatchWriteResult::default());
-        }
-        if records.len() > MAX_POLYGON_CHAINLINK_INSERT_ROWS {
-            bail!(
-                "Polygon Chainlink oracle batch exceeds {MAX_POLYGON_CHAINLINK_INSERT_ROWS} rows"
-            );
-        }
-        validate_polygon_chainlink_oracle_batch(records)?;
-        let mut tx = self.pool.begin().await?;
-        require_active_lease(&mut tx, claim).await?;
-        require_writable_artifact(&mut tx, claim, artifact_id).await?;
-        let transaction_hashes = records
-            .iter()
-            .map(|record| record.transaction_hash.clone())
-            .collect::<Vec<_>>();
-        let existing = sqlx::query_as::<_, ExistingPolygonChainlinkOracleRoundRow>(
-            r#"
-            SELECT chain_id, feed_proxy_address, aggregator_address, phase_id,
-              aggregator_round_id, source_timestamp, block_timestamp, answer_raw, price,
-              decimals, block_number, block_hash, transaction_hash, log_index, artifact_id
-            FROM polymarket.polygon_chainlink_btcusd_oracle_rounds
-            WHERE feed_proxy_address = $1 AND transaction_hash = ANY($2)
-            "#,
-        )
-        .bind(&records[0].feed_proxy_address)
-        .bind(&transaction_hashes)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to inspect existing Polygon Chainlink oracle rounds")?;
-        for stored in &existing {
-            let candidate = records
-                .iter()
-                .find(|record| {
-                    record.transaction_hash == stored.transaction_hash
-                        && record.log_index == stored.log_index
-                })
-                .context(
-                    "stored Polygon Chainlink oracle identity was absent from candidate batch",
-                )?;
-            if !stored.same_as(candidate, artifact_id) {
-                bail!(
-                    "immutable Polygon Chainlink oracle conflict for {}:{}",
-                    stored.transaction_hash,
-                    stored.log_index
-                );
-            }
-        }
-
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.polygon_chainlink_btcusd_oracle_rounds (chain_id, \
-             feed_proxy_address, aggregator_address, phase_id, aggregator_round_id, \
-             source_timestamp, block_timestamp, answer_raw, price, decimals, block_number, \
-             block_hash, transaction_hash, log_index, artifact_id) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(record.chain_id)
-                .push_bind(&record.feed_proxy_address)
-                .push_bind(&record.aggregator_address)
-                .push_bind(record.phase_id)
-                .push_bind(record.aggregator_round_id)
-                .push_bind(record.source_timestamp)
-                .push_bind(record.block_timestamp)
-                .push_bind(record.answer_raw)
-                .push_bind(record.price)
-                .push_bind(record.decimals)
-                .push_bind(record.block_number)
-                .push_bind(&record.block_hash)
-                .push_bind(&record.transaction_hash)
-                .push_bind(record.log_index)
-                .push_bind(artifact_id);
-        });
-        query.push(
-            " ON CONFLICT (feed_proxy_address, source_timestamp, transaction_hash, log_index) \
-             DO NOTHING",
-        );
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist Polygon Chainlink oracle round batch")?
-            .rows_affected();
-        tx.commit().await?;
-        batch_write_result(records.len(), inserted, "Polygon Chainlink oracle round")
+        bail!("legacy Polygon Chainlink oracle persistence is retired; schedule the canonical ingester strategy")
     }
 
     pub async fn insert_aggregate_trade_batch(
@@ -2174,87 +2022,11 @@ impl IngestionRepository {
 
     pub async fn insert_one_second_kline_batch(
         &self,
-        claim: &ClaimedJob,
-        artifact_id: Uuid,
-        records: &[BinanceOneSecondKlineRecord],
+        _claim: &ClaimedJob,
+        _artifact_id: Uuid,
+        _records: &[BinanceOneSecondKlineRecord],
     ) -> Result<BatchWriteResult> {
-        if records.is_empty() {
-            return Ok(BatchWriteResult::default());
-        }
-        if records.len() > MAX_DATABASE_BATCH_ROWS {
-            bail!("one-second-kline batch exceeds {MAX_DATABASE_BATCH_ROWS} rows");
-        }
-        validate_kline_batch(records)?;
-        let mut tx = self.pool.begin().await?;
-        require_active_lease(&mut tx, claim).await?;
-        require_writable_artifact(&mut tx, claim, artifact_id).await?;
-
-        let timestamps = records
-            .iter()
-            .map(|record| record.open_timestamp)
-            .collect::<Vec<_>>();
-        let existing = sqlx::query_as::<_, ExistingKlineRow>(
-            r#"
-            SELECT symbol, open_timestamp, close_timestamp, open_price, high_price,
-              low_price, close_price, base_volume, quote_volume, trade_count,
-              taker_buy_base_volume, taker_buy_quote_volume, artifact_id
-            FROM polymarket.binance_one_second_klines
-            WHERE symbol = 'BTCUSDT' AND open_timestamp = ANY($1)
-            "#,
-        )
-        .bind(&timestamps)
-        .fetch_all(&mut *tx)
-        .await
-        .context("failed to inspect existing Binance one-second klines")?;
-        for stored in &existing {
-            let candidate = records
-                .iter()
-                .find(|record| record.open_timestamp == stored.open_timestamp)
-                .context("stored kline identity was absent from its candidate batch")?;
-            if !stored.same_as(candidate, artifact_id) {
-                bail!(
-                    "immutable Binance one-second-kline conflict for {}:{}",
-                    stored.symbol,
-                    stored.open_timestamp
-                );
-            }
-        }
-
-        let mut query = QueryBuilder::<Postgres>::new(
-            "INSERT INTO polymarket.binance_one_second_klines (symbol, open_timestamp, \
-             close_timestamp, open_price, high_price, low_price, close_price, base_volume, \
-             quote_volume, trade_count, taker_buy_base_volume, taker_buy_quote_volume, \
-             artifact_id) ",
-        );
-        query.push_values(records, |mut row, record| {
-            row.push_bind(&record.symbol)
-                .push_bind(record.open_timestamp)
-                .push_bind(record.close_timestamp)
-                .push_bind(record.open_price)
-                .push_bind(record.high_price)
-                .push_bind(record.low_price)
-                .push_bind(record.close_price)
-                .push_bind(record.base_volume)
-                .push_bind(record.quote_volume)
-                .push_bind(record.trade_count)
-                .push_bind(record.taker_buy_base_volume)
-                .push_bind(record.taker_buy_quote_volume)
-                .push_bind(artifact_id);
-        });
-        query.push(" ON CONFLICT (symbol, open_timestamp) DO NOTHING");
-        let inserted = query
-            .build()
-            .execute(&mut *tx)
-            .await
-            .context("failed to persist Binance one-second-kline batch")?
-            .rows_affected();
-        tx.commit().await?;
-        let input = u64::try_from(records.len()).context("kline batch size overflow")?;
-        Ok(BatchWriteResult {
-            input_records: input,
-            inserted_records: inserted,
-            duplicate_records: input.saturating_sub(inserted),
-        })
+        bail!("legacy Binance OHLCV persistence is retired; schedule the canonical ingester strategy")
     }
 
     pub async fn stage_binance_l2_one_second_feature_batch(
@@ -3252,7 +3024,7 @@ impl IngestionRepository {
                   SELECT count(*) = 300
                     AND min(k.open_timestamp) = m.window_start
                     AND max(k.open_timestamp) = m.window_end - interval '1 second'
-                  FROM polymarket.binance_one_second_klines k
+                  FROM market_data.binance_spot_btcusdt_one_second_ohlcv k
                   JOIN polymarket.backfill_artifacts a USING (artifact_id)
                   WHERE k.symbol = 'BTCUSDT'
                     AND k.open_timestamp >= m.window_start
@@ -3318,10 +3090,10 @@ impl IngestionRepository {
               (SELECT max(trade_timestamp) FROM market_data.binance_spot_btcusdt_aggregate_trades
                 WHERE symbol = 'BTCUSDT' AND trade_timestamp >= $1 AND trade_timestamp < $2)
                 AS aggregate_trade_max_timestamp,
-              (SELECT min(open_timestamp) FROM polymarket.binance_one_second_klines
+              (SELECT min(open_timestamp) FROM market_data.binance_spot_btcusdt_one_second_ohlcv
                 WHERE symbol = 'BTCUSDT' AND open_timestamp >= $1 AND open_timestamp < $2)
                 AS one_second_kline_min_timestamp,
-              (SELECT max(open_timestamp) FROM polymarket.binance_one_second_klines
+              (SELECT max(open_timestamp) FROM market_data.binance_spot_btcusdt_one_second_ohlcv
                 WHERE symbol = 'BTCUSDT' AND open_timestamp >= $1 AND open_timestamp < $2)
                 AS one_second_kline_max_timestamp,
               (SELECT min(source_timestamp) FROM polymarket.chainlink_btcusd_archive_ticks
@@ -3633,41 +3405,6 @@ impl TryFrom<BtcResolutionCandidateRow> for BtcResolutionCandidate {
 }
 
 #[derive(Debug, FromRow)]
-struct ExistingKlineRow {
-    symbol: String,
-    open_timestamp: DateTime<Utc>,
-    close_timestamp: DateTime<Utc>,
-    open_price: Decimal,
-    high_price: Decimal,
-    low_price: Decimal,
-    close_price: Decimal,
-    base_volume: Decimal,
-    quote_volume: Decimal,
-    trade_count: i64,
-    taker_buy_base_volume: Decimal,
-    taker_buy_quote_volume: Decimal,
-    artifact_id: Uuid,
-}
-
-impl ExistingKlineRow {
-    fn same_as(&self, row: &BinanceOneSecondKlineRecord, artifact_id: Uuid) -> bool {
-        self.symbol == row.symbol
-            && self.open_timestamp == row.open_timestamp
-            && self.close_timestamp == row.close_timestamp
-            && self.open_price == row.open_price
-            && self.high_price == row.high_price
-            && self.low_price == row.low_price
-            && self.close_price == row.close_price
-            && self.base_volume == row.base_volume
-            && self.quote_volume == row.quote_volume
-            && self.trade_count == row.trade_count
-            && self.taker_buy_base_volume == row.taker_buy_base_volume
-            && self.taker_buy_quote_volume == row.taker_buy_quote_volume
-            && self.artifact_id == artifact_id
-    }
-}
-
-#[derive(Debug, FromRow)]
 struct ExistingBinanceL2OneSecondFeatureRow {
     symbol: String,
     second_start: DateTime<Utc>,
@@ -3944,59 +3681,6 @@ struct ExistingPmdataRefpriceRow {
     report_sha256: String,
 }
 
-#[derive(Debug, FromRow)]
-struct ExistingChainlinkCandleRow {
-    symbol: String,
-    open_timestamp: DateTime<Utc>,
-    close_timestamp: DateTime<Utc>,
-    open_price: Decimal,
-    high_price: Decimal,
-    low_price: Decimal,
-    close_price: Decimal,
-    volume: Option<Decimal>,
-    volume_supported: bool,
-    artifact_id: Uuid,
-}
-
-#[derive(Debug, FromRow)]
-struct ExistingPolygonChainlinkOracleRoundRow {
-    chain_id: i64,
-    feed_proxy_address: String,
-    aggregator_address: String,
-    phase_id: i32,
-    aggregator_round_id: i64,
-    source_timestamp: DateTime<Utc>,
-    block_timestamp: DateTime<Utc>,
-    answer_raw: Decimal,
-    price: Decimal,
-    decimals: i32,
-    block_number: i64,
-    block_hash: String,
-    transaction_hash: String,
-    log_index: i32,
-    artifact_id: Uuid,
-}
-
-impl ExistingPolygonChainlinkOracleRoundRow {
-    fn same_as(&self, row: &PolygonChainlinkBtcusdOracleRound, artifact_id: Uuid) -> bool {
-        self.chain_id == row.chain_id
-            && self.feed_proxy_address == row.feed_proxy_address
-            && self.aggregator_address == row.aggregator_address
-            && self.phase_id == row.phase_id
-            && self.aggregator_round_id == row.aggregator_round_id
-            && self.source_timestamp == row.source_timestamp
-            && self.block_timestamp == row.block_timestamp
-            && self.answer_raw == row.answer_raw
-            && self.price == row.price
-            && self.decimals == row.decimals
-            && self.block_number == row.block_number
-            && self.block_hash == row.block_hash
-            && self.transaction_hash == row.transaction_hash
-            && self.log_index == row.log_index
-            && self.artifact_id == artifact_id
-    }
-}
-
 impl ExistingChainlinkTickRow {
     fn same_as(&self, row: &ChainlinkBtcusdArchiveTick, artifact_id: Uuid) -> bool {
         self.feed_id == row.feed_id
@@ -4040,21 +3724,6 @@ impl ExistingPmdataRefpriceRow {
             && self.archive_row_number == row.archive_row_number
             && self.artifact_id == artifact_id
             && self.report_sha256 == row.canonical_row_sha256
-    }
-}
-
-impl ExistingChainlinkCandleRow {
-    fn same_as(&self, row: &ChainlinkBtcusdOneMinuteCandle, artifact_id: Uuid) -> bool {
-        self.symbol == row.symbol
-            && self.open_timestamp == row.open_timestamp
-            && self.close_timestamp == row.close_timestamp
-            && self.open_price == row.open_price
-            && self.high_price == row.high_price
-            && self.low_price == row.low_price
-            && self.close_price == row.close_price
-            && self.volume == row.volume
-            && self.volume_supported == row.volume_supported
-            && self.artifact_id == artifact_id
     }
 }
 
@@ -4191,36 +3860,6 @@ fn integer_json_field(value: &Value, keys: &[&str]) -> Option<i32> {
 
 fn bool_json_field(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| value.get(*key)?.as_bool())
-}
-
-fn validate_kline_batch(records: &[BinanceOneSecondKlineRecord]) -> Result<()> {
-    let mut previous = None;
-    for record in records {
-        if record.symbol != "BTCUSDT"
-            || record.open_price <= Decimal::ZERO
-            || record.high_price < record.open_price
-            || record.high_price < record.close_price
-            || record.high_price < record.low_price
-            || record.low_price > record.open_price
-            || record.low_price > record.close_price
-            || record.base_volume < Decimal::ZERO
-            || record.quote_volume < Decimal::ZERO
-            || record.trade_count < 0
-            || record.taker_buy_base_volume < Decimal::ZERO
-            || record.taker_buy_base_volume > record.base_volume
-            || record.taker_buy_quote_volume < Decimal::ZERO
-            || record.taker_buy_quote_volume > record.quote_volume
-            || record.close_timestamp < record.open_timestamp
-            || record.close_timestamp >= record.open_timestamp + chrono::Duration::seconds(1)
-        {
-            bail!("invalid Binance one-second-kline record");
-        }
-        if previous.is_some_and(|timestamp| record.open_timestamp <= timestamp) {
-            bail!("kline batch timestamps must be strictly increasing");
-        }
-        previous = Some(record.open_timestamp);
-    }
-    Ok(())
 }
 
 fn validate_binance_l2_one_second_feature_batch(
@@ -4520,88 +4159,6 @@ fn validate_pmdata_refprice_batch(records: &[PmdataChainlinkBtcusdRefpriceRecord
         previous_row_number = Some(record.archive_row_number);
     }
     Ok(())
-}
-
-fn validate_chainlink_candle_batch(records: &[ChainlinkBtcusdOneMinuteCandle]) -> Result<()> {
-    let mut previous = None;
-    for record in records {
-        if record.symbol != "BTCUSD"
-            || record.open_timestamp.timestamp().rem_euclid(60) != 0
-            || record.close_timestamp != record.open_timestamp + chrono::Duration::minutes(1)
-            || record.open_price <= Decimal::ZERO
-            || record.high_price < record.open_price
-            || record.high_price < record.close_price
-            || record.high_price < record.low_price
-            || record.low_price > record.open_price
-            || record.low_price > record.close_price
-            || (record.volume_supported
-                && record.volume.is_none_or(|volume| volume < Decimal::ZERO))
-            || (!record.volume_supported && record.volume.is_some())
-        {
-            bail!("invalid Chainlink BTC/USD one-minute candle record");
-        }
-        if previous.is_some_and(|timestamp| record.open_timestamp <= timestamp) {
-            bail!("Chainlink candle timestamps must be strictly increasing within a batch");
-        }
-        previous = Some(record.open_timestamp);
-    }
-    Ok(())
-}
-
-fn validate_polygon_chainlink_oracle_batch(
-    records: &[PolygonChainlinkBtcusdOracleRound],
-) -> Result<()> {
-    let feed_proxy_address = &records[0].feed_proxy_address;
-    let mut previous = None;
-    for record in records {
-        if record.chain_id != 137
-            || &record.feed_proxy_address != feed_proxy_address
-            || !valid_evm_address(&record.feed_proxy_address)
-            || !valid_evm_address(&record.aggregator_address)
-            || record.phase_id <= 0
-            || record.aggregator_round_id <= 0
-            || record.source_timestamp > record.block_timestamp
-            || record.answer_raw <= Decimal::ZERO
-            || record.answer_raw.scale() != 0
-            || record.price <= Decimal::ZERO
-            || !(0..=18).contains(&record.decimals)
-            || record.block_number <= 0
-            || !valid_evm_hash(&record.block_hash)
-            || !valid_evm_hash(&record.transaction_hash)
-            || record.log_index < 0
-        {
-            bail!("invalid Polygon Chainlink BTC/USD oracle round");
-        }
-        let expected_price = Decimal::from_i128_with_scale(
-            record.answer_raw.mantissa(),
-            u32::try_from(record.decimals).context("invalid Polygon Chainlink decimals")?,
-        );
-        if record.price != expected_price {
-            bail!("invalid Polygon Chainlink BTC/USD scaled price");
-        }
-        let identity = (
-            record.source_timestamp,
-            record.block_number,
-            record.log_index,
-        );
-        if previous.is_some_and(|value| identity <= value) {
-            bail!("Polygon Chainlink oracle rounds must be strictly ordered within a batch");
-        }
-        previous = Some(identity);
-    }
-    Ok(())
-}
-
-fn valid_evm_address(value: &str) -> bool {
-    value.len() == 42
-        && value.starts_with("0x")
-        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn valid_evm_hash(value: &str) -> bool {
-    value.len() == 66
-        && value.starts_with("0x")
-        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn batch_write_result(records: usize, inserted: u64, name: &str) -> Result<BatchWriteResult> {

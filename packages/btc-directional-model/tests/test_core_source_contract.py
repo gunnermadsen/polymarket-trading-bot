@@ -55,7 +55,7 @@ def test_core_arrow_schema_contains_no_book_or_live_fields() -> None:
 def test_oracle_sql_uses_only_canonical_completed_oracle_rounds() -> None:
     sql = oracle_source_sql().lower()
 
-    assert "polymarket.polygon_chainlink_btcusd_oracle_rounds" in sql
+    assert "market_data.polygon_chainlink_btcusd_oracle_rounds" in sql
     assert "polymarket.backfill_artifacts" in sql
     assert "artifact.status = 'completed'" in sql
     assert "round.feed_proxy_address = %(oracle_feed_proxy_address)s" in sql
