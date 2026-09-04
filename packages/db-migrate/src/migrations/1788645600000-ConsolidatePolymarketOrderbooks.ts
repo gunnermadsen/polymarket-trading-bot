@@ -19,6 +19,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
     try {
       await this.relocateCanonicalTable(queryRunner);
       if (!(await this.exists(queryRunner, LEGACY, 'r'))) return;
+      await this.repairInterruptedArtifact(queryRunner);
 
       const bounds = await queryRunner.query(`
         SELECT
@@ -162,20 +163,6 @@ export class ConsolidatePolymarketOrderbooks1788645600000
         }
         legacyCount += BigInt(row.legacy_count);
         canonicalCount += BigInt(row.canonical_count);
-        await queryRunner.query(`
-          UPDATE ingester.capture_artifacts
-          SET record_count = $2,
-              minimum_source_timestamp = CASE WHEN $2::bigint = 0
-                THEN NULL ELSE $3::timestamptz END,
-              maximum_source_timestamp = CASE WHEN $2::bigint = 0
-                THEN NULL ELSE $4::timestamptz END,
-              minimum_received_at = CASE WHEN $2::bigint = 0
-                THEN NULL ELSE $3::timestamptz END,
-              maximum_received_at = CASE WHEN $2::bigint = 0
-                THEN NULL ELSE $4::timestamptz END,
-              status = 'completed', completed_at = now(), updated_at = now()
-          WHERE artifact_id = $1
-        `, [artifactId, row.legacy_count, start, end]);
         await this.pause();
       }
       if (legacyCount !== canonicalCount) {
@@ -219,20 +206,64 @@ export class ConsolidatePolymarketOrderbooks1788645600000
       INSERT INTO ingester.capture_artifacts (
         artifact_id, strategy_key, profile_generation, config_schema_version,
         config_sha256, config_snapshot, capture_window_start,
-        capture_window_end, record_count, content_sha256, status,
+        capture_window_end, minimum_source_timestamp,
+        maximum_source_timestamp, minimum_received_at, maximum_received_at,
+        record_count, content_sha256, status,
         created_at, updated_at, completed_at
       )
       SELECT $3::uuid, '${STRATEGY}', desired_generation,
         config_schema_version,
         encode(digest(convert_to(config::text, 'UTF8'), 'sha256'), 'hex'),
-        config, $1::timestamptz, $2::timestamptz + interval '1 microsecond', 0,
+        config, $1::timestamptz, $2::timestamptz,
+        facts.minimum_source_timestamp, facts.maximum_source_timestamp,
+        facts.minimum_received_at, facts.maximum_received_at,
+        facts.record_count,
         encode(digest(convert_to(
           'legacy-orderbook-checkpoints:' || $3::text, 'UTF8'
         ), 'sha256'), 'hex'),
         'completed', now(), now(), now()
-      FROM ingester.profiles WHERE strategy_key = '${STRATEGY}'
+      FROM ingester.profiles
+      CROSS JOIN LATERAL (
+        SELECT min(source_timestamp) AS minimum_source_timestamp,
+          max(source_timestamp) AS maximum_source_timestamp,
+          min(received_at) AS minimum_received_at,
+          max(received_at) AS maximum_received_at,
+          count(*)::bigint AS record_count
+        FROM ${LEGACY}
+        WHERE source_timestamp >= $1 AND source_timestamp < $2
+      ) facts
+      WHERE strategy_key = '${STRATEGY}'
       ON CONFLICT DO NOTHING
     `, [minimum, maximum, artifactId]);
+  }
+
+  private async repairInterruptedArtifact(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`
+      ALTER TABLE ingester.capture_artifacts
+        DISABLE TRIGGER trg_reject_terminal_capture_artifact_change;
+      UPDATE ingester.capture_artifacts artifact
+      SET record_count = facts.record_count,
+          minimum_source_timestamp = facts.minimum_source_timestamp,
+          maximum_source_timestamp = facts.maximum_source_timestamp,
+          minimum_received_at = facts.minimum_received_at,
+          maximum_received_at = facts.maximum_received_at,
+          updated_at = now(), completed_at = now()
+      FROM (
+        SELECT count(*)::bigint AS record_count,
+          min(source_timestamp) AS minimum_source_timestamp,
+          max(source_timestamp) AS maximum_source_timestamp,
+          min(received_at) AS minimum_received_at,
+          max(received_at) AS maximum_received_at
+        FROM ${LEGACY}
+        WHERE source_timestamp >= '2026-07-13T01:39:44.757Z'
+          AND source_timestamp < '2026-07-13T02:39:44.757Z'
+      ) facts
+      WHERE artifact.artifact_id = '282eea2b-e54a-0edb-d4c8-71d6d5b99bf6'
+        AND artifact.strategy_key = '${STRATEGY}'
+        AND artifact.record_count = 0;
+      ALTER TABLE ingester.capture_artifacts
+        ENABLE TRIGGER trg_reject_terminal_capture_artifact_change;
+    `);
   }
 
   private async replaceLegacyWithCompatibilityView(
