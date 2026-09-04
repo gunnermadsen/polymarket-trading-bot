@@ -851,13 +851,6 @@ impl Store {
               SELECT count(*)::bigint AS total, max(timestamp_utc) AS last_fill_at
               FROM polymarket.fills
               WHERE process_id = $1
-            ),
-            jobs AS (
-              SELECT job_id, status, requested_at, started_at, completed_at, error
-              FROM polymarket.backfill_jobs
-              WHERE request->>'process_id' = $1::text
-              ORDER BY requested_at DESC
-              LIMIT 1
             )
             SELECT jsonb_build_object(
               'process', to_jsonb(process),
@@ -873,23 +866,12 @@ impl Store {
                 'total', fills.total,
                 'last_fill_at', fills.last_fill_at
               ),
-              'last_job', CASE
-                WHEN jobs.job_id IS NULL THEN NULL
-                ELSE jsonb_build_object(
-                  'job_id', jobs.job_id,
-                  'status', jobs.status,
-                  'requested_at', jobs.requested_at,
-                  'started_at', jobs.started_at,
-                  'completed_at', jobs.completed_at,
-                  'error', jobs.error
-                )
-              END
+              'last_job', NULL
             )
             FROM process
             CROSS JOIN orders
             CROSS JOIN order_states
             CROSS JOIN fills
-            LEFT JOIN jobs ON true
             "#,
         )
         .bind(process_id)

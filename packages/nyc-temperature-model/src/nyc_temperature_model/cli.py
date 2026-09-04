@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from . import PROCESS_ID
@@ -14,28 +14,10 @@ from .config import Settings
 from .database import connection
 from .environment_snapshot import audit_environment_coverage, export_environment_snapshot
 from .execution_ingestion import ingest_pmxt_execution
-from .goes_ingestion import FEATURE_SCHEMA_VERSION as GOES_FEATURE_VERSION
-from .goes_ingestion import PRODUCTS as GOES_PRODUCTS
-from .goes_ingestion import (
-    SCAN_OFFSETS_MINUTES,
-    ingest_goes,
-)
-from .hrrr_environment_ingestion import (
-    FEATURE_SCHEMA_VERSION as HRRR_ENVIRONMENT_FEATURE_VERSION,
-)
-from .hrrr_environment_ingestion import (
-    ingest_hrrr_environment,
-)
+from .goes_ingestion import ingest_goes
+from .hrrr_environment_ingestion import ingest_hrrr_environment
 from .hrrr_ingestion import ingest_hrrr
-from .jobs import (
-    Job,
-    SUPPORTED_INGESTERS,
-    cancel_job,
-    enqueue,
-    job_rows,
-    json_default,
-    run_worker,
-)
+from .backfill_contract import Job
 from .market_ingestion import ingest_markets, ingest_price_history
 from .modeling import reconcile_labels, train_model
 from .pmxt_full_market_tournament import run_pmxt_full_market_tournament
@@ -53,6 +35,12 @@ HANDLERS = {
     "hrrr_environment_features": ingest_hrrr_environment,
     "pmxt_temperature_execution": ingest_pmxt_execution,
 }
+
+
+def json_default(value):
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat()
+    return str(value)
 
 
 def _date(value: str) -> date:
@@ -80,26 +68,6 @@ def _sha256(value: str) -> str:
     return value
 
 
-def _utc_day(value: date) -> datetime:
-    return datetime.combine(value, datetime.min.time(), UTC)
-
-
-def _month_ranges(start: date, end: date):
-    current = start.replace(day=1)
-    while current < end:
-        next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
-        yield max(start, current), min(end, next_month)
-        current = next_month
-
-
-def _year_ranges(start: date, end: date):
-    current = start
-    while current < end:
-        next_year = date(current.year + 1, 1, 1)
-        yield current, min(end, next_year)
-        current = next_year
-
-
 def _model_path(settings: Settings, model_run_id: str) -> Path:
     with connection(settings.database_url) as conn:
         row = conn.execute(
@@ -113,71 +81,6 @@ def _model_path(settings: Settings, model_run_id: str) -> Path:
     if not row:
         raise ValueError(f"unknown model_run_id: {model_run_id}")
     return Path(row["model_uri"])
-
-
-def _enqueue_environment_months(
-    settings: Settings,
-    ranges: list[tuple[date, date]],
-    *,
-    retry_recorded_missing: bool = False,
-) -> list[dict[str, str]]:
-    jobs = []
-    product_keys = ",".join(product.key for product in GOES_PRODUCTS)
-    offsets = ",".join(str(value) for value in SCAN_OFFSETS_MINUTES)
-    radii = "25,50,100"
-    retry_statuses = ["download_failure", "processing_failure"]
-    retry_suffix = ""
-    if retry_recorded_missing:
-        retry_statuses.extend(["missing_source", "satellite_transition_issue"])
-        retry_suffix = ":recorded-retry-v1"
-    for range_start, range_end in ranges:
-        goes_job = enqueue(
-            settings.database_url,
-            ingester_key="goes_abi_klga_features",
-            range_start=_utc_day(range_start),
-            range_end=_utc_day(range_end),
-            parameters={
-                "feature_schema_version": GOES_FEATURE_VERSION,
-                "products": [product.key for product in GOES_PRODUCTS],
-                "scan_offsets": list(SCAN_OFFSETS_MINUTES),
-                "radii_km": [25, 50, 100],
-                "retry_statuses": retry_statuses,
-            },
-            idempotency_key=(
-                f"klga-goes:{range_start}:{range_end}:products={product_keys}:"
-                f"offsets={offsets}:radii={radii}:{GOES_FEATURE_VERSION}{retry_suffix}"
-            ),
-        )
-        jobs.append({"ingester": "goes_abi_klga_features", "job_id": goes_job})
-        hrrr_job = enqueue(
-            settings.database_url,
-            ingester_key="hrrr_environment_features",
-            range_start=_utc_day(range_start),
-            range_end=_utc_day(range_end),
-            parameters={
-                "feature_schema_version": HRRR_ENVIRONMENT_FEATURE_VERSION,
-                "availability_lag_minutes": 75,
-                "fields": [
-                    "total_cloud_cover",
-                    "downward_shortwave_radiation",
-                    "dew_point_2m",
-                    "wind_u_10m",
-                    "wind_v_10m",
-                    "boundary_layer_height",
-                    "accumulated_precipitation",
-                    "composite_reflectivity",
-                    "temperature_2m",
-                ],
-                "radii_km": [0, 25, 50, 100],
-                "retry_statuses": retry_statuses,
-            },
-            idempotency_key=(
-                f"klga-hrrr-environment:{range_start}:{range_end}:fields=frozen-v1:"
-                f"lag75:radii=0,{radii}:{HRRR_ENVIRONMENT_FEATURE_VERSION}{retry_suffix}"
-            ),
-        )
-        jobs.append({"ingester": "hrrr_environment_features", "job_id": hrrr_job})
-    return jobs
 
 
 def _readiness(settings: Settings) -> dict:
@@ -215,18 +118,6 @@ def _readiness(settings: Settings) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nyc-temperature-model")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("worker")
-    jobs = subparsers.add_parser("jobs")
-    jobs.add_argument("--limit", type=int, default=50)
-    cancel = subparsers.add_parser("cancel-job")
-    cancel.add_argument("job_id")
-    enqueue_parser = subparsers.add_parser("enqueue")
-    enqueue_parser.add_argument("ingester", choices=SUPPORTED_INGESTERS)
-    enqueue_parser.add_argument("--start", required=True, type=_instant)
-    enqueue_parser.add_argument("--end", required=True, type=_instant)
-    enqueue_parser.add_argument("--parameters", default="{}")
-    enqueue_parser.add_argument("--idempotency-key")
-    enqueue_parser.add_argument("--depends-on-job-id")
     unified = subparsers.add_parser("execute-unified-backfill")
     unified.add_argument("--strategy-key", required=True, choices=(
         "goes_abi_klga_features", "hrrr_environment_features"
@@ -237,16 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
     unified.add_argument("--start", required=True, type=_instant)
     unified.add_argument("--end", required=True, type=_instant)
     unified.add_argument("--parameters", required=True)
-    pilot = subparsers.add_parser("enqueue-pilot")
-    pilot.add_argument("--weather-start", type=_date, default=date(2019, 1, 1))
-    pilot.add_argument("--market-start", type=_date, default=date(2025, 9, 1))
-    pilot.add_argument("--end", type=_date, default=datetime.now(UTC).date() + timedelta(days=1))
-    subparsers.add_parser("enqueue-environment-pilot")
-    environment_backfill = subparsers.add_parser("enqueue-environment-backfill")
-    environment_backfill.add_argument(
-        "--segment", required=True, choices=("history", "calibration", "tournament")
-    )
-    environment_backfill.add_argument("--retry-recorded-missing", action="store_true")
     environment_snapshot = subparsers.add_parser("export-environment-snapshot")
     environment_snapshot.add_argument("--start", type=_date, default=date(2019, 1, 1))
     environment_snapshot.add_argument("--end", type=_date, default=date(2026, 8, 10))
@@ -331,9 +212,6 @@ def main() -> None:
     args = build_parser().parse_args()
     settings = Settings.from_env()
     settings.prepare_directories()
-    if args.command == "worker":
-        run_worker(settings, HANDLERS)
-        return
     if args.command == "execute-unified-backfill":
         request = json.loads(args.parameters)
         job = Job(
@@ -344,7 +222,6 @@ def main() -> None:
             request=request,
             attempt=1,
             lease_token=args.lease_token,
-            unified=True,
             worker_id=args.worker_id,
         )
         summary = HANDLERS[args.strategy_key](settings, job)
@@ -361,119 +238,6 @@ def main() -> None:
                 "records_verified": records_verified,
             },
             "summary": summary,
-        }
-    elif args.command == "jobs":
-        result = job_rows(settings.database_url, args.limit)
-    elif args.command == "cancel-job":
-        result = {"job_id": args.job_id, "status": cancel_job(settings.database_url, args.job_id)}
-    elif args.command == "enqueue":
-        result = {
-            "job_id": enqueue(
-                settings.database_url,
-                ingester_key=args.ingester,
-                range_start=args.start,
-                range_end=args.end,
-                parameters=json.loads(args.parameters),
-                idempotency_key=args.idempotency_key,
-                depends_on_job_id=args.depends_on_job_id,
-            )
-        }
-    elif args.command == "enqueue-pilot":
-        if not args.weather_start < args.end or not args.market_start < args.end:
-            raise ValueError("pilot start dates must be before end")
-        jobs = []
-        market_job = enqueue(
-            settings.database_url,
-            ingester_key="polymarket_temperature_markets",
-            range_start=_utc_day(args.market_start),
-            range_end=_utc_day(args.end),
-            idempotency_key=f"nyc-temperature-markets:{args.market_start}:{args.end}:v1",
-        )
-        jobs.append({"ingester": "polymarket_temperature_markets", "job_id": market_job})
-        for start, end in _year_ranges(args.weather_start, args.end):
-            resolution_job_id = enqueue(
-                settings.database_url,
-                ingester_key="asos_resolution_observations",
-                range_start=_utc_day(start),
-                range_end=_utc_day(end),
-                idempotency_key=f"klga-asos-metars:{start}:{end}:v1",
-            )
-            jobs.append(
-                {"ingester": "asos_resolution_observations", "job_id": resolution_job_id}
-            )
-            one_minute_job_id = enqueue(
-                settings.database_url,
-                ingester_key="asos_one_minute_observations",
-                range_start=_utc_day(start),
-                range_end=_utc_day(end),
-                idempotency_key=f"klga-asos-one-minute:{start}:{end}:v1",
-            )
-            jobs.append(
-                {"ingester": "asos_one_minute_observations", "job_id": one_minute_job_id}
-            )
-        for start, end in _month_ranges(args.weather_start, args.end):
-            job_id = enqueue(
-                settings.database_url,
-                ingester_key="hrrr_point_forecasts",
-                range_start=_utc_day(start),
-                range_end=_utc_day(end),
-                parameters={"availability_lag_minutes": 75},
-                idempotency_key=f"klga-hrrr:{start}:{end}:lag75:v1",
-            )
-            jobs.append({"ingester": "hrrr_point_forecasts", "job_id": job_id})
-        for start, end in _month_ranges(args.market_start, args.end):
-            price_job = enqueue(
-                settings.database_url,
-                ingester_key="polymarket_temperature_price_history",
-                range_start=_utc_day(start),
-                range_end=_utc_day(end),
-                depends_on_job_id=market_job,
-                idempotency_key=f"nyc-temperature-prices:{start}:{end}:v1",
-            )
-            jobs.append({"ingester": "polymarket_temperature_price_history", "job_id": price_job})
-            pmxt_start = max(start, date(2026, 4, 14))
-            if pmxt_start < end:
-                pmxt_job = enqueue(
-                    settings.database_url,
-                    ingester_key="pmxt_temperature_execution",
-                    range_start=_utc_day(pmxt_start),
-                    range_end=_utc_day(end),
-                    depends_on_job_id=market_job,
-                    idempotency_key=f"nyc-temperature-pmxt:{pmxt_start}:{end}:v1",
-                )
-                jobs.append({"ingester": "pmxt_temperature_execution", "job_id": pmxt_job})
-        result = {"jobs": jobs, "count": len(jobs)}
-    elif args.command == "enqueue-environment-pilot":
-        pilot_ranges = []
-        for pilot_start, pilot_end in (
-            (date(2024, 1, 1), date(2024, 2, 1)),
-            (date(2024, 7, 1), date(2024, 8, 1)),
-            (date(2025, 4, 1), date(2025, 5, 1)),
-        ):
-            pilot_ranges.extend(_month_ranges(pilot_start, pilot_end))
-        jobs = _enqueue_environment_months(settings, pilot_ranges)
-        result = {
-            "jobs": jobs,
-            "count": len(jobs),
-            "coverage_intent": ["winter", "summer", "cloudy", "clear", "goes_transition"],
-        }
-    elif args.command == "enqueue-environment-backfill":
-        segments = {
-            "history": (date(2019, 1, 1), date(2025, 1, 1)),
-            "calibration": (date(2025, 1, 1), date(2026, 1, 1)),
-            "tournament": (date(2026, 1, 1), date(2026, 8, 10)),
-        }
-        segment_start, segment_end = segments[args.segment]
-        jobs = _enqueue_environment_months(
-            settings,
-            list(_month_ranges(segment_start, segment_end)),
-            retry_recorded_missing=args.retry_recorded_missing,
-        )
-        result = {
-            "segment": args.segment,
-            "retry_recorded_missing": args.retry_recorded_missing,
-            "jobs": jobs,
-            "count": len(jobs),
         }
     elif args.command == "export-environment-snapshot":
         result = export_environment_snapshot(

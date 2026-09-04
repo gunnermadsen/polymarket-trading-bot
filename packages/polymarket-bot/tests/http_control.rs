@@ -1,11 +1,11 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
     body::{to_bytes, Body},
     http::{header::AUTHORIZATION, Request, StatusCode},
 };
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use polymarket_bot::{
     execution::{
         LiveIdentityDiagnostics, LiveOrderDryRunDiagnostics, LiveOrderDryRunRequest,
@@ -15,12 +15,6 @@ use polymarket_bot::{
     },
     grafana_live::{EntryPermissionState, EntryStatusSelection},
     http::{self, ControlApi, HttpError, MetricsResponse},
-    ingestion::job::{
-        BackfillEventLevel as IngestionBackfillEventLevel, BackfillJob as IngestionBackfillJob,
-        BackfillJobEvent as IngestionBackfillJobEvent,
-        BackfillJobStatus as IngestionBackfillJobStatus,
-        BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
-    },
     models::{ProcessExecutionConfig, TradingProcess, TradingProcessConfig},
 };
 use rust_decimal::Decimal;
@@ -62,119 +56,6 @@ impl ControlApi for FakeControlApi {
             display: "Enabled".to_string(),
             reason: None,
             alert_enabled: 1,
-        })
-    }
-
-    async fn enqueue_ingestion_backfill(
-        &self,
-        request: IngestionBackfillRequest,
-    ) -> Result<http::IngestionBackfillEnqueueResponse, HttpError> {
-        let request = request
-            .validate()
-            .map_err(|error| HttpError::bad_request(error.to_string()))?;
-        let persisted_request = request.persisted_request();
-        let mut job = test_ingestion_job(
-            Uuid::new_v4(),
-            IngestionBackfillJobStatus::Queued,
-            request.ingester,
-        );
-        job.request_version = request.request_version;
-        job.range_start = Some(request.range_start);
-        job.range_end = Some(request.range_end);
-        job.idempotency_key = Some(request.idempotency_key);
-        job.request = persisted_request;
-        job.progress = serde_json::json!({
-            "expected_work_units": request.expected_work_units,
-            "completed_work_units": 0,
-            "records_read": 0,
-            "records_committed": 0,
-            "bytes_downloaded": 0
-        });
-        Ok(job.into())
-    }
-
-    async fn list_ingestion_backfills(
-        &self,
-        _request: http::ListIngestionBackfillsRequest,
-    ) -> Result<http::IngestionBackfillJobsResponse, HttpError> {
-        Ok(http::IngestionBackfillJobsResponse {
-            jobs: vec![test_ingestion_job(
-                Uuid::new_v4(),
-                IngestionBackfillJobStatus::Completed,
-                IngesterKey::BinanceBtcusdtAggTrades,
-            )],
-        })
-    }
-
-    async fn get_ingestion_backfill(
-        &self,
-        job_id: Uuid,
-    ) -> Result<http::IngestionBackfillJobResponse, HttpError> {
-        Ok(http::IngestionBackfillJobResponse {
-            job: test_ingestion_job(
-                job_id,
-                IngestionBackfillJobStatus::Running,
-                IngesterKey::BtcFiveMinuteMarkets,
-            ),
-        })
-    }
-
-    async fn list_ingestion_backfill_events(
-        &self,
-        job_id: Uuid,
-        _request: http::ListIngestionBackfillEventsRequest,
-    ) -> Result<http::IngestionBackfillEventsResponse, HttpError> {
-        Ok(http::IngestionBackfillEventsResponse {
-            job_id,
-            events: vec![IngestionBackfillJobEvent {
-                event_id: Uuid::new_v4(),
-                job_id,
-                timestamp_utc: Utc::now(),
-                level: IngestionBackfillEventLevel::Info,
-                message: "fixture checkpoint committed".to_string(),
-                metadata: serde_json::json!({"committed_work_units": 1}),
-            }],
-        })
-    }
-
-    async fn cancel_ingestion_backfill(
-        &self,
-        job_id: Uuid,
-    ) -> Result<http::IngestionBackfillCancelResponse, HttpError> {
-        Ok(http::IngestionBackfillCancelResponse {
-            job_id,
-            status: IngestionBackfillJobStatus::CancelRequested,
-            cancel_requested: true,
-        })
-    }
-
-    async fn ingestion_training_readiness(
-        &self,
-        request: http::IngestionReadinessRequest,
-    ) -> Result<TrainingReadiness, HttpError> {
-        Ok(TrainingReadiness {
-            range_start: request.range_start,
-            range_end: request.range_end,
-            expected_markets: 288,
-            valid_market_identities: 287,
-            opening_boundaries: 286,
-            final_prices: 285,
-            official_outcomes: 284,
-            aggregate_trade_covered_markets: 283,
-            one_second_kline_covered_markets: 282,
-            chainlink_covered_markets: 281,
-            orderbook_covered_markets: 280,
-            usable_markets: 279,
-            aggregate_trade_min_timestamp: Some(request.range_start),
-            aggregate_trade_max_timestamp: Some(request.range_end),
-            one_second_kline_min_timestamp: Some(request.range_start),
-            one_second_kline_max_timestamp: Some(request.range_end),
-            chainlink_min_timestamp: Some(request.range_start),
-            chainlink_max_timestamp: Some(request.range_end),
-            orderbook_min_timestamp: Some(request.range_start),
-            orderbook_max_timestamp: Some(request.range_end),
-            missing_by_reason: BTreeMap::from([("missing_final_price".to_string(), 3)]),
-            artifact_status_counts: BTreeMap::from([("completed".to_string(), 2)]),
         })
     }
 
@@ -805,7 +686,7 @@ async fn generic_ingestion_admin_routes_require_bearer() {
             "/admin/backfill/readiness/btc-five-minute-training?range_start=2026-01-01T00%3A00%3A00Z&range_end=2026-01-02T00%3A00%3A00Z"
                 .to_string(),
             "",
-            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
         ),
     ];
 
@@ -1445,57 +1326,6 @@ async fn authenticated_admin_can_manage_trading_processes() {
     let complete_json: Value = serde_json::from_slice(&complete_body).unwrap();
     assert_eq!(complete_json["process"]["status"], "completed");
     assert_eq!(complete_json["process"]["enabled"], false);
-}
-
-fn test_ingestion_job(
-    job_id: Uuid,
-    status: IngestionBackfillJobStatus,
-    ingester: IngesterKey,
-) -> IngestionBackfillJob {
-    let range_start = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-    let range_end = "2026-01-02T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-    let now = Utc::now();
-    IngestionBackfillJob {
-        job_id,
-        ingester_key: ingester.to_string(),
-        request_version: 1,
-        status,
-        range_start: Some(range_start),
-        range_end: Some(range_end),
-        idempotency_key: Some(format!("fixture-{ingester}")),
-        request: serde_json::json!({
-            "ingester": ingester,
-            "request_version": 1,
-            "range_start": range_start,
-            "range_end": range_end,
-            "parameters": {},
-            "idempotency_key": format!("fixture-{ingester}")
-        }),
-        progress: serde_json::json!({
-            "expected_work_units": 1,
-            "completed_work_units": u8::from(status.is_terminal()),
-            "records_read": 10,
-            "records_committed": 10,
-            "bytes_downloaded": 1024
-        }),
-        checkpoint: serde_json::json!({"committed_record_ordinal": 10}),
-        summary: serde_json::json!({}),
-        attempt: 1,
-        max_attempts: 3,
-        next_attempt_at: now,
-        worker_id: None,
-        lease_token: None,
-        lease_expires_at: None,
-        heartbeat_at: None,
-        cancel_requested_at: None,
-        requested_at: now,
-        started_at: None,
-        completed_at: status.is_terminal().then_some(now),
-        error: None,
-        updated_at: now,
-        lookback_days: None,
-        min_trade_usd: None,
-    }
 }
 
 fn test_process(

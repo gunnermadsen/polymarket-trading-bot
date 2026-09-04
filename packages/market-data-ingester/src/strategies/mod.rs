@@ -55,6 +55,10 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
         Arc::new(
+            binance::CoinapiBinanceSpotL2OneSecondFeaturesBackfill::new()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
             binance::BinanceSpotOneSecondOhlcvBackfill::new()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
