@@ -22,32 +22,48 @@ export class RestorePreConsolidationOrderbooks1788645900000
       'SET timescaledb.max_tuples_decompressed_per_dml_transaction = 0',
     );
     try {
-      const bounds = await queryRunner.query(`
-        SELECT
-          (SELECT source_timestamp FROM ${LEGACY}
-           ORDER BY source_timestamp ASC LIMIT 1) AS minimum,
-          (SELECT source_timestamp FROM ${LEGACY}
-           ORDER BY source_timestamp DESC LIMIT 1) AS maximum
-      `);
-      if (bounds[0]?.minimum && bounds[0]?.maximum) {
-        for (const start of this.hourStarts(
-          new Date(bounds[0].minimum),
-          new Date(bounds[0].maximum),
-        )) {
-          await this.removeMigrationRows(
-            queryRunner,
-            this.legacyArtifactId(start),
-          );
-          await this.pause();
+      if (await this.hasMigrationArtifacts(queryRunner)) {
+        const bounds = await queryRunner.query(`
+          SELECT
+            (SELECT source_timestamp FROM ${LEGACY}
+             ORDER BY source_timestamp ASC LIMIT 1) AS minimum,
+            (SELECT source_timestamp FROM ${LEGACY}
+             ORDER BY source_timestamp DESC LIMIT 1) AS maximum
+        `);
+        if (bounds[0]?.minimum && bounds[0]?.maximum) {
+          for (const start of this.hourStarts(
+            new Date(bounds[0].minimum),
+            new Date(bounds[0].maximum),
+          )) {
+            await this.removeMigrationRows(
+              queryRunner,
+              this.legacyArtifactId(start),
+            );
+            await this.pause();
+          }
         }
+        await this.removeMigrationArtifacts(queryRunner);
       }
-      await this.removeMigrationArtifacts(queryRunner);
       await this.restoreOriginalRelation(queryRunner);
     } finally {
       await queryRunner.query(
         'RESET timescaledb.max_tuples_decompressed_per_dml_transaction',
       );
     }
+  }
+
+  private async hasMigrationArtifacts(queryRunner: QueryRunner): Promise<boolean> {
+    const result = await queryRunner.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM ingester.capture_artifacts
+        WHERE strategy_key = '${STRATEGY}'
+          AND content_sha256 = encode(digest(convert_to(
+            'legacy-orderbook-checkpoints:' || artifact_id::text, 'UTF8'
+          ), 'sha256'), 'hex')
+        LIMIT 1
+      ) AS present
+    `);
+    return Boolean(result[0]?.present);
   }
 
   private async removeMigrationRows(
