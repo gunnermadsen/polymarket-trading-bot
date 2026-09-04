@@ -21,7 +21,7 @@ from .hrrr_ingestion import (
     _run_with_retry,
     _valid_times,
 )
-from .jobs import Job, update_progress
+from .backfill_contract import Job, update_progress
 from .sources import file_sha256
 from .spatial_features import RADII_KM, SECTORS, numeric_summary, spatial_mask
 

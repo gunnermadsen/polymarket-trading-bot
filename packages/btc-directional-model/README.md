@@ -10,7 +10,7 @@ The original four-table data contract uses the confirmed backfill sources:
 
 - `polymarket.btc_interval_markets` for market identity and official outcome labels;
 - `polymarket.btc_market_reference_facts` for the opening boundary and final-price audit;
-- `polymarket.binance_one_second_klines` for point-in-time BTC path and flow features;
+- `market_data.binance_spot_btcusdt_one_second_ohlcv` for point-in-time BTC path and flow features;
 - `polymarket.btc_market_execution_snapshots` for optional point-in-time execution-book features.
 
 Execution-book evidence reads the canonical snapshot table one completed PMXT artifact at a time

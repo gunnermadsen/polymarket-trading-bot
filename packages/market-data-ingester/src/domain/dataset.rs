@@ -50,6 +50,28 @@ pub struct BinanceOneSecondKlineRecord {
     pub taker_buy_base_volume: Decimal,
     pub taker_buy_quote_volume: Decimal,
 }
+
+impl BinanceOneSecondKlineRecord {
+    pub fn canonical_payload_sha256(&self) -> String {
+        let canonical_close = self.open_timestamp + chrono::Duration::milliseconds(999);
+        let payload = format!(
+            "v1|source=binance_spot|symbol={}|open_timestamp_ms={}|close_timestamp_ms={}|open_price={}|high_price={}|low_price={}|close_price={}|base_volume={}|quote_volume={}|trade_count={}|taker_buy_base_volume={}|taker_buy_quote_volume={}",
+            self.symbol,
+            self.open_timestamp.timestamp_millis(),
+            canonical_close.timestamp_millis(),
+            self.open_price.normalize(),
+            self.high_price.normalize(),
+            self.low_price.normalize(),
+            self.close_price.normalize(),
+            self.base_volume.normalize(),
+            self.quote_volume.normalize(),
+            self.trade_count,
+            self.taker_buy_base_volume.normalize(),
+            self.taker_buy_quote_volume.normalize(),
+        );
+        format!("{:x}", Sha256::digest(payload.as_bytes()))
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceBtcusdtOpenInterestRecord {
     pub symbol: String,
@@ -58,6 +80,38 @@ pub struct BinanceBtcusdtOpenInterestRecord {
     pub sum_open_interest: Decimal,
     pub sum_open_interest_value: Decimal,
     pub cmc_circulating_supply: Option<Decimal>,
+}
+
+impl BinanceBtcusdtOpenInterestRecord {
+    pub fn canonical_source_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "CMCCirculatingSupply": self
+                .cmc_circulating_supply
+                .map(|value| value.normalize().to_string()),
+            "sumOpenInterest": self.sum_open_interest.normalize().to_string(),
+            "sumOpenInterestValue": self.sum_open_interest_value.normalize().to_string(),
+            "symbol": self.symbol,
+            "timestamp": self.source_timestamp.timestamp_millis(),
+        })
+    }
+
+    pub fn canonical_payload_sha256(&self) -> String {
+        let canonical = serde_json::json!({
+            "cmc_circulating_supply": self
+                .cmc_circulating_supply
+                .map(|value| value.normalize().to_string()),
+            "sum_open_interest": self.sum_open_interest.normalize().to_string(),
+            "sum_open_interest_value": self.sum_open_interest_value.normalize().to_string(),
+            "symbol": self.symbol,
+            "timestamp": self.source_timestamp.timestamp_millis(),
+        });
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&canonical).expect("canonical open-interest JSON serializes")
+            )
+        )
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainlinkBtcusdArchiveTick {
@@ -81,6 +135,22 @@ pub struct ChainlinkBtcusdOneMinuteCandle {
     pub volume: Option<Decimal>,
     pub volume_supported: bool,
 }
+
+impl ChainlinkBtcusdOneMinuteCandle {
+    pub fn canonical_payload_sha256(&self) -> String {
+        let payload = format!(
+            "v1|source=chainlink_candlestick|symbol={}|open_timestamp={}|close_timestamp={}|open_price={}|high_price={}|low_price={}|close_price={}|volume=unsupported",
+            self.symbol,
+            self.open_timestamp.timestamp(),
+            self.close_timestamp.timestamp(),
+            self.open_price.normalize(),
+            self.high_price.normalize(),
+            self.low_price.normalize(),
+            self.close_price.normalize(),
+        );
+        format!("{:x}", Sha256::digest(payload.as_bytes()))
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolygonChainlinkBtcusdOracleRound {
     pub chain_id: i64,
@@ -97,6 +167,36 @@ pub struct PolygonChainlinkBtcusdOracleRound {
     pub block_hash: String,
     pub transaction_hash: String,
     pub log_index: i32,
+}
+
+impl PolygonChainlinkBtcusdOracleRound {
+    pub fn canonical_source_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "aggregatorAddress": self.aggregator_address,
+            "aggregatorRoundId": self.aggregator_round_id,
+            "answerRaw": self.answer_raw.normalize().to_string(),
+            "blockHash": self.block_hash,
+            "blockNumber": self.block_number,
+            "blockTimestamp": self.block_timestamp.timestamp(),
+            "chainId": self.chain_id,
+            "decimals": self.decimals,
+            "feedProxyAddress": self.feed_proxy_address,
+            "logIndex": self.log_index,
+            "phaseId": self.phase_id,
+            "sourceTimestamp": self.source_timestamp.timestamp(),
+            "transactionHash": self.transaction_hash,
+        })
+    }
+
+    pub fn canonical_payload_sha256(&self) -> String {
+        format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&self.canonical_source_payload())
+                    .expect("canonical oracle JSON serializes")
+            )
+        )
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct PmdataChainlinkBtcusdTwapRecord {
@@ -500,6 +600,7 @@ pub fn contract_for(key: DatasetKey) -> Option<&'static DatasetContract> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::collections::BTreeSet;
 
     #[test]
@@ -530,5 +631,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn open_interest_payload_hash_is_stable_across_realtime_and_backfill() {
+        let record = BinanceBtcusdtOpenInterestRecord {
+            symbol: "BTCUSDT".to_owned(),
+            source_timestamp: Utc.timestamp_millis_opt(1_783_036_800_000).unwrap(),
+            period_seconds: 300,
+            sum_open_interest: "106938.477".parse().unwrap(),
+            sum_open_interest_value: "6581058037.6662".parse().unwrap(),
+            cmc_circulating_supply: Some("20050843".parse().unwrap()),
+        };
+        assert_eq!(
+            record.canonical_payload_sha256(),
+            "858426ba35c3dcef2b7538b76cf1eaa3940bd239c649cffeaf0a25a3ff8c8b3d"
+        );
     }
 }

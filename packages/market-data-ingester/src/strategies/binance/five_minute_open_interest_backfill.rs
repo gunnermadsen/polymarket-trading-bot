@@ -9,10 +9,10 @@ use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support::{self, ArtifactCompletion};
 
 use super::{
     archive_support::ArchiveCancellation,
-    backfill_support::{self, ArtifactCompletion},
     open_interest_support::{
         BinanceOpenInterestConfig, BINANCE_OPEN_INTEREST_PROVIDER,
         DEFAULT_BINANCE_FUTURES_DATA_BASE_URL, DEFAULT_BINANCE_OPEN_INTEREST_SYMBOL,
@@ -21,7 +21,8 @@ use super::{
 };
 
 pub const STRATEGY_KEY: &str = "binance_futures_btcusdt_five_minute_open_interest_backfill";
-const DURABLE_TARGET: &str = "polymarket.binance_btcusdt_five_minute_open_interest";
+const DURABLE_TARGET: &str = "market_data.binance_futures_btcusdt_open_interest";
+const CANONICAL_STRATEGY_KEY: &str = "binance_futures_btcusdt_open_interest";
 
 pub struct BinanceFuturesFiveMinuteOpenInterestBackfill {
     descriptor: StrategyDescriptor,
@@ -95,7 +96,7 @@ impl BackfillWorkerStrategy for BinanceFuturesFiveMinuteOpenInterestBackfill {
         let artifact_id = backfill_support::create_artifact(
             &context,
             STRATEGY_KEY,
-            "binance_btcusdt_five_minute_open_interest",
+            "binance_futures_btcusdt_open_interest",
             &logical_key,
             BINANCE_OPEN_INTEREST_PROVIDER,
             &source_uri,
@@ -121,6 +122,8 @@ impl BackfillWorkerStrategy for BinanceFuturesFiveMinuteOpenInterestBackfill {
             &records,
             &fetched.sha256,
             fetched.response_bytes,
+            shard.range_start,
+            shard.range_end,
         )
         .await?;
         Ok(backfill_support::outcome(
@@ -152,6 +155,8 @@ async fn persist(
     records: &[BinanceBtcusdtOpenInterestRecord],
     checksum: &str,
     response_bytes: u64,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), BackfillExecutionError> {
     let mut tx = context
         .pool
@@ -159,23 +164,73 @@ async fn persist(
         .await
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
+    let capture_artifact_id = ensure_capture_artifact(
+        &mut tx,
+        artifact_id,
+        records,
+        checksum,
+        capture_window_start,
+        capture_window_end,
+    )
+    .await?;
+    let received_at = chrono::Utc::now();
     for chunk in records.chunks(1_000) {
-        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO polymarket.binance_btcusdt_five_minute_open_interest (symbol,source_timestamp,period_seconds,sum_open_interest,sum_open_interest_value,cmc_circulating_supply,artifact_id) ");
+        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO market_data.binance_futures_btcusdt_open_interest (source,symbol,source_timestamp,period_seconds,sum_open_interest,sum_open_interest_value,cmc_circulating_supply,provider_available_at,received_at,source_payload,payload_sha256,strategy_key,capture_artifact_id) ");
         query.push_values(chunk, |mut row, value| {
-            row.push_bind(&value.symbol)
+            row.push_bind("binance_usd_m_futures")
+                .push_bind(&value.symbol)
                 .push_bind(value.source_timestamp)
                 .push_bind(value.period_seconds)
                 .push_bind(value.sum_open_interest)
                 .push_bind(value.sum_open_interest_value)
                 .push_bind(value.cmc_circulating_supply)
-                .push_bind(artifact_id);
+                .push_bind(Option::<chrono::DateTime<chrono::Utc>>::None)
+                .push_bind(received_at)
+                .push_bind(value.canonical_source_payload())
+                .push_bind(value.canonical_payload_sha256())
+                .push_bind(CANONICAL_STRATEGY_KEY)
+                .push_bind(capture_artifact_id);
         });
-        query.push(" ON CONFLICT (symbol,source_timestamp) DO NOTHING");
+        query.push(" ON CONFLICT (source_timestamp,symbol,period_seconds) DO NOTHING");
         query
             .build()
             .execute(&mut *tx)
             .await
             .map_err(backfill_support::database_error)?;
+    }
+    for record in records {
+        let stored = sqlx::query_as::<
+            _,
+            (
+                rust_decimal::Decimal,
+                rust_decimal::Decimal,
+                Option<rust_decimal::Decimal>,
+                String,
+            ),
+        >(
+            r#"
+            SELECT sum_open_interest, sum_open_interest_value,
+                   cmc_circulating_supply, payload_sha256
+            FROM market_data.binance_futures_btcusdt_open_interest
+            WHERE source_timestamp = $1 AND symbol = $2 AND period_seconds = $3
+            "#,
+        )
+        .bind(record.source_timestamp)
+        .bind(&record.symbol)
+        .bind(record.period_seconds)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(backfill_support::database_error)?;
+        if stored.0 != record.sum_open_interest
+            || stored.1 != record.sum_open_interest_value
+            || stored.2 != record.cmc_circulating_supply
+            || stored.3 != record.canonical_payload_sha256()
+        {
+            return Err(backfill_support::integrity(format!(
+                "immutable canonical open-interest conflict for {}:{}",
+                record.symbol, record.source_timestamp
+            )));
+        }
     }
     let minimum = records.first().map(|row| row.source_timestamp);
     let maximum = records.last().map(|row| row.source_timestamp);
@@ -184,6 +239,53 @@ async fn persist(
         .await
         .map_err(backfill_support::database_error)?;
     Ok(())
+}
+
+async fn ensure_capture_artifact(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    artifact_id: uuid::Uuid,
+    records: &[BinanceBtcusdtOpenInterestRecord],
+    checksum: &str,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
+) -> Result<uuid::Uuid, BackfillExecutionError> {
+    let minimum = records.first().map(|row| row.source_timestamp);
+    let maximum = records.last().map(|row| row.source_timestamp);
+    let received_at = chrono::Utc::now();
+    sqlx::query_scalar::<_, uuid::Uuid>(
+        r#"
+        INSERT INTO ingester.capture_artifacts (
+          artifact_id, strategy_key, profile_generation, config_schema_version,
+          config_sha256, config_snapshot, capture_window_start, capture_window_end,
+          minimum_source_timestamp, maximum_source_timestamp,
+          minimum_received_at, maximum_received_at, record_count, content_sha256,
+          status, created_at, updated_at, completed_at
+        )
+        SELECT
+          $1, $2, profile.desired_generation, profile.config_schema_version,
+          encode(digest(convert_to(profile.config::text, 'UTF8'), 'sha256'), 'hex'),
+          profile.config, $3, $4, $5, $6, $7, $7, $8, $9,
+          'completed', $7, $7, $7
+        FROM ingester.profiles profile
+        WHERE profile.strategy_key = $2
+        RETURNING artifact_id
+        "#,
+    )
+    .bind(artifact_id)
+    .bind(CANONICAL_STRATEGY_KEY)
+    .bind(capture_window_start)
+    .bind(capture_window_end)
+    .bind(minimum)
+    .bind(maximum)
+    .bind(received_at)
+    .bind(
+        i64::try_from(records.len())
+            .map_err(|_| backfill_support::integrity("record count overflow"))?,
+    )
+    .bind(checksum)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(backfill_support::database_error)
 }
 
 #[cfg(test)]

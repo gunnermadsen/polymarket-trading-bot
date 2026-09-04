@@ -20,7 +20,8 @@ use sqlx::{Postgres, QueryBuilder};
 use std::time::Duration;
 
 pub const STRATEGY_KEY: &str = "chainlink_btcusd_one_minute_candles_backfill";
-const DURABLE_TARGET: &str = "polymarket.chainlink_btcusd_one_minute_candles";
+const DURABLE_TARGET: &str = "market_data.chainlink_btcusd_one_minute_candles";
+const CANONICAL_STRATEGY_KEY: &str = "chainlink_btcusd_one_minute_ohlc";
 pub struct ChainlinkBtcusdOneMinuteCandlesBackfill {
     descriptor: StrategyDescriptor,
     client: Client,
@@ -129,6 +130,8 @@ impl BackfillWorkerStrategy for ChainlinkBtcusdOneMinuteCandlesBackfill {
             &records,
             &fetched.sha256,
             fetched.response_bytes,
+            shard.range_start,
+            shard.range_end,
         )
         .await?;
         Ok(backfill_support::outcome(
@@ -154,6 +157,8 @@ async fn persist(
     records: &[ChainlinkBtcusdOneMinuteCandle],
     checksum: &str,
     bytes: u64,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), BackfillExecutionError> {
     let mut tx = context
         .pool
@@ -161,18 +166,34 @@ async fn persist(
         .await
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
+    let received_at = chrono::Utc::now();
+    ensure_capture_artifact(
+        &mut tx,
+        artifact_id,
+        records,
+        checksum,
+        received_at,
+        capture_window_start,
+        capture_window_end,
+    )
+    .await?;
     for chunk in records.chunks(1_000) {
-        let mut query=QueryBuilder::<Postgres>::new("INSERT INTO polymarket.chainlink_btcusd_one_minute_candles (symbol,open_timestamp,close_timestamp,open_price,high_price,low_price,close_price,volume,volume_supported,artifact_id) ");
+        let mut query=QueryBuilder::<Postgres>::new("INSERT INTO market_data.chainlink_btcusd_one_minute_candles (source,symbol,open_timestamp,close_timestamp,provider_available_at,received_at,open_price,high_price,low_price,close_price,volume,volume_supported,payload_sha256,strategy_key,capture_artifact_id) ");
         query.push_values(chunk, |mut row, value| {
-            row.push_bind(&value.symbol)
+            row.push_bind("chainlink_candlestick")
+                .push_bind(&value.symbol)
                 .push_bind(value.open_timestamp)
                 .push_bind(value.close_timestamp)
+                .push_bind(Option::<chrono::DateTime<chrono::Utc>>::None)
+                .push_bind(received_at)
                 .push_bind(value.open_price)
                 .push_bind(value.high_price)
                 .push_bind(value.low_price)
                 .push_bind(value.close_price)
                 .push_bind(value.volume)
                 .push_bind(value.volume_supported)
+                .push_bind(value.canonical_payload_sha256())
+                .push_bind(CANONICAL_STRATEGY_KEY)
                 .push_bind(artifact_id);
         });
         query.push(" ON CONFLICT (symbol,open_timestamp) DO NOTHING");
@@ -199,6 +220,50 @@ async fn persist(
     )
     .await?;
     tx.commit().await.map_err(backfill_support::database_error)
+}
+
+async fn ensure_capture_artifact(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    artifact_id: uuid::Uuid,
+    records: &[ChainlinkBtcusdOneMinuteCandle],
+    checksum: &str,
+    received_at: chrono::DateTime<chrono::Utc>,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
+) -> Result<(), BackfillExecutionError> {
+    sqlx::query(
+        r#"
+      INSERT INTO ingester.capture_artifacts (
+        artifact_id, strategy_key, profile_generation, config_schema_version,
+        config_sha256, config_snapshot, capture_window_start, capture_window_end,
+        minimum_source_timestamp, maximum_source_timestamp,
+        minimum_received_at, maximum_received_at, record_count, content_sha256,
+        status, created_at, updated_at, completed_at
+      )
+      SELECT $1, $2, profile.desired_generation, profile.config_schema_version,
+        encode(digest(convert_to(profile.config::text, 'UTF8'), 'sha256'), 'hex'),
+        profile.config, $3, $4, $5, $6, $7, $7, $8, $9,
+        'completed', $7, $7, $7
+      FROM ingester.profiles profile WHERE profile.strategy_key = $2
+      ON CONFLICT DO NOTHING
+    "#,
+    )
+    .bind(artifact_id)
+    .bind(CANONICAL_STRATEGY_KEY)
+    .bind(capture_window_start)
+    .bind(capture_window_end)
+    .bind(records.first().map(|row| row.open_timestamp))
+    .bind(records.last().map(|row| row.open_timestamp))
+    .bind(received_at)
+    .bind(
+        i64::try_from(records.len())
+            .map_err(|_| backfill_support::integrity("record count overflow"))?,
+    )
+    .bind(checksum)
+    .execute(&mut **tx)
+    .await
+    .map_err(backfill_support::database_error)?;
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

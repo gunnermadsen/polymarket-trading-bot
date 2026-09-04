@@ -42,6 +42,10 @@ pub const STRATEGY_DATASETS: &[StrategyDatasetBinding] = &[
         DatasetKey::BinanceSpotL2OneSecondFeatures,
     ),
     binding(
+        "coinapi_binance_spot_btcusdt_l2_one_second_features_backfill",
+        DatasetKey::BinanceSpotL2OneSecondFeatures,
+    ),
+    binding(
         "binance_futures_btcusdt_l2_one_second_features_backfill",
         DatasetKey::BinanceFuturesL2OneSecondFeatures,
     ),

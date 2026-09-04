@@ -89,12 +89,12 @@ JOIN polymarket.btc_market_decision_execution_snapshots snapshot
 JOIN polymarket.backfill_artifacts snapshot_artifact
   ON snapshot_artifact.artifact_id = snapshot.artifact_id
  AND snapshot_artifact.status = 'completed'
-JOIN polymarket.binance_one_second_klines kline
+JOIN market_data.binance_spot_btcusdt_one_second_ohlcv kline
   ON kline.symbol = 'BTCUSDT'
  AND kline.open_timestamp >= %(batch_start)s - interval '1 second'
  AND kline.open_timestamp < %(batch_end)s
  AND kline.open_timestamp = snapshot.sampled_at - interval '1 second'
 JOIN polymarket.backfill_artifacts kline_artifact
-  ON kline_artifact.artifact_id = kline.artifact_id
+  ON kline_artifact.artifact_id = kline.capture_artifact_id
  AND kline_artifact.status = 'completed'
 ORDER BY market.window_start, snapshot.sampled_at;

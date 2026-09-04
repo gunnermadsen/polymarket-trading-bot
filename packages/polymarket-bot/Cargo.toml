@@ -15,10 +15,6 @@ path = "src/main.rs"
 name = "derive-clob-creds"
 path = "src/bin/derive-clob-creds.rs"
 
-[[bin]]
-name = "fit-chainlink-reliability-calibration"
-path = "src/bin/fit-chainlink-reliability-calibration.rs"
-
 [dependencies]
 anyhow = "1.0"
 alloy-signer-local = "1.8"

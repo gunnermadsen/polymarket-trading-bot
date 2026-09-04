@@ -131,7 +131,7 @@ def load_or_extract_context_sources(config: Any) -> tuple[ContextSourceCache, di
         "open_interest_query_sha256": hashlib.sha256(oi_sql.encode()).hexdigest(),
         "l2_query_sha256": hashlib.sha256(l2_sql.encode()).hexdigest(),
         "source_relations": {
-            "open_interest": "polymarket.binance_btcusdt_five_minute_open_interest",
+            "open_interest": "market_data.binance_futures_btcusdt_open_interest",
             "l2": "polymarket.binance_spot_btcusdt_l2_training_features",
         },
     }

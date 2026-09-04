@@ -38,463 +38,6 @@
         "type": "grafana",
         "uid": "grafana"
       },
-      "description": "Global Chainlink BTC/USD 60-second TWAP path for only the active five-minute Polymarket window, with the first boundary TWAP shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "BTC Price (USD)",
-            "axisPlacement": "left",
-            "axisWidth": 96,
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 4,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "pointSize": 3,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "prefix:$"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "twap_price"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Chainlink BTC/USD TWAP 60s"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "price_to_beat"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Price to Beat"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    6
-                  ],
-                  "fill": "dash"
-                }
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 0
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 24,
-        "x": 0,
-        "y": 1
-      },
-      "id": 27,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "buffer": 300000,
-          "channel": "stream/polymarket/btc_market_path",
-          "datasource": {
-            "type": "grafana",
-            "uid": "grafana"
-          },
-          "filter": {
-            "fields": [
-              "time",
-              "twap_price",
-              "price_to_beat"
-            ]
-          },
-          "queryType": "measurements",
-          "refId": "A"
-        }
-      ],
-      "hideTimeOverride": true,
-      "timeFrom": "5m",
-      "title": "BTC 5-Minute Realtime Market",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 14
-      },
-      "id": 14,
-      "panels": [],
-      "title": "BTC 5-Minute Realtime Paper",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Lifecycle health derived only from durable trading process state.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Active Sessions"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    },
-                    {
-                      "color": "red",
-                      "value": 2
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "/^(Lifecycle Mismatch|Failures 24h)$/"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "red",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 15
-      },
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  COUNT(*) FILTER (\n    WHERE p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n  ) AS \"Active Processes\",\n  COUNT(*) FILTER (\n    WHERE p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)<now()-interval '2 minutes'\n  ) AS \"Stale Active Processes\",\n  COUNT(*) FILTER (\n    WHERE p.status='failed' AND p.updated_at>=now()-interval '24 hours'\n  ) AS \"Failures 24h\"\nFROM polymarket.trading_processes p\nWHERE p.process_scope='realtime_paper'\n  AND p.status <> 'completed';",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Realtime Process Health",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "One bar per filled, officially resolved entry for the selected process. UP confidence is shown as positive and DOWN confidence as negative. PnL uses recognized manual-exit proceeds and exit timing when present, otherwise official settlement economics.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": true,
-            "axisColorMode": "text",
-            "axisLabel": "Forecast confidence",
-            "axisPlacement": "auto",
-            "fillOpacity": 100,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 1,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 1,
-          "mappings": [],
-          "max": 1,
-          "min": -1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "percentunit"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "UP"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "DOWN"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 19,
-        "x": 5,
-        "y": 15
-      },
-      "id": 19,
-      "options": {
-        "barRadius": 0,
-        "barWidth": 0.9,
-        "fullHighlight": false,
-        "groupWidth": 0.7,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": false
-        },
-        "orientation": "horizontal",
-        "showValue": "always",
-        "stacking": "normal",
-        "text": {},
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        },
-        "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 100
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH candidate_decisions AS MATERIALIZED (\n  SELECT d.decision_at,\n         d.decision_id,\n         d.process_id,\n         d.outcome AS forecast_outcome,\n         d.fair_probability,\n         m.official_outcome,\n         m.official_winning_token_id,\n         COALESCE(\n           d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',\n           d.metadata#>>'{order_plan,orders,0,request,client_order_id}'\n         )::uuid AS client_order_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id = d.market_id\n  WHERE d.process_id = (${process_id:sqlstring})::uuid\n    AND d.execution_mode IN ('paper','live')\n    AND d.action = 'buy'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n), matched_orders AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id AND o.client_order_id = d.client_order_id\n  UNION\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id\n   AND o.raw_payload#>>'{request,metadata,decision_id}' = d.decision_id::text\n), filled_candidates AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n         d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees,\n         BOOL_AND(f.source='live') AS is_live\n  FROM matched_orders d\n  JOIN polymarket.fills f\n    ON f.order_id=d.order_id\n   AND f.process_id=d.process_id\n   AND f.source IN ('paper','live')\n   AND f.timestamp_utc >= $__timeFrom()::timestamptz\n   AND f.timestamp_utc >= d.decision_at\n   AND f.timestamp_utc <= $__timeTo()::timestamptz\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n           d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id\n), filled_orders AS MATERIALIZED (\n  SELECT * FROM filled_candidates ORDER BY decision_at DESC LIMIT 20\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e\n  JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       CASE WHEN forecast_outcome='up' THEN fair_probability::double precision END AS \"UP\",\n       CASE WHEN forecast_outcome='down' THEN -fair_probability::double precision END AS \"DOWN\"\nFROM presentation ORDER BY decision_at DESC;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 20
-          }
-        }
-      ],
-      "title": "Resolved Entry Forecasts vs Official Outcome",
-      "type": "barchart"
-    },
-    {
-      "datasource": {
-        "type": "grafana",
-        "uid": "grafana"
-      },
       "description": "Real-time countdown for the canonical BTC five-minute market observed by every active trading process. Grafana Live updates this panel every second independently of the dashboard's global refresh timer. Waiting indicates no active process, market discovery, or disagreement between process feeds.",
       "fieldConfig": {
         "defaults": {
@@ -2047,8 +1590,9 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 20
+        "y": 1
       },
+      "hideTimeOverride": true,
       "id": 7,
       "options": {
         "colorMode": "value",
@@ -2086,10 +1630,521 @@
           "refId": "A"
         }
       ],
-      "hideTimeOverride": true,
       "timeFrom": "5m",
       "title": "5-Minute Market Countdown",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana",
+        "uid": "grafana"
+      },
+      "description": "Global Chainlink BTC/USD 60-second TWAP path for only the active five-minute Polymarket window, with the first boundary TWAP shown as Price to Beat. The bounded current-market path is resent every second so a refreshed browser reconstructs the elapsed window and the completed market is replaced at rollover. This panel is independent of trading-process and PnL filters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "BTC Price (USD)",
+            "axisPlacement": "left",
+            "axisWidth": 96,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 4,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "prefix:$"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "twap_price"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chainlink BTC/USD TWAP 60s"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "price_to_beat"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Price to Beat"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    6
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 19,
+        "x": 5,
+        "y": 1
+      },
+      "hideTimeOverride": true,
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "buffer": 300000,
+          "channel": "stream/polymarket/btc_market_path",
+          "datasource": {
+            "type": "grafana",
+            "uid": "grafana"
+          },
+          "filter": {
+            "fields": [
+              "time",
+              "twap_price",
+              "price_to_beat"
+            ]
+          },
+          "queryType": "measurements",
+          "refId": "A"
+        }
+      ],
+      "timeFrom": "5m",
+      "title": "BTC 5-Minute Realtime Market",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Aggregate fresh unrealized PnL for current scheduled-market entries that remain open. Fully recognized manual exits are excluded. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "noValue": "No fresh mark",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Current Market Entry Orders"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 6
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH clock AS NOT MATERIALIZED (SELECT $__timeTo()::timestamptz AS at), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n),\ncurrent_entries AS MATERIALIZED (\n  SELECT e.* FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id CROSS JOIN clock c\n  WHERE m.window_start<=c.at AND m.window_end>c.at AND m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid FROM market_data.polymarket_btc_five_minute_orderbook_snapshots checkpoint\n    WHERE checkpoint.market_id=e.market_id AND checkpoint.token_id=e.token_id AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.sampled_at BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n            ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::double precision\n         AS \"Current Fresh Unrealized PnL\",COUNT(*) AS \"Current Market Entry Orders\" FROM marked;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Current Fresh Unrealized PnL",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "id": 14,
+      "panels": [],
+      "title": "BTC 5-Minute Realtime Paper",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Aggregate lifetime net realized PnL for the current PnL scope. Recognized manual live exits use actual net proceeds; other filled entries use official settlement economics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 12
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\nSELECT COALESCE(SUM(net_pnl),0::numeric)::double precision AS \"Lifetime Net Realized PnL\" FROM realized;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Lifetime Net Realized PnL",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "One bar per filled, officially resolved entry for the selected process. UP confidence is shown as positive and DOWN confidence as negative. PnL uses recognized manual-exit proceeds and exit timing when present, otherwise official settlement economics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "Forecast confidence",
+            "axisPlacement": "auto",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "mappings": [],
+          "max": 1,
+          "min": -1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "UP"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DOWN"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 19,
+        "x": 5,
+        "y": 12
+      },
+      "id": 19,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.9,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "normal",
+        "text": {},
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 100
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH candidate_decisions AS MATERIALIZED (\n  SELECT d.decision_at,\n         d.decision_id,\n         d.process_id,\n         d.outcome AS forecast_outcome,\n         d.fair_probability,\n         m.official_outcome,\n         m.official_winning_token_id,\n         COALESCE(\n           d.metadata#>>'{paper_order_plan,orders,0,request,client_order_id}',\n           d.metadata#>>'{order_plan,orders,0,request,client_order_id}'\n         )::uuid AS client_order_id\n  FROM polymarket.btc_strategy_decisions d\n  JOIN polymarket.btc_interval_markets m ON m.market_id = d.market_id\n  WHERE d.process_id = (${process_id:sqlstring})::uuid\n    AND d.execution_mode IN ('paper','live')\n    AND d.action = 'buy'\n    AND d.outcome IN ('up','down')\n    AND d.fair_probability BETWEEN 0 AND 1\n    AND d.decision_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n    AND m.official_outcome IN ('up','down')\n    AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n), matched_orders AS MATERIALIZED (\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id AND o.client_order_id = d.client_order_id\n  UNION\n  SELECT d.decision_at,d.decision_id,d.process_id,d.forecast_outcome,d.fair_probability,\n         d.official_outcome,d.official_winning_token_id,o.order_id,o.market_id,o.token_id\n  FROM candidate_decisions d\n  JOIN polymarket.orders o\n    ON o.process_id = d.process_id\n   AND o.raw_payload#>>'{request,metadata,decision_id}' = d.decision_id::text\n), filled_candidates AS MATERIALIZED (\n  SELECT d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n         d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id,\n         SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,\n         SUM(f.fee)::numeric AS entry_fees,\n         BOOL_AND(f.source='live') AS is_live\n  FROM matched_orders d\n  JOIN polymarket.fills f\n    ON f.order_id=d.order_id\n   AND f.process_id=d.process_id\n   AND f.source IN ('paper','live')\n   AND f.timestamp_utc >= $__timeFrom()::timestamptz\n   AND f.timestamp_utc >= d.decision_at\n   AND f.timestamp_utc <= $__timeTo()::timestamptz\n  GROUP BY d.process_id,d.order_id,d.market_id,d.token_id,d.decision_at,d.decision_id,\n           d.forecast_outcome,d.fair_probability,d.official_outcome,d.official_winning_token_id\n), filled_orders AS MATERIALIZED (\n  SELECT * FROM filled_candidates ORDER BY decision_at DESC LIMIT 20\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e\n  JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), presentation AS (\n  SELECT e.*,COALESCE(x.net_proceeds-e.entry_cost-e.entry_fees,\n    CASE WHEN e.token_id=e.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees) AS net_pnl\n  FROM filled_orders e LEFT JOIN recognized_exits x USING(process_id,order_id)\n)\nSELECT CASE WHEN forecast_outcome=official_outcome THEN '✅ ' ELSE '❌ ' END||\n       CASE WHEN forecast_outcome='up' THEN 'UP ' ELSE 'DOWN ' END||\n       to_char(decision_at AT TIME ZONE 'UTC','MM-DD HH24:MI')||' UTC - '||\n       CASE WHEN net_pnl>0 THEN '+'||chr(36)||to_char(net_pnl,'FM999999990.00')\n            WHEN net_pnl<0 THEN '-'||chr(36)||to_char(abs(net_pnl),'FM999999990.00')\n            ELSE chr(36)||'0.00' END AS \"Decision\",\n       CASE WHEN forecast_outcome='up' THEN fair_probability::double precision END AS \"UP\",\n       CASE WHEN forecast_outcome='down' THEN -fair_probability::double precision END AS \"DOWN\"\nFROM presentation ORDER BY decision_at DESC;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 20
+          }
+        }
+      ],
+      "title": "Resolved Entry Forecasts vs Official Outcome",
+      "type": "barchart"
     },
     {
       "datasource": {
@@ -2124,7 +2179,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red"
+                "color": "red",
+                "value": 0
               }
             ]
           }
@@ -2135,7 +2191,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 25
+        "y": 17
       },
       "id": 25,
       "options": {
@@ -2186,7 +2242,145 @@
         }
       ],
       "title": "Trading Entry Status",
-      "transformations": [],
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Lifecycle health derived only from durable trading process state.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Active Sessions"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "/^(Lifecycle Mismatch|Failures 24h)$/"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 5,
+        "x": 0,
+        "y": 22
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COUNT(*) FILTER (\n    WHERE p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)>=now()-interval '2 minutes'\n  ) AS \"Active Processes\",\n  COUNT(*) FILTER (\n    WHERE p.enabled\n      AND p.status IN ('starting','running','stopping')\n      AND p.stopped_at IS NULL\n      AND COALESCE(p.heartbeat_at,p.updated_at,p.started_at,p.created_at)<now()-interval '2 minutes'\n  ) AS \"Stale Active Processes\",\n  COUNT(*) FILTER (\n    WHERE p.status='failed' AND p.updated_at>=now()-interval '24 hours'\n  ) AS \"Failures 24h\"\nFROM polymarket.trading_processes p\nWHERE p.process_scope='realtime_paper'\n  AND p.status <> 'completed';",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Realtime Process Health",
       "type": "stat"
     },
     {
@@ -2254,10 +2448,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 13,
+        "h": 14,
         "w": 19,
         "x": 5,
-        "y": 28
+        "y": 25
       },
       "id": 1,
       "options": {
@@ -2311,232 +2505,22 @@
     },
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Aggregate fresh unrealized PnL for current scheduled-market entries that remain open. Fully recognized manual exits are excluded. When entries exist but no bid is fresh within two seconds, PnL displays No fresh mark instead of $0.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "noValue": "No fresh mark",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Current Market Entry Orders"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              },
-              {
-                "id": "decimals",
-                "value": 0
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 30
-      },
-      "id": 4,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "last"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH clock AS NOT MATERIALIZED (SELECT $__timeTo()::timestamptz AS at), selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n),\ncurrent_entries AS MATERIALIZED (\n  SELECT e.* FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id CROSS JOIN clock c\n  WHERE m.window_start<=c.at AND m.window_end>c.at AND m.official_resolution_received_at IS NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), marked AS MATERIALIZED (\n  SELECT e.*,mark.best_bid FROM current_entries e CROSS JOIN clock c\n  LEFT JOIN LATERAL (\n    SELECT checkpoint.best_bid FROM market_data.polymarket_btc_five_minute_orderbook_snapshots checkpoint\n    WHERE checkpoint.market_id=e.market_id AND checkpoint.token_id=e.token_id AND checkpoint.best_bid IS NOT NULL\n      AND checkpoint.sampled_at BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.source_timestamp BETWEEN c.at-interval '2 seconds' AND c.at+interval '1 second'\n      AND checkpoint.received_at BETWEEN c.at-interval '2 seconds' AND c.at\n    ORDER BY checkpoint.source_timestamp DESC,checkpoint.received_at DESC,checkpoint.ingest_sequence DESC LIMIT 1\n  ) mark ON true\n)\nSELECT CASE WHEN COUNT(*)=0 THEN 0::numeric WHEN COUNT(best_bid)=0 THEN NULL::numeric\n            ELSE SUM(filled_size*best_bid-entry_cost-entry_fees) FILTER(WHERE best_bid IS NOT NULL) END::double precision\n         AS \"Current Fresh Unrealized PnL\",COUNT(*) AS \"Current Market Entry Orders\" FROM marked;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Current Fresh Unrealized PnL",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgres"
-      },
-      "description": "Aggregate lifetime net realized PnL for the current PnL scope. Recognized manual live exits use actual net proceeds; other filled entries use official settlement economics.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 5,
-        "x": 0,
-        "y": 35
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH selected_process AS NOT MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE (${pnl_scope:sqlstring}='All processes' OR p.process_id=(${process_id:sqlstring})::uuid)\n    AND p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), filled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n)\nSELECT COALESCE(SUM(net_pnl),0::numeric)::double precision AS \"Lifetime Net Realized PnL\" FROM realized;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Lifetime Net Realized PnL",
-      "type": "stat"
-    },
-    {
-      "id": 21,
-      "type": "stat",
-      "title": "Data Pipeline Connection",
-      "description": "Current direct gRPC connection from the trading runtime to its owning ingester worker.",
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 0,
-        "y": 41
-      },
-      "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max(polymarket_market_data_grpc_connections)",
-          "instant": true,
-          "legendFormat": "Active worker connections"
-        }
-      ],
+      "description": "Current direct gRPC connection from the trading runtime to its owning ingester worker.",
       "fieldConfig": {
         "defaults": {
-          "min": 0,
-          "max": 8,
           "decimals": 0,
+          "mappings": [],
+          "max": 8,
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "red",
-                "value": null
+                "value": 0
               },
               {
                 "color": "green",
@@ -2547,19 +2531,126 @@
         },
         "overrides": []
       },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 0,
+        "y": 27
+      },
+      "id": 21,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value_and_name",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "max(polymarket_market_data_grpc_connections)",
+          "instant": true,
+          "legendFormat": "Active worker connections",
+          "refId": "A"
         }
-      }
+      ],
+      "title": "Data Pipeline Connection",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Latest worker-publish to trading-runtime apply latency for each subscribed realtime product. This measures delivery, not provider update cadence or Prometheus scrape age.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 5,
+        "x": 0,
+        "y": 33
+      },
+      "id": 30,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"}",
+          "instant": true,
+          "legendFormat": "Polymarket order book",
+          "refId": "A"
+        },
+        {
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"}",
+          "instant": true,
+          "legendFormat": "Chainlink reference price",
+          "refId": "B"
+        },
+        {
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"}",
+          "instant": true,
+          "legendFormat": "Chainlink 60-second TWAP",
+          "refId": "C"
+        },
+        {
+          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}",
+          "instant": true,
+          "legendFormat": "Binance BTC/USDT 1-second candle",
+          "refId": "D"
+        }
+      ],
+      "title": "Realtime Delivery Latency",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -2781,7 +2872,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 39
       },
       "id": 2,
       "options": {
@@ -2795,27 +2886,6 @@
         ]
       },
       "pluginVersion": "12.4.2",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Enabled": true,
-              "Filled Orders": true,
-              "Freshly Priced Current Entries": true,
-              "Gross Realized PnL": true,
-              "Heartbeat Age": true,
-              "Last Heartbeat": true,
-              "Last Updated": true,
-              "ROI": true,
-              "Realized Fees": true,
-              "Resolved Positions": true
-            },
-            "indexByName": {},
-            "renameByName": {}
-          }
-        }
-      ],
       "targets": [
         {
           "datasource": {
@@ -2847,139 +2917,28 @@
         }
       ],
       "title": "Process PnL, Runtime, and Settlement Status",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Enabled": true,
+              "Filled Orders": true,
+              "Freshly Priced Current Entries": true,
+              "Gross Realized PnL": true,
+              "Heartbeat Age": true,
+              "Last Heartbeat": true,
+              "Last Updated": true,
+              "ROI": true,
+              "Realized Fees": true,
+              "Resolved Positions": true
+            },
+            "indexByName": {},
+            "renameByName": {}
+          }
+        }
+      ],
       "type": "table"
-    },
-    {
-      "id": 23,
-      "type": "stat",
-      "title": "Pipeline Errors · Last Hour",
-      "description": "Delivery sequence gaps, dropped worker events, and data-contract decode errors observed during the last hour.",
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 8,
-        "y": 41
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))",
-          "instant": true,
-          "legendFormat": "Sequence gaps"
-        },
-        {
-          "refId": "B",
-          "expr": "sum(increase(ingester_stream_dropped_total[1h]))",
-          "instant": true,
-          "legendFormat": "Dropped events"
-        },
-        {
-          "refId": "C",
-          "expr": "sum(increase(polymarket_market_data_decode_errors_total[1h]))",
-          "instant": true,
-          "legendFormat": "Contract errors"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      }
-    },
-    {
-      "id": 22,
-      "type": "stat",
-      "title": "Data Delivery Latency",
-      "description": "Slowest current worker-publish to trading-runtime apply latency across the core realtime trading feeds.",
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 16,
-        "y": 41
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "1000 * max(polymarket_market_data_product_publish_apply_latency_seconds{product=~\"polymarket_btc_five_minute_orderbooks|polymarket_rtds_chainlink_reference_price|polymarket_chainlink_btcusd_twap|binance_spot_btcusdt_one_second_ohlcv\"})",
-          "instant": true,
-          "legendFormat": "Slowest core realtime stream"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "decimals": 1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 25
-              },
-              {
-                "color": "red",
-                "value": 100
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      }
     },
     {
       "datasource": {
@@ -3036,7 +2995,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 48
       },
       "id": 24,
       "options": {
@@ -3097,12 +3056,151 @@
       "type": "barchart"
     },
     {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Lifetime net realized PnL for every BTC five-minute realtime-paper process, independent of the dashboard process-scope filter. Recognized manual live exits use actual net proceeds; other filled entries use official settlement economics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "Net PnL (USD)",
+            "axisPlacement": "bottom",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 20,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.9,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH eligible_processes AS MATERIALIZED (\n  SELECT p.process_id,p.name,p.created_at FROM polymarket.trading_processes p\n  WHERE p.process_type='btc_5m' AND p.process_scope='realtime_paper' AND p.status<>'completed'\n), selected_process AS NOT MATERIALIZED (SELECT * FROM eligible_processes),\nfilled_orders AS MATERIALIZED (\n  SELECT o.process_id,o.order_id,o.market_id,o.token_id,SUM(f.size)::numeric AS filled_size,\n         SUM(f.price*f.size)::numeric AS entry_cost,SUM(f.fee)::numeric AS entry_fees,MAX(f.timestamp_utc) AS filled_at,\n         BOOL_AND(f.source='live') AS is_live\n  FROM selected_process p JOIN polymarket.orders o USING(process_id)\n  JOIN polymarket.fills f ON f.order_id=o.order_id AND f.process_id=o.process_id AND f.source IN ('paper','live')\n  WHERE o.side='buy'\n  GROUP BY o.process_id,o.order_id,o.market_id,o.token_id\n), recognized_exits AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.timestamp_utc AS realized_at,x.price AS exit_price,x.size AS exit_size,\n         (x.raw_payload#>>'{reconciliation,net_proceeds}')::numeric AS net_proceeds\n  FROM filled_orders e JOIN polymarket.account_trades x ON x.linked_order_id=e.order_id AND x.token_id=e.token_id\n  WHERE e.is_live AND x.side='sell' AND x.applied_exit_size=x.size AND x.applied_exit_size=e.filled_size\n    AND x.raw_payload#>>'{reconciliation,kind}'='manual_live_full_exit'\n    AND x.raw_payload#>>'{reconciliation,process_id}'=e.process_id::text\n    AND x.raw_payload#>>'{reconciliation,order_id}'=e.order_id\n    AND x.raw_payload#>>'{reconciliation,net_proceeds}'~'^[0-9]+([.][0-9]+)?$'\n), realized AS MATERIALIZED (\n  SELECT e.process_id,e.order_id,x.realized_at,(x.net_proceeds-e.entry_cost-e.entry_fees)::numeric AS net_pnl\n  FROM filled_orders e JOIN recognized_exits x USING(process_id,order_id)\n  UNION ALL\n  SELECT e.process_id,e.order_id,m.official_resolution_received_at,\n    (CASE WHEN e.token_id=m.official_winning_token_id THEN e.filled_size ELSE 0::numeric END-e.entry_cost-e.entry_fees)::numeric\n  FROM filled_orders e JOIN polymarket.btc_interval_markets m ON m.market_id=e.market_id\n  WHERE m.official_outcome IN ('up','down') AND m.official_winning_token_id IS NOT NULL\n    AND m.official_resolution_received_at IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM recognized_exits x WHERE x.process_id=e.process_id AND x.order_id=e.order_id)\n), realized_by_process AS (\n  SELECT process_id,SUM(net_pnl)::numeric AS net_pnl FROM realized GROUP BY process_id\n)\nSELECT p.name||' ['||left(p.process_id::text,8)||']' AS \"Process\",\n       COALESCE(r.net_pnl,0::numeric)::double precision AS \"Lifetime Net Realized PnL\"\nFROM eligible_processes p LEFT JOIN realized_by_process r USING(process_id)\nORDER BY COALESCE(r.net_pnl,0::numeric) DESC,p.created_at DESC,p.process_id;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Lifetime Net Realized PnL by Trading Process",
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "Process",
+                "Lifetime Net Realized PnL"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "includeByName": {},
+            "indexByName": {
+              "Lifetime Net Realized PnL": 1,
+              "Process": 0
+            },
+            "renameByName": {}
+          }
+        }
+      ],
+      "type": "barchart"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 76
       },
       "id": 28,
       "panels": [],
@@ -3110,188 +3208,282 @@
       "type": "row"
     },
     {
-      "id": 29,
-      "type": "timeseries",
-      "title": "Pipeline Throughput",
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 0,
-        "y": 69
-      },
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (product) (rate(ingester_stream_published_total[2m]))",
-          "legendFormat": "published · {{product}}"
-        },
-        {
-          "refId": "B",
-          "expr": "sum by (product) (rate(polymarket_market_data_product_events_applied_total[2m]))",
-          "legendFormat": "applied · {{product}}"
-        }
-      ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
-          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "lineWidth": 2,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
             "fillOpacity": 12,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull",
-            "mean"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 30,
-      "type": "stat",
-      "title": "Realtime Delivery Latency",
-      "description": "Latest worker-publish to trading-runtime apply latency for each subscribed realtime product. This measures delivery, not provider update cadence or Prometheus scrape age.",
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 8,
-        "y": 69
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_btc_five_minute_orderbooks\"}",
-          "instant": true,
-          "legendFormat": "Polymarket order book"
-        },
-        {
-          "refId": "B",
-          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_rtds_chainlink_reference_price\"}",
-          "instant": true,
-          "legendFormat": "Chainlink reference price"
-        },
-        {
-          "refId": "C",
-          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"polymarket_chainlink_btcusd_twap\"}",
-          "instant": true,
-          "legendFormat": "Chainlink 60-second TWAP"
-        },
-        {
-          "refId": "D",
-          "expr": "1000 * polymarket_market_data_product_publish_apply_latency_seconds{product=\"binance_spot_btcusdt_one_second_ohlcv\"}",
-          "instant": true,
-          "legendFormat": "Binance BTC/USDT 1-second candle"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "decimals": 1,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 25
+                "value": 0
               },
               {
                 "color": "red",
-                "value": 100
+                "value": 80
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 77
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "sum by (product) (rate(ingester_stream_published_total[2m]))",
+          "legendFormat": "published · {{product}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (product) (rate(polymarket_market_data_product_events_applied_total[2m]))",
+          "legendFormat": "applied · {{product}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Pipeline Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Delivery sequence gaps, dropped worker events, and data-contract decode errors observed during the last hour.",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
               }
             ]
           }
         },
         "overrides": []
       },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 77
+      },
+      "id": 23,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
+        "justifyMode": "auto",
         "orientation": "horizontal",
-        "textMode": "value_and_name",
+        "percentChangeColorMode": "standard",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
           ],
           "fields": "",
           "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "sum(increase(polymarket_market_data_sequence_gaps_total[1h]))",
+          "instant": true,
+          "legendFormat": "Sequence gaps",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(ingester_stream_dropped_total[1h]))",
+          "instant": true,
+          "legendFormat": "Dropped events",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(polymarket_market_data_decode_errors_total[1h]))",
+          "instant": true,
+          "legendFormat": "Contract errors",
+          "refId": "C"
         }
-      }
+      ],
+      "title": "Pipeline Errors · Last Hour",
+      "type": "stat"
     },
     {
-      "id": 31,
-      "type": "timeseries",
-      "title": "Connection Stability",
-      "gridPos": {
-        "h": 6,
-        "w": 8,
-        "x": 16,
-        "y": 69
-      },
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])",
-          "legendFormat": "Reconnects / 15m"
-        },
-        {
-          "refId": "B",
-          "expr": "increase(polymarket_market_data_duplicates_total[15m])",
-          "legendFormat": "Deduplicated / 15m"
-        }
-      ],
       "fieldConfig": {
         "defaults": {
-          "min": 0,
-          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
-            "lineWidth": 2,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
             "fillOpacity": 10,
-            "showPoints": "never"
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
           }
         },
         "overrides": []
       },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 77
+      },
+      "id": 31,
       "options": {
         "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
           "calcs": [
             "lastNotNull"
-          ]
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "increase(polymarket_market_data_grpc_reconnects_total[15m])",
+          "legendFormat": "Reconnects / 15m",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(polymarket_market_data_duplicates_total[15m])",
+          "legendFormat": "Deduplicated / 15m",
+          "refId": "B"
+        }
+      ],
+      "title": "Connection Stability",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -3358,6 +3550,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 177,
+  "version": 22,
   "weekStart": ""
 }

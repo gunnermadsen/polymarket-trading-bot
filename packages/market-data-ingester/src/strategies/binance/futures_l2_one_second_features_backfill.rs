@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 
-use super::{backfill_support, l2_backfill_support, l2_support::CryptoHftBinanceMarket};
+use super::{l2_backfill_support, l2_support::CryptoHftBinanceMarket};
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support;
 
 pub const STRATEGY_KEY: &str = "binance_futures_btcusdt_l2_one_second_features_backfill";
 const LEGACY_KEY: &str = "binance_btcusdt_l2_one_second_features";

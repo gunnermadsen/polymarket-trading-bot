@@ -320,7 +320,7 @@ def run_fixed_time_accuracy_benchmark(
             "model_input_tables": [
                 "polymarket.btc_interval_markets",
                 "polymarket.btc_market_reference_facts",
-                "polymarket.binance_one_second_klines",
+                "market_data.binance_spot_btcusdt_one_second_ohlcv",
             ],
             "oracle_role": "excluded_from_model_inputs",
             "orderbook_role": "post_prediction_execution_economics_only",

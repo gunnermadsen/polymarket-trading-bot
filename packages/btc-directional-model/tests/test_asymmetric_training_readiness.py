@@ -189,7 +189,7 @@ def test_collect_database_inventory_uses_bounded_canonical_query() -> None:
     assert "polymarket.btc_market_execution_snapshots" not in query
     assert "pmxt_v2_execution_snapshots" in query
     assert "polymarket.binance_spot_btcusdt_l2_training_features" in query
-    assert "polymarket.polygon_chainlink_btcusd_oracle_rounds" in query
+    assert "market_data.polygon_chainlink_btcusd_oracle_rounds" in query
 
 
 def test_database_inventory_accepts_complete_contract() -> None:

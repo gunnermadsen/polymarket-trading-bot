@@ -575,12 +575,12 @@ def _cache_contract(settings: _ExtractSettings) -> dict[str, Any]:
             "core": [
                 "polymarket.btc_interval_markets",
                 "polymarket.btc_market_reference_facts",
-                "polymarket.binance_one_second_klines",
+                "market_data.binance_spot_btcusdt_one_second_ohlcv",
                 "polymarket.backfill_artifacts",
             ],
             "l2": [L2_SOURCE_RELATION],
             "candles": [
-                "polymarket.chainlink_btcusd_one_minute_candles",
+                "market_data.chainlink_btcusd_one_minute_candles",
                 "polymarket.backfill_artifacts",
             ],
             "execution": [

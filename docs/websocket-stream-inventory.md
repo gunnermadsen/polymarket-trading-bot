@@ -7,7 +7,7 @@ client implementations in this repository.
 ## Summary
 
 - Two running microservices own public market-data websocket clients:
-  `polymarket-bot` and `market-data-ingester`.
+  `polymarket-bot` and `ingester-worker`.
 - They currently account for 10 configured/running public websocket clients
   across 6 logical feeds.
 - Four logical feeds are acquired independently by both microservices:
@@ -30,12 +30,12 @@ client implementations in this repository.
 | Binance BTCUSDT aggregate trades | `wss://stream.binance.com/ws/btcusdt@aggTrade` | `polymarket-bot` | BTC reference-price runtime | Operating but reconnecting during snapshot network failures |
 | Binance BTCUSDT spot L2 diff depth | `wss://stream.binance.com/ws/btcusdt@depth@100ms` | `polymarket-bot` | BTC spot-L2 runtime | Enabled and operating, but reconnecting during snapshot network failures |
 | Polymarket RTDS Chainlink BTC/USD | `wss://ws-live-data.polymarket.com` | `polymarket-bot` | BTC RTDS reference runtime | Operating; supplies RTDS Chainlink price/candle state |
-| Binance BTCUSDT aggregate trades | `wss://stream.binance.com:9443/ws/btcusdt@aggTrade` | `market-data-ingester` | `binance_spot_btcusdt_aggregate_trades` | Desired running; degraded during snapshot, with recent source events |
-| Binance BTCUSDT spot L2 diff depth | `wss://stream.binance.com:9443/ws/btcusdt@depth@100ms` | `market-data-ingester` | `binance_spot_btcusdt_l2_snapshots` | Running and healthy; recent synchronized book |
-| Binance BTCUSDT one-second klines | `wss://stream.binance.com:9443/ws/btcusdt@kline_1s` | `market-data-ingester` | `binance_spot_btcusdt_one_second_ohlcv` | Running and healthy; recent source events |
-| Polymarket CLOB BTC 5m orderbooks | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `market-data-ingester` | `polymarket_btc_five_minute_orderbooks` | Desired running; degraded during snapshot, with recent source events |
-| Polymarket CLOB BTC 5m resolution events | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `market-data-ingester` | `polymarket_btc_five_minute_resolutions` | Desired running; degraded and reconnecting after pong timeouts |
-| Polymarket RTDS Chainlink BTC/USD TWAP | `wss://ws-live-data.polymarket.com` | `market-data-ingester` | `polymarket_chainlink_btcusd_twap` | Running and healthy; recent source events |
+| Binance BTCUSDT aggregate trades | `wss://stream.binance.com:9443/ws/btcusdt@aggTrade` | `ingester-worker` | `binance_spot_btcusdt_aggregate_trades` | Desired running; degraded during snapshot, with recent source events |
+| Binance BTCUSDT spot L2 diff depth | `wss://stream.binance.com:9443/ws/btcusdt@depth@100ms` | `ingester-worker` | `binance_spot_btcusdt_l2_snapshots` | Running and healthy; recent synchronized book |
+| Binance BTCUSDT one-second klines | `wss://stream.binance.com:9443/ws/btcusdt@kline_1s` | `ingester-worker` | `binance_spot_btcusdt_one_second_ohlcv` | Running and healthy; recent source events |
+| Polymarket CLOB BTC 5m orderbooks | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `ingester-worker` | `polymarket_btc_five_minute_orderbooks` | Desired running; degraded during snapshot, with recent source events |
+| Polymarket CLOB BTC 5m resolution events | `wss://ws-subscriptions-clob.polymarket.com/ws/market` | `ingester-worker` | `polymarket_btc_five_minute_resolutions` | Desired running; degraded and reconnecting after pong timeouts |
+| Polymarket RTDS Chainlink BTC/USD TWAP | `wss://ws-live-data.polymarket.com` | `ingester-worker` | `polymarket_chainlink_btcusd_twap` | Running and healthy; recent source events |
 
 `stream.binance.com` ports 443 and 9443 are different transport addresses for
 the same Binance logical streams. They do not make the acquisitions distinct.
@@ -58,7 +58,7 @@ processing merely because it shares the CLOB endpoint.
 
 ## Related duplicated polling flows (not websockets)
 
-| Data family | `polymarket-bot` | `market-data-ingester` | Finding |
+| Data family | `polymarket-bot` | `ingester-worker` | Finding |
 |---|---|---|---|
 | Chainlink RefPrice | Chainlink Data Streams REST poller | `chainlink_btcusd_reference_price` REST strategy | Duplicate independent HTTP acquisition; both were failing/retrying near the snapshot |
 | Polygon Chainlink BTC/USD oracle | Polygon JSON-RPC poller | `polygon_chainlink_btcusd_oracle` JSON-RPC strategy | Duplicate independent RPC acquisition |
@@ -104,7 +104,7 @@ disconnecting its socket.
 
 ## Expected latency from ingester-to-bot streaming
 
-Centralizing acquisition in `market-data-ingester` and forwarding normalized
+Centralizing acquisition in `ingester-worker` and forwarding normalized
 events over a long-lived streaming gRPC connection should add sub-millisecond
 to low-single-digit-millisecond latency on the same Docker host when the path
 is implemented without a database round trip or batching. A reasonable design

@@ -6,9 +6,9 @@ SELECT
   candle.high_price::double precision AS high_price,
   candle.low_price::double precision AS low_price,
   candle.close_price::double precision AS close_price
-FROM polymarket.chainlink_btcusd_one_minute_candles candle
-JOIN polymarket.backfill_artifacts artifact
-  ON artifact.artifact_id = candle.artifact_id
+FROM market_data.chainlink_btcusd_one_minute_candles candle
+JOIN ingester.capture_artifacts artifact
+  ON artifact.artifact_id = candle.capture_artifact_id
  AND artifact.status = 'completed'
 WHERE candle.symbol = 'BTCUSD'
   AND candle.close_timestamp >= %(range_start)s - interval '61 minutes'

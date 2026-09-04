@@ -15,9 +15,9 @@ Start the standard ingester services with `docker compose --profile data-ingesti
 weather collection through the master API; use `GET /strategy/all` and
 `GET /strategy/{strategy_id}` for the authoritative request and sharding contracts.
 
-`enqueue-pilot` splits both the Wunderground-aligned IEM METAR archive and the IEM-processed NCEI
-one-minute ASOS archive into annual jobs, and HRRR, price-history, and PMXT work into monthly
-jobs. Market-dependent jobs wait for the market census job. Re-running it is idempotent.
+Backfill scheduling is available only through the `ingester-master` API. This package retains the
+weather feature materializers called by the canonical worker contract, but no longer owns a queue,
+scheduler, or worker loop.
 
 The METAR archive is the canonical resolution-label proxy. The one-minute archive is retained as
 auxiliary sensor context only because it can diverge from Wunderground's daily maximum. A market
@@ -31,8 +31,7 @@ Google, AWS, and NOMADS archives with bounded exponential retry and request paci
 job is retried. The PMXT worker reconstructs the immediately available YES and NO asks using provider
 receipt time, never events received after the decision. Each worker has an independent cache
 namespace; large PMXT transport files are removed only after compact snapshots and checksums commit.
-Workers use validated ingester allowlists so the CLOB price-history pool cannot consume HRRR or PMXT
-jobs, while the general pool cannot consume price-history jobs.
+Worker placement is controlled by the canonical ingester strategy and execution selectors.
 
 ## Reconcile, train, and benchmark
 

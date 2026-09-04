@@ -9,19 +9,20 @@ use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support::{self, ArtifactCompletion};
 
 use super::{
     archive_support::{
         self, ArchiveCancellation, ArchiveDownloadLimits, BinanceArchiveKind, BinanceArchiveSpec,
         BINANCE_ARCHIVE_PROVIDER,
     },
-    backfill_support::{self, ArtifactCompletion},
     types::BinanceOneSecondKlineRecord,
 };
 
 pub const STRATEGY_KEY: &str = "binance_spot_btcusdt_one_second_ohlcv_backfill";
 const DEFAULT_ARCHIVE_URL: &str = "https://data.binance.vision";
-const DURABLE_TARGET: &str = "polymarket.binance_one_second_klines";
+const DURABLE_TARGET: &str = "market_data.binance_spot_btcusdt_one_second_ohlcv";
+const CANONICAL_STRATEGY_KEY: &str = "binance_spot_btcusdt_one_second_ohlcv";
 
 pub struct BinanceSpotOneSecondOhlcvBackfill {
     descriptor: StrategyDescriptor,
@@ -144,6 +145,8 @@ impl BackfillWorkerStrategy for BinanceSpotOneSecondOhlcvBackfill {
             &records,
             &downloaded.sha256,
             downloaded.compressed_bytes,
+            shard.range_start,
+            shard.range_end,
         )
         .await?;
         Ok(backfill_support::outcome(
@@ -174,6 +177,8 @@ async fn persist(
     records: &[BinanceOneSecondKlineRecord],
     checksum: &str,
     bytes: u64,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), BackfillExecutionError> {
     let mut tx = context
         .pool
@@ -181,12 +186,26 @@ async fn persist(
         .await
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
+    let received_at = chrono::Utc::now();
+    ensure_capture_artifact(
+        &mut tx,
+        artifact_id,
+        records,
+        checksum,
+        received_at,
+        capture_window_start,
+        capture_window_end,
+    )
+    .await?;
     for chunk in records.chunks(1_000) {
-        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO polymarket.binance_one_second_klines (symbol,open_timestamp,close_timestamp,open_price,high_price,low_price,close_price,base_volume,quote_volume,trade_count,taker_buy_base_volume,taker_buy_quote_volume,artifact_id) ");
+        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO market_data.binance_spot_btcusdt_one_second_ohlcv (source,symbol,open_timestamp,close_timestamp,provider_available_at,received_at,open_price,high_price,low_price,close_price,base_volume,quote_volume,trade_count,taker_buy_base_volume,taker_buy_quote_volume,payload_sha256,strategy_key,capture_artifact_id) ");
         query.push_values(chunk, |mut row, value| {
-            row.push_bind(&value.symbol)
+            row.push_bind("binance_spot")
+                .push_bind(&value.symbol)
                 .push_bind(value.open_timestamp)
-                .push_bind(value.close_timestamp)
+                .push_bind(value.open_timestamp + chrono::Duration::milliseconds(999))
+                .push_bind(Option::<chrono::DateTime<chrono::Utc>>::None)
+                .push_bind(received_at)
                 .push_bind(value.open_price)
                 .push_bind(value.high_price)
                 .push_bind(value.low_price)
@@ -196,6 +215,8 @@ async fn persist(
                 .push_bind(value.trade_count)
                 .push_bind(value.taker_buy_base_volume)
                 .push_bind(value.taker_buy_quote_volume)
+                .push_bind(value.canonical_payload_sha256())
+                .push_bind(CANONICAL_STRATEGY_KEY)
                 .push_bind(artifact_id);
         });
         query.push(" ON CONFLICT (symbol,open_timestamp) DO NOTHING");
@@ -224,6 +245,50 @@ async fn persist(
     tx.commit()
         .await
         .map_err(backfill_support::database_error)?;
+    Ok(())
+}
+
+async fn ensure_capture_artifact(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    artifact_id: uuid::Uuid,
+    records: &[BinanceOneSecondKlineRecord],
+    checksum: &str,
+    received_at: chrono::DateTime<chrono::Utc>,
+    capture_window_start: chrono::DateTime<chrono::Utc>,
+    capture_window_end: chrono::DateTime<chrono::Utc>,
+) -> Result<(), BackfillExecutionError> {
+    sqlx::query(
+        r#"
+        INSERT INTO ingester.capture_artifacts (
+          artifact_id, strategy_key, profile_generation, config_schema_version,
+          config_sha256, config_snapshot, capture_window_start, capture_window_end,
+          minimum_source_timestamp, maximum_source_timestamp,
+          minimum_received_at, maximum_received_at, record_count, content_sha256,
+          status, created_at, updated_at, completed_at
+        )
+        SELECT $1, $2, profile.desired_generation, profile.config_schema_version,
+          encode(digest(convert_to(profile.config::text, 'UTF8'), 'sha256'), 'hex'),
+          profile.config, $3, $4, $5, $6, $7, $7, $8, $9,
+          'completed', $7, $7, $7
+        FROM ingester.profiles profile WHERE profile.strategy_key = $2
+        ON CONFLICT DO NOTHING
+        "#,
+    )
+    .bind(artifact_id)
+    .bind(CANONICAL_STRATEGY_KEY)
+    .bind(capture_window_start)
+    .bind(capture_window_end)
+    .bind(records.first().map(|row| row.open_timestamp))
+    .bind(records.last().map(|row| row.open_timestamp))
+    .bind(received_at)
+    .bind(
+        i64::try_from(records.len())
+            .map_err(|_| backfill_support::integrity("record count overflow"))?,
+    )
+    .bind(checksum)
+    .execute(&mut **tx)
+    .await
+    .map_err(backfill_support::database_error)?;
     Ok(())
 }
 
