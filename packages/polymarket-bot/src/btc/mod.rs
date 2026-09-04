@@ -11,9 +11,7 @@ pub mod feeds;
 pub mod live_execution;
 pub mod market;
 pub mod paper;
-pub mod predictive_regime_v2;
 pub mod process_runner;
-pub mod reliability_calibration;
 pub mod repository;
 pub mod runtime;
 pub mod strategy;
@@ -24,12 +22,8 @@ pub use admission::{
     DailyRealizedPnlHighWaterMarkConfig, DailyRealizedPnlHighWaterMarkEvaluation,
     DailyRealizedPnlHighWaterMarkState, LossRegimeCandidate, LossRegimeConfidenceFloorConfig,
     LossRegimeConfidenceFloorEvaluation, LossRegimeConfidenceFloorState,
-    LossRegimeConfidenceFloorTransition, ProposedEntryExposure, ShadowPredictiveRegimeCandidate,
-    ShadowPredictiveRegimeCircuitBreakerConfig, ShadowPredictiveRegimeEvaluation,
-    ShadowPredictiveRegimeState, ShadowPredictiveRegimeTransition, UnsettledEntryExposure,
+    LossRegimeConfidenceFloorTransition, ProposedEntryExposure, UnsettledEntryExposure,
     DAILY_REALIZED_PNL_HIGH_WATER_MARK_SCHEMA_VERSION, LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
-    SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_MODE,
-    SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_SCHEMA_VERSION,
 };
 pub use binance_spot_l2::{
     parse_depth_snapshot, parse_depth_update, BinanceSpotL2ApplyOutcome,
@@ -88,12 +82,6 @@ pub use market::{
 pub use paper::{
     PaperPreviewConfig, PaperPreviewResult, PaperSettlementCreditResult, PaperVenue,
     PaperVenueConfig, PaperVenueStatus, PAPER_DYNAMIC_FEE_RATE_METADATA_KEY,
-};
-pub use predictive_regime_v2::{
-    ShadowPredictiveRegimeCircuitBreakerConfigSelector,
-    ShadowPredictiveRegimeCircuitBreakerV2Config, ShadowPredictiveRegimeV2Candidate,
-    ShadowPredictiveRegimeV2CandidateSource, ShadowPredictiveRegimeV2Evaluation,
-    ShadowPredictiveRegimeV2State, SHADOW_PREDICTIVE_REGIME_CIRCUIT_BREAKER_V2_SCHEMA_VERSION,
 };
 pub use process_runner::{
     process_runtime_readiness, BtcPaperProcessConfig, BtcPaperProcessRunner, BtcProcessConfig,
