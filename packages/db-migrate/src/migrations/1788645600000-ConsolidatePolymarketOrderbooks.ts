@@ -41,6 +41,7 @@ export class ConsolidatePolymarketOrderbooks1788645600000
       )) {
         const artifactId = this.legacyArtifactId(start);
         await this.ensureLegacyArtifact(queryRunner, artifactId, start, end);
+        await this.removeProvisionalLegacyRows(queryRunner, artifactId);
         const result = await queryRunner.query(
           `
           WITH source_rows AS MATERIALIZED (
@@ -102,7 +103,8 @@ export class ConsolidatePolymarketOrderbooks1788645600000
                 'market_interval_seconds', 300,
                 'sample_interval_ms', 1000,
                 'top_n', least(1000, greatest(1, bid_depth, ask_depth)),
-                'legacy_event_driven_checkpoint', true
+                'legacy_event_driven_checkpoint', true,
+                'legacy_checkpoint_id', checkpoint_id
               ) AS policy
             FROM source_rows
           ), inserted AS (
@@ -243,6 +245,18 @@ export class ConsolidatePolymarketOrderbooks1788645600000
           'sampled_at, source_timestamp, ingest_sequence'
       );
     `);
+  }
+
+  private async removeProvisionalLegacyRows(
+    queryRunner: QueryRunner,
+    artifactId: string,
+  ): Promise<void> {
+    await queryRunner.query(`
+      DELETE FROM ${TARGET}
+      WHERE capture_artifact_id = $1::uuid
+        AND sampling_policy ->> 'legacy_event_driven_checkpoint' = 'true'
+        AND NOT sampling_policy ? 'legacy_checkpoint_id'
+    `, [artifactId]);
   }
 
   private async ensureLegacyArtifact(
