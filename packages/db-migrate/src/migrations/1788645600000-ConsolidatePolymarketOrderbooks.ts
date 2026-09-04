@@ -188,6 +188,8 @@ export class ConsolidatePolymarketOrderbooks1788645600000
       `);
     }
     await queryRunner.query(`
+      ALTER TABLE ${TARGET} SET (timescaledb.compress = false);
+
       ALTER TABLE ${TARGET}
         ADD COLUMN IF NOT EXISTS legacy_checkpoint_id uuid,
         ADD COLUMN IF NOT EXISTS legacy_source_payload jsonb,
@@ -222,6 +224,14 @@ export class ConsolidatePolymarketOrderbooks1788645600000
             )
           )
         ) NOT VALID;
+
+      ALTER TABLE ${TARGET} SET (
+        timescaledb.compress = true,
+        timescaledb.compress_segmentby =
+          'market_id, token_id, sampling_policy_sha256, strategy_key, capture_artifact_id',
+        timescaledb.compress_orderby =
+          'sampled_at, source_timestamp, ingest_sequence'
+      );
     `);
   }
 
