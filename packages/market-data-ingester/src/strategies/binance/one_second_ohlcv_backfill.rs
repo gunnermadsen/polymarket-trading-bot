@@ -9,13 +9,13 @@ use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
     BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
 };
+use crate::strategies::backfill_support::{self, ArtifactCompletion};
 
 use super::{
     archive_support::{
         self, ArchiveCancellation, ArchiveDownloadLimits, BinanceArchiveKind, BinanceArchiveSpec,
         BINANCE_ARCHIVE_PROVIDER,
     },
-    backfill_support::{self, ArtifactCompletion},
     types::BinanceOneSecondKlineRecord,
 };
 

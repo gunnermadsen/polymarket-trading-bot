@@ -7,7 +7,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::Row;
 
 use crate::domain::{
     BackfillContext, BackfillExecutionError, BackfillFailureKind, BackfillOutcome, BackfillRequest,
@@ -15,6 +15,7 @@ use crate::domain::{
     StrategyDescriptor, ValidatedBackfillRequest,
 };
 use crate::persistence::{insert_binance_aggregate_trades, BinanceAggregateTradeWrite};
+use crate::strategies::backfill_support;
 
 pub const STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades_backfill";
 const REALTIME_STRATEGY_KEY: &str = "binance_spot_btcusdt_aggregate_trades";
@@ -68,38 +69,7 @@ impl BackfillWorkerStrategy for BinanceSpotAggregateTradesBackfill {
         &self,
         request: &BackfillRequest,
     ) -> Result<ValidatedBackfillRequest, BackfillExecutionError> {
-        if request.strategy_key != STRATEGY_KEY {
-            return Err(BackfillExecutionError::invalid(
-                "strategy_key_mismatch",
-                "request strategy key does not match Binance aggregate trades",
-            ));
-        }
-        if request.range.end <= request.range.start || request.range.end > Utc::now() {
-            return Err(BackfillExecutionError::invalid(
-                "range_invalid",
-                "range must be increasing and may not end in the future",
-            ));
-        }
-        if !request
-            .parameters
-            .as_object()
-            .is_some_and(|parameters| parameters.is_empty())
-        {
-            return Err(BackfillExecutionError::invalid(
-                "parameters_invalid",
-                "Binance BTCUSDT aggregate-trade backfills accept no parameters",
-            ));
-        }
-        request.execution.validate()?;
-        Ok(ValidatedBackfillRequest {
-            strategy_key: self.descriptor.strategy_key.clone(),
-            strategy_contract_version: self.descriptor.strategy_contract_version,
-            request_schema_version: self.descriptor.request_schema_version.unwrap_or(1),
-            range_start: request.range.start,
-            range_end: request.range.end,
-            parameters: request.parameters.clone(),
-            execution: request.execution.clone(),
-        })
+        backfill_support::validate_empty_request(&self.descriptor, request)
     }
 
     fn plan_shards(
@@ -331,8 +301,12 @@ async fn persist(
     context: &BackfillContext,
     trades: &[Trade],
 ) -> Result<i64, BackfillExecutionError> {
-    let mut tx = context.pool.begin().await.map_err(database_error)?;
-    require_lease(&mut tx, context).await?;
+    let mut tx = context
+        .pool
+        .begin()
+        .await
+        .map_err(backfill_support::database_error)?;
+    backfill_support::require_lease(&mut tx, context).await?;
     let received_at = Utc::now();
     let minimum_source_timestamp = trades.first().map(|trade| trade.trade_timestamp);
     let maximum_source_timestamp = trades.last().map(|trade| trade.trade_timestamp);
@@ -395,7 +369,7 @@ async fn persist(
     .bind(REALTIME_STRATEGY_KEY)
     .fetch_one(&mut *tx)
     .await
-    .map_err(database_error)?;
+    .map_err(backfill_support::database_error)?;
     for chunk in trades.chunks(1_000) {
         let writes = chunk
             .iter()
@@ -408,7 +382,7 @@ async fn persist(
             .collect::<Vec<_>>();
         insert_binance_aggregate_trades(&mut tx, REALTIME_STRATEGY_KEY, &writes)
             .await
-            .map_err(database_error)?;
+            .map_err(backfill_support::database_error)?;
     }
     let ids: Vec<i64> = trades
         .iter()
@@ -417,7 +391,7 @@ async fn persist(
     let durable = sqlx::query(
         "SELECT aggregate_trade_id,payload_sha256::text FROM market_data.binance_spot_btcusdt_aggregate_trades WHERE symbol='BTCUSDT' AND aggregate_trade_id=ANY($1::bigint[])",
     )
-    .bind(&ids).fetch_all(&mut *tx).await.map_err(database_error)?;
+    .bind(&ids).fetch_all(&mut *tx).await.map_err(backfill_support::database_error)?;
     if durable.len() != trades.len() {
         return Err(BackfillExecutionError::new(
             BackfillFailureKind::Integrity,
@@ -467,41 +441,16 @@ async fn persist(
     .bind(json!({"capture_artifact_id": capture_artifact_id}))
     .execute(&mut *tx)
     .await
-    .map_err(database_error)?;
-    require_lease(&mut tx, context).await?;
-    tx.commit().await.map_err(database_error)?;
+    .map_err(backfill_support::database_error)?;
+    backfill_support::require_lease(&mut tx, context).await?;
+    tx.commit()
+        .await
+        .map_err(backfill_support::database_error)?;
     Ok(record_count)
-}
-
-async fn require_lease(
-    tx: &mut Transaction<'_, Postgres>,
-    context: &BackfillContext,
-) -> Result<(), BackfillExecutionError> {
-    let valid: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM ingester.backfill_jobs WHERE job_id=$1 AND assigned_worker_id=$2 AND lease_token=$3 AND status='running' AND lease_expires_at>now())",
-    )
-    .bind(context.job_id).bind(context.worker_id.as_ref()).bind(context.lease_token)
-    .fetch_one(&mut **tx).await.map_err(database_error)?;
-    if !valid {
-        return Err(BackfillExecutionError::new(
-            BackfillFailureKind::LeaseLost,
-            "lease_lost",
-            "backfill job lease was lost",
-        ));
-    }
-    Ok(())
 }
 
 fn source_error(code: &'static str, message: impl Into<String>) -> BackfillExecutionError {
     BackfillExecutionError::new(BackfillFailureKind::TransientSource, code, message)
-}
-
-fn database_error(error: sqlx::Error) -> BackfillExecutionError {
-    BackfillExecutionError::new(
-        BackfillFailureKind::TransientDatabase,
-        "database_error",
-        error.to_string(),
-    )
 }
 
 #[cfg(test)]

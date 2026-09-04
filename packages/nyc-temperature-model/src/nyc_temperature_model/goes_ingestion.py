@@ -15,7 +15,7 @@ from . import PROCESS_ID, STATION_ID
 from .config import Settings
 from .database import connection, insert_unified_backfill_artifact
 from .hrrr_ingestion import NYC, _decision_times
-from .jobs import Job, update_progress
+from .backfill_contract import Job, update_progress
 from .noaa_transport import download_resumable, list_s3_keys
 from .sources import file_sha256
 from .spatial_features import (

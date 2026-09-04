@@ -13,10 +13,7 @@ use super::strategy::{
     BTC_DIRECTIONAL_MODEL_STRATEGY_FAMILY,
 };
 use super::{
-    strategy::{
-        ApprovedIntent, BtcDecision, BtcFeatureSnapshot,
-        BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION, BTC_FEATURE_LINEAGE_VERSION,
-    },
+    strategy::{ApprovedIntent, BtcDecision, BtcFeatureSnapshot, BTC_FEATURE_LINEAGE_VERSION},
     types::BtcOutcome,
 };
 use crate::models::{OrderRequest, OrderSide, OrderType};
@@ -1066,7 +1063,6 @@ fn metadata_outcome(metadata: &serde_json::Value) -> Option<BtcOutcome> {
 
 fn supported_lineage_version(value: &str) -> bool {
     value == BTC_FEATURE_LINEAGE_VERSION
-        || value == BTC_CHAINLINK_PATH_CONDITIONED_FEATURE_LINEAGE_VERSION
 }
 
 fn is_sha256(value: &str) -> bool {

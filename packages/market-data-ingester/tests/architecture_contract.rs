@@ -3,17 +3,22 @@ use std::{fs, path::Path};
 #[test]
 fn polymarket_image_has_no_backfill_runtime() {
     let root = repository_root();
-    let dockerfile = fs::read_to_string(root.join("packages/polymarket-bot/Dockerfile")).unwrap();
-    for forbidden in [
-        "polymarket-backfill-worker",
-        "kraken-backfill-worker",
-        "financial-data-backfill-worker",
-        "backfill-plan",
+    for relative in [
+        "packages/polymarket-bot/Dockerfile",
+        "packages/polymarket-bot/Dockerfile.production",
     ] {
-        assert!(
-            !dockerfile.contains(forbidden),
-            "Polymarket image contains {forbidden}"
-        );
+        let dockerfile = fs::read_to_string(root.join(relative)).unwrap();
+        for forbidden in [
+            "polymarket-backfill-worker",
+            "kraken-backfill-worker",
+            "financial-data-backfill-worker",
+            "backfill-plan",
+        ] {
+            assert!(
+                !dockerfile.contains(forbidden),
+                "{relative} contains {forbidden}"
+            );
+        }
     }
     let binary_dir = root.join("packages/polymarket-bot/src/bin");
     let legacy_binaries = fs::read_dir(binary_dir)
@@ -26,6 +31,51 @@ fn polymarket_image_has_no_backfill_runtime() {
         legacy_binaries.is_empty(),
         "Polymarket crate still exposes backfill binaries: {legacy_binaries:?}"
     );
+}
+
+#[test]
+fn coinapi_uses_only_the_canonical_backfill_strategy() {
+    let root = repository_root();
+    for legacy in [
+        "scripts/materialize-coinapi-binance-spot-l2.mjs",
+        "scripts/run-coinapi-binance-spot-l2-gap-backfill.mjs",
+    ] {
+        assert!(
+            !root.join(legacy).exists(),
+            "legacy CoinAPI runtime remains: {legacy}"
+        );
+    }
+    let source = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/binance/coinapi_spot_l2_one_second_features_backfill.rs"),
+    )
+    .unwrap();
+    assert_eq!(source.matches("impl BackfillWorkerStrategy for").count(), 1);
+    assert!(!source.contains("RealtimeWorkerStrategy"));
+    assert!(source.contains("ingester.backfill_artifacts") || source.contains("create_artifact"));
+}
+
+#[test]
+fn weather_package_has_no_parallel_queue_runtime() {
+    let root = repository_root();
+    assert!(!root
+        .join("packages/nyc-temperature-model/src/nyc_temperature_model/jobs.py")
+        .exists());
+    for relative in [
+        "packages/nyc-temperature-model/src/nyc_temperature_model/cli.py",
+        "packages/nyc-temperature-model/src/nyc_temperature_model/config.py",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        for forbidden in [
+            "weather.ingestion_jobs",
+            "WEATHER_WORKER_INGESTERS",
+            "run_worker",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative} contains {forbidden}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -288,7 +338,6 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
     for relative in [
         "packages/market-data-ingester/src/strategies/binance/aggregate_trades.rs",
         "packages/market-data-ingester/src/strategies/binance/aggregate_trades_backfill.rs",
-        "packages/polymarket-bot/src/ingestion/repository.rs",
         "packages/btc-directional-model/sql/btc-binance-trade-print-source.sql",
         "packages/btc-directional-model/sql/btc-refprice-context-trade-print-source.sql",
     ] {
@@ -301,6 +350,43 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
             assert!(
                 !source.contains("INSERT INTO market_data.binance_spot_btcusdt_aggregate_trades"),
                 "strategy bypasses the canonical aggregate-trade repository: {relative}"
+            );
+        }
+    }
+}
+
+#[test]
+fn binance_backfills_use_the_authoritative_support_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(root.join("src/strategies/backfill_support.rs").exists());
+    assert!(
+        !root
+            .join("src/strategies/binance/backfill_support.rs")
+            .exists(),
+        "Binance must not define a parallel backfill support module"
+    );
+
+    let module = fs::read_to_string(root.join("src/strategies/binance/mod.rs")).unwrap();
+    assert!(!module.contains("mod backfill_support;"));
+
+    let binance = root.join("src/strategies/binance");
+    for entry in fs::read_dir(binance).unwrap().filter_map(Result::ok) {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.ends_with("backfill.rs") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).unwrap();
+        for forbidden in [
+            "async fn require_lease(",
+            "fn database_error(error: sqlx::Error)",
+            "fn validate_empty_request(",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{name} duplicates authoritative support: {forbidden}"
             );
         }
     }

@@ -16,7 +16,7 @@ import pyarrow.dataset as ds
 from . import PROCESS_ID
 from .config import Settings
 from .database import connection, insert_artifact
-from .jobs import Job, update_progress
+from .backfill_contract import Job, update_progress
 from .sources import download_atomic, file_sha256, source_client
 
 NYC = ZoneInfo("America/New_York")

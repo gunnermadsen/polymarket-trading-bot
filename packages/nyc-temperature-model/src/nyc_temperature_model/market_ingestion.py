@@ -13,7 +13,7 @@ import psycopg
 from .config import Settings
 from .database import connection, insert_artifact
 from .fees import fee_schedule_from_market
-from .jobs import Job, update_progress
+from .backfill_contract import Job, update_progress
 from .sources import atomic_write, source_client
 
 NYC = ZoneInfo("America/New_York")

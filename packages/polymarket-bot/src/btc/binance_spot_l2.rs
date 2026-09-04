@@ -9,7 +9,57 @@ use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub use crate::ingestion::job::BinanceL2OneSecondFeature;
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceL2OneSecondFeature {
+    pub symbol: String,
+    pub second_start: DateTime<Utc>,
+    pub source_event_timestamp: DateTime<Utc>,
+    pub provider_received_at: DateTime<Utc>,
+    pub available_at: DateTime<Utc>,
+    pub source_update_id: i64,
+    pub feature_schema_version: String,
+    pub quality_status: String,
+    pub midpoint: Decimal,
+    pub microprice: Decimal,
+    pub spread_bps: Decimal,
+    pub bid_depth_5: Decimal,
+    pub ask_depth_5: Decimal,
+    pub imbalance_5: Decimal,
+    pub bid_depth_10: Decimal,
+    pub ask_depth_10: Decimal,
+    pub imbalance_10: Decimal,
+    pub bid_depth_20: Decimal,
+    pub ask_depth_20: Decimal,
+    pub imbalance_20: Decimal,
+    pub bid_depth_slope_20: Decimal,
+    pub ask_depth_slope_20: Decimal,
+    pub bid_depth_concentration_20: Decimal,
+    pub ask_depth_concentration_20: Decimal,
+    pub bid_quote_replenishment_1s: Decimal,
+    pub ask_quote_replenishment_1s: Decimal,
+    pub bid_quote_churn_1s: Decimal,
+    pub ask_quote_churn_1s: Decimal,
+    pub midpoint_change_bps_1s: Decimal,
+    pub spread_bps_delta_1s: Decimal,
+    pub depth_20_change_bps_1s: Decimal,
+    pub imbalance_20_delta_1s: Decimal,
+    pub midpoint_change_bps_5s: Decimal,
+    pub spread_bps_delta_5s: Decimal,
+    pub depth_20_change_bps_5s: Decimal,
+    pub imbalance_20_delta_5s: Decimal,
+    pub midpoint_change_bps_15s: Decimal,
+    pub spread_bps_delta_15s: Decimal,
+    pub depth_20_change_bps_15s: Decimal,
+    pub imbalance_20_delta_15s: Decimal,
+    pub midpoint_change_bps_30s: Decimal,
+    pub spread_bps_delta_30s: Decimal,
+    pub depth_20_change_bps_30s: Decimal,
+    pub imbalance_20_delta_30s: Decimal,
+    pub midpoint_change_bps_60s: Decimal,
+    pub spread_bps_delta_60s: Decimal,
+    pub depth_20_change_bps_60s: Decimal,
+    pub imbalance_20_delta_60s: Decimal,
+}
 
 pub const BINANCE_SPOT_L2_SYMBOL: &str = "BTCUSDT";
 pub const BINANCE_SPOT_L2_FEATURE_SCHEMA_VERSION: &str =
@@ -927,20 +977,10 @@ fn floor_utc_second(timestamp: DateTime<Utc>) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use chrono::TimeDelta;
     use rust_decimal_macros::dec;
     use serde_json::json;
-    use tokio::sync::mpsc;
-
-    use crate::ingestion::{
-        binance_archive::ArchiveCancellation,
-        cryptohft_binance_l2::{
-            BinanceSpotL2RangeReplay, BinanceSpotL2ReplayEvent, BinanceSpotL2ReplayLevel,
-            BinanceSpotL2ReplaySide, CryptoHftBinanceL2Config,
-        },
-    };
-
-    use super::*;
 
     fn at(second: i64, milliseconds: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(second, 0).single().unwrap() + TimeDelta::milliseconds(milliseconds)
@@ -1161,101 +1201,5 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, BinanceSpotL2ApplyOutcome::Applied { .. }));
         assert_eq!(engine.level_counts(), (99, 100));
-    }
-
-    #[test]
-    fn live_engine_matches_historical_spot_replay_feature_values() {
-        let start = at(1_776_000_000, 0);
-        let temporary = tempfile::tempdir().unwrap();
-        let config = CryptoHftBinanceL2Config::new(
-            temporary.path().join("archive"),
-            temporary.path().join("work"),
-        );
-        let (sender, mut receiver) = mpsc::channel(4);
-        let mut historical = BinanceSpotL2RangeReplay::new(
-            &config,
-            start,
-            start + TimeDelta::seconds(120),
-            1_000,
-            sender,
-            ArchiveCancellation::default(),
-        )
-        .unwrap();
-
-        let source_snapshot = snapshot(10);
-        let snapshot_levels = source_snapshot
-            .bids
-            .iter()
-            .map(|level| BinanceSpotL2ReplayLevel {
-                side: BinanceSpotL2ReplaySide::Bid,
-                price: level.price,
-                quantity: level.quantity,
-            })
-            .chain(
-                source_snapshot
-                    .asks
-                    .iter()
-                    .map(|level| BinanceSpotL2ReplayLevel {
-                        side: BinanceSpotL2ReplaySide::Ask,
-                        price: level.price,
-                        quantity: level.quantity,
-                    }),
-            )
-            .collect();
-        historical
-            .process(BinanceSpotL2ReplayEvent {
-                event_time_ms: start.timestamp_millis(),
-                first_update_id: None,
-                final_update_id: None,
-                last_update_id: Some(10),
-                levels: snapshot_levels,
-            })
-            .unwrap();
-
-        let mut live = BinanceSpotL2Engine::new();
-        live.install_snapshot(source_snapshot, start).unwrap();
-        let mut live_features = Vec::new();
-        for offset in 0..=61 {
-            let event_time = start + TimeDelta::seconds(offset) + TimeDelta::milliseconds(100);
-            let update_id = 11 + u64::try_from(offset).unwrap();
-            let quantity = Decimal::from(2 + offset);
-            historical
-                .process(BinanceSpotL2ReplayEvent {
-                    event_time_ms: event_time.timestamp_millis(),
-                    first_update_id: Some(i64::try_from(update_id).unwrap()),
-                    final_update_id: Some(i64::try_from(update_id).unwrap()),
-                    last_update_id: None,
-                    levels: vec![BinanceSpotL2ReplayLevel {
-                        side: BinanceSpotL2ReplaySide::Bid,
-                        price: dec!(100),
-                        quantity,
-                    }],
-                })
-                .unwrap();
-            if let BinanceSpotL2ApplyOutcome::Applied { features, .. } = live
-                .apply_update(
-                    BinanceSpotL2DepthUpdate {
-                        event_time,
-                        first_update_id: update_id,
-                        final_update_id: update_id,
-                        bids: vec![BinanceSpotL2Level {
-                            price: dec!(100),
-                            quantity,
-                        }],
-                        asks: Vec::new(),
-                    },
-                    event_time,
-                )
-                .unwrap()
-            {
-                live_features.extend(features);
-            }
-        }
-        live_features.extend(live.advance_time(start + TimeDelta::seconds(63)).unwrap());
-        historical.finish().unwrap();
-        let historical_features = receiver.try_recv().unwrap();
-
-        assert_eq!(live_features, historical_features);
-        assert!(!live_features.is_empty());
     }
 }

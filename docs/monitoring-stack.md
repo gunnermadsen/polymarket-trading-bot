@@ -60,7 +60,7 @@ Dashboards and alert rules are provisioned from version-controlled files and are
 
 ### Observed local runtime on 2026-08-27
 
-A read-only `docker compose ps` inspection found Grafana, Prometheus, Loki, Alloy, TimescaleDB, PgBouncer, `polymarket-bot`, and `market-data-ingester` running in the shared `polymarket-bot` Compose project.
+A read-only `docker compose ps` inspection found Grafana, Prometheus, Loki, Alloy, TimescaleDB, PgBouncer, `polymarket-bot`, `ingester-master`, and `ingester-worker` running in the shared `polymarket-bot` Compose project.
 
 The observed monitoring containers were assembled from more than one checkout:
 
@@ -72,7 +72,7 @@ That feature deployment differs from the production declaration:
 - Prometheus uses 7-day or 2 GB retention and is published on loopback port `9090`.
 - Grafana is published on loopback port `3030` and has 512 MB memory and 0.50 CPU.
 - Alloy 1.18.0 is pinned by digest and mounts the Docker socket read-only.
-- Alloy discovers Docker containers but keeps only the exact container name `market-data-ingester`.
+- Alloy discovers Docker containers and keeps the canonical `ingester-master` and `ingester-worker` runtime names.
 - Alloy parses JSON fields `level`, `target`, `fields.strategy`, and `fields.error_code` into Loki labels, drops discovered log history older than one hour, and sends accepted entries to `http://loki:3100/loki/api/v1/push`.
 - Alloy does not currently collect `polymarket-bot`, PostgreSQL, PgBouncer, Prometheus, Grafana, Loki, or other worker logs.
 
@@ -152,7 +152,7 @@ This observed state is useful development evidence, but it is not a canonical pr
 ## Weaknesses and risks
 
 1. **The currently running topology is configuration-drifted.** Containers in one Compose project were launched from multiple worktrees and revisions. Recreating the project from the main checkout would omit Alloy and could change Grafana and Prometheus behavior.
-2. **Log coverage is extremely narrow.** The running Alloy pipeline collects only `market-data-ingester`. Loki therefore cannot yet serve as a complete explanation layer for the bot, database proxy, monitoring services, or workers.
+2. **Log coverage is extremely narrow.** The running Alloy pipeline collects only the canonical ingester runtimes. Loki therefore cannot yet serve as a complete explanation layer for the bot, database proxy, or monitoring services.
 3. **Single-host, single-replica storage.** Prometheus, Loki, Grafana, and PostgreSQL use local Docker volumes. A host or volume failure can remove monitoring history, and Loki explicitly has replication factor 1.
 4. **The monitoring plane has shared failure domains.** Grafana alert evaluation depends on Grafana plus its queried data source; alert history also depends on the same Loki used for application logs. There is no independently declared external notification or dead-man path in the inspected configuration.
 5. **Loki is unauthenticated internally.** `auth_enabled: false` is reasonable on an isolated Compose network, but compromise of any attached container permits direct Loki access. Docker-socket access also makes Alloy a sensitive component even though the mount is read-only.

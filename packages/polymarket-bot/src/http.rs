@@ -23,11 +23,6 @@ use crate::{
         LiveWalletAddressDiagnostics, ReconciliationReport,
     },
     grafana_live::EntryStatusSelection,
-    ingestion::job::{
-        BackfillJob as IngestionBackfillJob, BackfillJobEvent as IngestionBackfillJobEvent,
-        BackfillJobStatus as IngestionBackfillJobStatus,
-        BackfillRequest as IngestionBackfillRequest, IngesterKey, TrainingReadiness,
-    },
     models::{TradingProcess, TradingProcessConfig},
 };
 
@@ -88,61 +83,6 @@ pub trait ControlApi: Send + Sync + 'static {
         _request: EntryStatusRequest,
     ) -> Result<EntryStatusSelection, HttpError> {
         Err(HttpError::not_implemented("BTC entry status is not wired"))
-    }
-
-    async fn enqueue_ingestion_backfill(
-        &self,
-        _request: IngestionBackfillRequest,
-    ) -> Result<IngestionBackfillEnqueueResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "generic backfill enqueue is not wired",
-        ))
-    }
-
-    async fn list_ingestion_backfills(
-        &self,
-        _request: ListIngestionBackfillsRequest,
-    ) -> Result<IngestionBackfillJobsResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "generic backfill registry is not wired",
-        ))
-    }
-
-    async fn get_ingestion_backfill(
-        &self,
-        _job_id: Uuid,
-    ) -> Result<IngestionBackfillJobResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "generic backfill registry is not wired",
-        ))
-    }
-
-    async fn list_ingestion_backfill_events(
-        &self,
-        _job_id: Uuid,
-        _request: ListIngestionBackfillEventsRequest,
-    ) -> Result<IngestionBackfillEventsResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "generic backfill event registry is not wired",
-        ))
-    }
-
-    async fn cancel_ingestion_backfill(
-        &self,
-        _job_id: Uuid,
-    ) -> Result<IngestionBackfillCancelResponse, HttpError> {
-        Err(HttpError::not_implemented(
-            "generic backfill cancellation is not wired",
-        ))
-    }
-
-    async fn ingestion_training_readiness(
-        &self,
-        _request: IngestionReadinessRequest,
-    ) -> Result<TrainingReadiness, HttpError> {
-        Err(HttpError::not_implemented(
-            "BTC training-data readiness is not wired",
-        ))
     }
 
     async fn live_status(&self) -> Result<LiveVenueStatus, HttpError>;
@@ -289,10 +229,6 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
     let admin_routes = Router::new()
         .route("/strategy/btc-5m/readiness", get(btc_realtime_status))
         .route("/strategy/btc-5m/entry-status", get(btc_entry_status))
-        .route(
-            "/backfill/readiness/btc-five-minute-training",
-            get(ingestion_training_readiness),
-        )
         .route("/live/status", get(live_status))
         .route("/live/diagnostics", get(live_identity_diagnostics))
         .route(
@@ -388,17 +324,6 @@ async fn btc_entry_status(
     Query(request): Query<EntryStatusRequest>,
 ) -> Result<Json<EntryStatusSelection>, HttpError> {
     state.control.btc_entry_status(request).await.map(Json)
-}
-
-async fn ingestion_training_readiness(
-    State(state): State<HttpState>,
-    Query(request): Query<IngestionReadinessRequest>,
-) -> Result<Json<TrainingReadiness>, HttpError> {
-    state
-        .control
-        .ingestion_training_readiness(request)
-        .await
-        .map(Json)
 }
 
 async fn live_status(State(state): State<HttpState>) -> Result<Json<LiveVenueStatus>, HttpError> {
@@ -698,22 +623,6 @@ pub struct ListTradingProcessesRequest {
     pub limit: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ListIngestionBackfillsRequest {
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ListIngestionBackfillEventsRequest {
-    pub limit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionReadinessRequest {
-    pub range_start: DateTime<Utc>,
-    pub range_end: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryStatusRequest {
     #[serde(default = "default_entry_status_scope")]
@@ -736,61 +645,6 @@ pub struct UpsertTradingProcessByKeyRequest {
     pub config: TradingProcessConfig,
     #[serde(default)]
     pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionBackfillEnqueueResponse {
-    pub job_id: Uuid,
-    pub ingester: String,
-    pub status: IngestionBackfillJobStatus,
-    pub requested_at: DateTime<Utc>,
-}
-
-impl From<IngestionBackfillJob> for IngestionBackfillEnqueueResponse {
-    fn from(job: IngestionBackfillJob) -> Self {
-        Self {
-            job_id: job.job_id,
-            ingester: job.ingester_key,
-            status: job.status,
-            requested_at: job.requested_at,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionBackfillJobResponse {
-    pub job: IngestionBackfillJob,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionBackfillJobsResponse {
-    pub jobs: Vec<IngestionBackfillJob>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionBackfillEventsResponse {
-    pub job_id: Uuid,
-    pub events: Vec<IngestionBackfillJobEvent>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionBackfillCancelResponse {
-    pub job_id: Uuid,
-    pub status: IngestionBackfillJobStatus,
-    pub cancel_requested: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngesterDescription {
-    pub key: IngesterKey,
-    pub request_version: i32,
-    pub range_alignment_seconds: i64,
-    pub accepts_new_requests: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngesterListResponse {
-    pub ingesters: Vec<IngesterDescription>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
