@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    domain::BackfillWorkerStrategy,
+    domain::{BackfillWorkerStrategy, DrainWorkerStrategy},
     runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry},
 };
 
@@ -235,7 +235,13 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
     ];
-    StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
+    let drains: Vec<Arc<dyn DrainWorkerStrategy>> = vec![Arc::new(
+        binance::BinanceAggregateTradesDrain::from_environment()
+            .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+    )];
+    StrategyRegistry::from_factories(factories)?
+        .with_backfills(backfills)?
+        .with_drains(drains)
 }
 
 #[cfg(test)]
@@ -296,6 +302,22 @@ mod tests {
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn drain_is_opt_in_and_does_not_extend_backfill_contracts() {
+        let registry = registry().unwrap();
+        let drains = registry
+            .drains()
+            .map(|strategy| strategy.descriptor().strategy_key.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(drains, vec!["binance_spot_btcusdt_aggregate_trades"]);
+        assert!(registry
+            .backfill("binance_spot_btcusdt_aggregate_trades")
+            .is_none());
+        assert!(registry
+            .backfill("binance_spot_btcusdt_aggregate_trades_backfill")
+            .is_some());
     }
 
     #[test]

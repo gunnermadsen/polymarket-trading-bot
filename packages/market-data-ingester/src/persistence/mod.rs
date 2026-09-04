@@ -3,6 +3,7 @@
 mod aggregate_trades;
 mod artifacts;
 mod backfills;
+mod drains;
 mod gaps;
 mod profiles;
 
@@ -14,5 +15,6 @@ pub use backfills::{
     BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob, WorkerRecord,
     WorkerRegistration,
 };
+pub use drains::{ClaimedDrainJob, DrainJobRecord, DrainRepository};
 pub use gaps::{GapDetection, GapPersistenceError, GapRepository, NewDataGap};
 pub use profiles::{ProfileRepository, ProfileWriteError, StrategyDegradation, StrategyProgress};

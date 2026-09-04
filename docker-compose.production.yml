@@ -262,6 +262,7 @@ services:
       CRYPTOHFT_BASE_URL: "https://api.cryptohftdata.com"
       COINAPI_API_ORIGIN: "https://api-ncsa.coinapi.io"
       INGESTER_BINANCE_CACHE_DIRECTORY: "/var/lib/binance-l2/binance-public"
+      INGESTER_BINANCE_AGG_TRADE_LAKE_ROOT: "/var/lib/binance-aggregate-trades"
       INGESTER_CRYPTOHFT_ARCHIVE_ROOT: "/var/lib/binance-l2"
       INGESTER_CRYPTOHFT_TEMPORARY_DIRECTORY: "/var/lib/binance-l2/tmp"
       INGESTER_COINAPI_ARCHIVE_ROOT: "/var/lib/binance-l2/coinapi"
@@ -281,6 +282,7 @@ services:
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
       - ${BINANCE_L2_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-l2}:/var/lib/binance-l2
+      - ${BINANCE_AGG_TRADE_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-aggregate-trades}:/var/lib/binance-aggregate-trades
       - ${KRAKEN_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/kraken-data}:/var/lib/kraken-data
       - ${FINANCIAL_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/global-financial-data}:/var/lib/financial-data
     depends_on:

@@ -23,12 +23,12 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        BackfillFailureKind, BackfillOutcome, BackfillRequest, DesiredState, IngesterProfile,
-        IngesterStrategyKey,
+        BackfillFailureKind, BackfillOutcome, BackfillRequest, DesiredState, DrainRequest,
+        IngesterProfile, IngesterStrategyKey,
     },
     persistence::{
         BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob,
-        ProfileRepository, WorkerRecord, WorkerRegistration,
+        DrainJobRecord, DrainRepository, ProfileRepository, WorkerRecord, WorkerRegistration,
     },
     runtime::StrategyRegistry,
 };
@@ -57,6 +57,7 @@ impl ControlApi {
         Ok(Self {
             state: ApiState {
                 backfills: BackfillRepository::new(profiles.pool().clone()),
+                drains: DrainRepository::new(profiles.pool().clone()),
                 profiles,
                 registry,
                 admin_token: Arc::<str>::from(admin_token),
@@ -74,6 +75,10 @@ impl ControlApi {
             .route("/backfills/:job_id/cancel", post(cancel_backfill))
             .route("/backfills/:job_id/retry", post(retry_backfill))
             .route("/backfills/:job_id/events", get(get_backfill_events))
+            .route("/drains", get(list_drains).post(submit_drain))
+            .route("/drains/:job_id", get(get_drain))
+            .route("/drains/:job_id/cancel", post(cancel_drain))
+            .route("/drains/:job_id/retry", post(retry_drain))
             .route("/workers", get(list_workers))
             .route("/stream/routes", post(resolve_stream_routes))
             .route("/internal/workers/register", post(register_worker))
@@ -134,10 +139,103 @@ impl ControlApi {
 #[derive(Clone)]
 struct ApiState {
     backfills: BackfillRepository,
+    drains: DrainRepository,
     profiles: ProfileRepository,
     registry: StrategyRegistry,
     admin_token: Arc<str>,
     readiness: ControlReadiness,
+}
+
+async fn submit_drain(
+    State(state): State<ApiState>,
+    Json(request): Json<DrainRequest>,
+) -> Result<(StatusCode, Json<DrainJobRecord>), ApiError> {
+    let strategy = state.registry.drain(&request.strategy_key).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_drain_strategy",
+            "strategy is not registered for drain",
+        )
+    })?;
+    strategy
+        .validate_request(&request)
+        .map_err(|e| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, e.code, e.message))?;
+    let job = state
+        .drains
+        .submit(&request, strategy.descriptor().contract_version)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
+#[derive(Debug, Deserialize)]
+struct DrainListQuery {
+    limit: Option<i64>,
+}
+async fn list_drains(
+    State(state): State<ApiState>,
+    Query(query): Query<DrainListQuery>,
+) -> Result<Json<Vec<DrainJobRecord>>, ApiError> {
+    state
+        .drains
+        .list(query.limit.unwrap_or(100))
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
+}
+async fn get_drain(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<DrainJobRecord>, ApiError> {
+    state
+        .drains
+        .get(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "drain_not_found",
+                "drain job was not found",
+            )
+        })
+}
+async fn cancel_drain(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<DrainJobRecord>, ApiError> {
+    state
+        .drains
+        .cancel(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "drain_not_cancellable",
+                "drain job is not cancellable",
+            )
+        })
+}
+async fn retry_drain(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<DrainJobRecord>, ApiError> {
+    state
+        .drains
+        .retry(job_id)
+        .await
+        .map_err(ApiError::internal)?
+        .map(Json)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "drain_not_retryable",
+                "drain job is not retryable",
+            )
+        })
 }
 
 async fn list_strategies(State(state): State<ApiState>) -> Json<Vec<String>> {
@@ -152,6 +250,12 @@ async fn list_strategies(State(state): State<ApiState>) -> Json<Vec<String>> {
             .backfills()
             .map(|strategy| strategy.descriptor().strategy_key.to_string()),
     );
+    keys.extend(
+        state
+            .registry
+            .drains()
+            .map(|strategy| strategy.descriptor().strategy_key.to_string()),
+    );
     Json(keys.into_iter().collect())
 }
 
@@ -159,6 +263,11 @@ async fn get_strategy(
     State(state): State<ApiState>,
     Path(strategy_key): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some(strategy) = state.registry.drain(&strategy_key) {
+        return serde_json::to_value(strategy.descriptor())
+            .map(Json)
+            .map_err(ApiError::internal);
+    }
     if let Some(strategy) = state.registry.backfill(&strategy_key) {
         return serde_json::to_value(strategy.descriptor())
             .map(Json)

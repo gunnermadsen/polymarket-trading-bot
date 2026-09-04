@@ -3,6 +3,7 @@
 mod artifact;
 mod backfill;
 mod dataset;
+mod drain;
 mod gap;
 mod profile;
 mod strategy;
@@ -16,6 +17,10 @@ pub use backfill::{
     StrategyDescriptor, ValidatedBackfillRequest,
 };
 pub use dataset::*;
+pub use drain::{
+    DrainContext, DrainDescriptor, DrainExecutionError, DrainOutcome, DrainRequest,
+    DrainWorkerStrategy,
+};
 pub use gap::{DataGap, GapStatus};
 pub use profile::{DesiredState, HealthStatus, IngesterProfile, ObservedState};
 pub use strategy::{IngesterStrategyKey, RealtimeWorkerStrategy, StrategyError, StrategyErrorKind};
