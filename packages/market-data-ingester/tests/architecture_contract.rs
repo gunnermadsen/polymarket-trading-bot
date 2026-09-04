@@ -347,7 +347,12 @@ fn polymarket_orderbooks_have_one_final_physical_table_contract() {
         "packages/db-migrate/src/migrations/1788646000000-FinalizePolymarketOrderbookStorage.ts",
     ))
     .unwrap();
-    assert!(migration.contains("DROP TABLE ${LEGACY}"));
+    let cleanup = fs::read_to_string(root.join(
+        "packages/db-migrate/src/migrations/1788646001000-DropLegacyPolymarketOrderbookStorage.ts",
+    ))
+    .unwrap();
+    assert!(cleanup.contains("DROP TABLE ${LEGACY}"));
+    assert!(cleanup.contains("drop_chunks"));
     assert!(migration.contains("must be fully stopped before table cutover"));
     assert!(migration.contains("advanced beyond archived watermark"));
 }
