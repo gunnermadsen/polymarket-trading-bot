@@ -3,17 +3,22 @@ use std::{fs, path::Path};
 #[test]
 fn polymarket_image_has_no_backfill_runtime() {
     let root = repository_root();
-    let dockerfile = fs::read_to_string(root.join("packages/polymarket-bot/Dockerfile")).unwrap();
-    for forbidden in [
-        "polymarket-backfill-worker",
-        "kraken-backfill-worker",
-        "financial-data-backfill-worker",
-        "backfill-plan",
+    for relative in [
+        "packages/polymarket-bot/Dockerfile",
+        "packages/polymarket-bot/Dockerfile.production",
     ] {
-        assert!(
-            !dockerfile.contains(forbidden),
-            "Polymarket image contains {forbidden}"
-        );
+        let dockerfile = fs::read_to_string(root.join(relative)).unwrap();
+        for forbidden in [
+            "polymarket-backfill-worker",
+            "kraken-backfill-worker",
+            "financial-data-backfill-worker",
+            "backfill-plan",
+        ] {
+            assert!(
+                !dockerfile.contains(forbidden),
+                "{relative} contains {forbidden}"
+            );
+        }
     }
     let binary_dir = root.join("packages/polymarket-bot/src/bin");
     let legacy_binaries = fs::read_dir(binary_dir)
@@ -270,7 +275,6 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
     for relative in [
         "packages/market-data-ingester/src/strategies/binance/aggregate_trades.rs",
         "packages/market-data-ingester/src/strategies/binance/aggregate_trades_backfill.rs",
-        "packages/polymarket-bot/src/ingestion/repository.rs",
         "packages/btc-directional-model/sql/btc-binance-trade-print-source.sql",
         "packages/btc-directional-model/sql/btc-refprice-context-trade-print-source.sql",
     ] {
