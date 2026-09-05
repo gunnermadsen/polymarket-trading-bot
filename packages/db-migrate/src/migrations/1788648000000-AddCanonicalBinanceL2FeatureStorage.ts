@@ -41,7 +41,7 @@ export class AddCanonicalBinanceL2FeatureStorage1788648000000
         ALTER TABLE ${product.target} SET (
           timescaledb.compress = true,
           timescaledb.compress_orderby = 'second_start ASC',
-          timescaledb.compress_segmentby = 'symbol'
+          timescaledb.compress_segmentby = 'symbol, artifact_id'
         );
         SELECT add_compression_policy(
           '${product.target}', INTERVAL '7 days', if_not_exists => TRUE
