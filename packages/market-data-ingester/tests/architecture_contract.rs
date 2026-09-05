@@ -450,6 +450,18 @@ fn binance_l2_feature_strategies_have_one_destination_per_market() {
 }
 
 #[test]
+fn polymarket_execution_snapshots_have_one_physical_write_destination() {
+    let root = repository_root();
+    let support = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/polymarket/backfill/support.rs"),
+    )
+    .unwrap();
+    assert!(support.contains("INSERT INTO polymarket.btc_market_capacity_execution_snapshots"));
+    assert!(!support.contains("INSERT INTO polymarket.btc_market_execution_snapshots"));
+    assert!(!support.contains("INSERT INTO polymarket.btc_market_decision_execution_snapshots"));
+}
+
+#[test]
 fn binance_backfills_use_the_authoritative_support_module() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(root.join("src/strategies/backfill_support.rs").exists());
