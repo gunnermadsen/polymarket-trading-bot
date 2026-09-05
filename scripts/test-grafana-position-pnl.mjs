@@ -5,6 +5,11 @@ import { spawnSync } from 'node:child_process';
 // Exercise the provisioned SQL against VALUES fixtures only; no database tables or writes.
 const dashboard = JSON.parse(readFileSync(new URL('../common/configs/grafana/dashboards/trading-pnl-market-metrics.json', import.meta.url)));
 assert(!JSON.stringify(dashboard).includes('orderbook_snapshots'));
+const pnlStat = dashboard.panels.find(p => p.id === 4);
+const selectedFields = new RegExp(pnlStat.options.reduceOptions.fields.slice(1, -1));
+assert(selectedFields.test('Current Position Snapshot Unrealized PnL'));
+assert(selectedFields.test('Current Market Entry Orders'));
+assert(!selectedFields.test('Current Open Cost Basis'));
 const stat = dashboard.panels.find(p => p.id === 4).targets[0].rawSql;
 const table = dashboard.panels.find(p => p.id === 2).targets[0].rawSql;
 const joins = sql => sql.slice(sql.indexOf('  LEFT JOIN LATERAL ('), sql.indexOf('  ) mark ON true') + '  ) mark ON true'.length);

@@ -19,6 +19,7 @@ use crate::{
 };
 
 use super::{
+    execution_freshness::{BookEvidence, ExecutionFreshnessMetrics},
     execution_guard::{reference_execution_guard, BtcReferenceExecutionRejectReason},
     feeds::BookRegistry,
     types::{BookReadiness, FeedIntegrityStatus, OrderbookCheckpoint, OrderbookLevel},
@@ -40,6 +41,8 @@ pub struct BtcLiveExecutionAdapter {
     max_depth_participation: Decimal,
     require_exit_book: bool,
     submit_guard: Arc<Mutex<()>>,
+    freshness_metrics: Arc<ExecutionFreshnessMetrics>,
+    final_book: Arc<std::sync::Mutex<Option<(Uuid, BookEvidence)>>>,
 }
 
 impl crate::execution::live_pre_post_guard_sealed::Sealed for BtcLiveExecutionAdapter {}
@@ -53,7 +56,17 @@ impl LivePrePostGuard for BtcLiveExecutionAdapter {
         if let Some(reason) = self.validate_reference_execution(request)? {
             return Ok(Some(reason));
         }
-        self.validate_current_market_pair(request).await
+        self.validate_current_market_pair(request, true).await
+    }
+    fn observe_post_attempt(&self, request: &OrderRequest) {
+        let book = self
+            .final_book
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .filter(|(id, _)| *id == request.client_order_id)
+            .map(|(_, book)| book);
+        self.freshness_metrics
+            .execution(book, Utc::now(), request.client_order_id);
     }
 }
 
@@ -84,6 +97,12 @@ impl BtcLiveExecutionAdapter {
             bail!("BTC live execution max_depth_participation must be in (0, 1]");
         }
         Ok(Self {
+            freshness_metrics: ExecutionFreshnessMetrics::new(
+                expected_process_id,
+                "live",
+                max_book_age.num_milliseconds(),
+            ),
+            final_book: Arc::new(std::sync::Mutex::new(None)),
             delegate,
             registry,
             expected_process_id,
@@ -113,13 +132,23 @@ impl BtcLiveExecutionAdapter {
             self.max_directional_feature_age,
         ) {
             Ok(_) => Ok(None),
-            Err(reason) => classify_reference_execution_rejection(reason),
+            Err(reason) => {
+                if matches!(
+                    reason,
+                    BtcReferenceExecutionRejectReason::StaleEvidence
+                        | BtcReferenceExecutionRejectReason::FutureEvidence
+                ) {
+                    self.freshness_metrics.reject_reference();
+                }
+                classify_reference_execution_rejection(reason)
+            }
         }
     }
 
     async fn validate_current_market_pair(
         &self,
         request: &OrderRequest,
+        capture_final: bool,
     ) -> Result<Option<LiveExecutionGateReason>> {
         let (checked_at, connection_id, checkpoint, market_books) = {
             let registry = self.registry.read().await;
@@ -133,6 +162,8 @@ impl BtcLiveExecutionAdapter {
             let checked_at = Utc::now();
             (checked_at, connection_id, checkpoint, market_books)
         };
+        self.freshness_metrics
+            .check(checkpoint.as_ref().map(BookEvidence::from), checked_at);
         let Some(checkpoint) = checkpoint else {
             return Ok(Some(LiveExecutionGateReason::OrderbookReadiness));
         };
@@ -154,6 +185,7 @@ impl BtcLiveExecutionAdapter {
             checked_at,
             self.max_book_age,
         ) {
+            self.freshness_metrics.reject_book();
             return Ok(Some(LiveExecutionGateReason::OrderbookFreshness));
         }
         if self.require_exit_book {
@@ -165,10 +197,18 @@ impl BtcLiveExecutionAdapter {
                 checked_at,
                 self.max_book_age,
             )? {
+                if reason == LiveExecutionGateReason::OrderbookFreshness {
+                    self.freshness_metrics.reject_book();
+                }
                 return Ok(Some(reason));
             }
         }
-        validate_marketable_depth(&checkpoint, request, self.max_depth_participation)
+        let result = validate_marketable_depth(&checkpoint, request, self.max_depth_participation)?;
+        if result.is_none() && capture_final {
+            *self.final_book.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((request.client_order_id, BookEvidence::from(&checkpoint)));
+        }
+        Ok(result)
     }
 }
 
@@ -341,10 +381,11 @@ impl ExecutionVenue for BtcLiveExecutionAdapter {
         if let Some(existing) = self.delegate.find_existing_order(&request).await? {
             return Ok(existing);
         }
+        self.freshness_metrics.attempt();
         if let Some(reason) = self.validate_reference_execution(&request)? {
             return live_execution_gate_closed_order(request, reason);
         }
-        if let Some(reason) = self.validate_current_market_pair(&request).await? {
+        if let Some(reason) = self.validate_current_market_pair(&request, false).await? {
             return live_execution_gate_closed_order(request, reason);
         }
         self.delegate
@@ -564,6 +605,7 @@ mod tests {
                     *self.existing_order.lock().unwrap() = Some(order.clone());
                     return Ok(order);
                 }
+                guard.observe_post_attempt(&request);
             }
             self.submit_order(request).await
         }
@@ -993,6 +1035,7 @@ mod tests {
         assert_gate_rejection(&order, LiveExecutionGateReason::OrderbookFreshness);
         assert_eq!(fake.delegate_calls(), 0);
         assert_eq!(fake.submit_calls(), 0);
+        assert_eq!(venue.freshness_metrics.counts(), (1, 0, 0, 1, 0));
     }
 
     #[tokio::test]
@@ -1410,6 +1453,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_post_observation_detects_missing_or_expired_evidence() {
+        let now = Utc::now();
+        let pid = Uuid::new_v4();
+        let fake = Arc::new(FakeVenue::default());
+        let venue = adapter(
+            &fake,
+            seeded_registry("market", "up", now, now, dec!(10)),
+            pid,
+        );
+        let request = guarded_request(now, pid, "market", "up", dec!(2));
+        venue.observe_post_attempt(&request);
+        assert_eq!(venue.freshness_metrics.counts().2, 1);
+        *venue.final_book.lock().unwrap() = Some((
+            request.client_order_id,
+            BookEvidence {
+                source_at: now - Duration::seconds(31),
+                received_at: now,
+            },
+        ));
+        venue.observe_post_attempt(&request);
+        assert_eq!(venue.freshness_metrics.counts().2, 2);
+        assert_eq!(fake.submit_calls(), 0);
+    }
+
+    #[tokio::test]
     async fn valid_order_is_delegated_exactly_once() {
         let checked_at = Utc::now();
         let process_id = Uuid::new_v4();
@@ -1437,6 +1505,7 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(venue.freshness_metrics.counts(), (1, 1, 0, 0, 0));
         assert_eq!(order.order_id, "delegated-order");
         assert_eq!(fake.submit_calls(), 1);
     }

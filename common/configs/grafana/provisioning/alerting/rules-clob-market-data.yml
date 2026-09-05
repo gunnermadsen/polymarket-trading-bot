@@ -113,267 +113,96 @@ groups:
         condition: C
         data:
           - refId: A
-            datasourceUid: polymarket-bot-runtime
-            relativeTimeRange:
-              from: 60
-              to: 0
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
             model:
-              columns:
-                - selector: shared_market_data.metrics.clob_recovery_unavailable_age_milliseconds
-                  text: CLOB Recovery Unavailable Age
-                  type: number
-              datasource:
-                type: yesoreyeram-infinity-datasource
-                uid: polymarket-bot-runtime
-              format: table
-              intervalMs: 1000
-              json_options:
-                root_is_not_array: true
-              maxDataPoints: 43200
-              parser: backend
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: "(1 - min(polymarket_market_data_product_ready{product=\"polymarket_btc_five_minute_orderbooks\"})) or clamp_max(sum(polymarket_execution_freshness_expected), 1) or (0 * max(polymarket_execution_freshness_exporter_ready))"
+              instant: true
               refId: A
-              root_selector: ""
-              source: url
-              type: json
-              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
-              url_options:
-                data: ""
-                method: GET
           - refId: B
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
-            model:
-              datasource:
-                type: __expr__
-                uid: __expr__
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings:
-                mode: dropNN
-              type: reduce
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
           - refId: C
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
             model:
-              conditions:
-                - evaluator:
-                    params:
-                      - 90000
-                    type: gt
-                  operator:
-                    type: and
-                  query:
-                    params:
-                      - C
-                  reducer:
-                    params: []
-                    type: last
-                  type: query
-              datasource:
-                type: __expr__
-                uid: __expr__
+              datasource: {type: __expr__, uid: __expr__}
               expression: B
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
               type: threshold
-        noDataState: OK
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
         execErrState: Error
-        for: 0s
+        for: 90s
         annotations:
-          description: The shared CLOB order book has remained unavailable to the trading path for more than 90 seconds.
-          summary: CLOB order-book evidence is unavailable for trading
-        labels:
-          condition: clob_book_unavailable
-          environment: $GRAFANA_ALERT_ENVIRONMENT
-          family: clob_market_data
-          service: polymarket-bot
-          severity: warning
+          summary: "CLOB order book unavailable for trading"
+          description: "The canonical polymarket_btc_five_minute_orderbooks product is unready, or its readiness series is missing while a BTC process is active. This monitors product availability; execution-specific freshness is monitored separately."
+        labels: {service: polymarket-bot, family: execution_freshness, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false
       - uid: clob_book_source_stale_for_execution
-        title: CLOB order book exceeds execution freshness limit
+        title: Execution freshness repeatedly rejected
         condition: C
         data:
           - refId: A
-            datasourceUid: polymarket-bot-runtime
-            relativeTimeRange:
-              from: 60
-              to: 0
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
             model:
-              columns:
-                - selector: shared_market_data.metrics.clob_book_unavailable_source_age_milliseconds
-                  text: CLOB Unavailable Book Source Age
-                  type: number
-              datasource:
-                type: yesoreyeram-infinity-datasource
-                uid: polymarket-bot-runtime
-              format: table
-              intervalMs: 1000
-              json_options:
-                root_is_not_array: true
-              maxDataPoints: 43200
-              parser: backend
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: "sum by (process_id, execution_mode) (increase(polymarket_execution_freshness_book_rejections_total[5m]) + increase(polymarket_execution_freshness_reference_rejections_total[5m])) or (0 * max(polymarket_execution_freshness_exporter_ready))"
+              instant: true
               refId: A
-              root_selector: ""
-              source: url
-              type: json
-              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
-              url_options:
-                data: ""
-                method: GET
           - refId: B
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
-            model:
-              datasource:
-                type: __expr__
-                uid: __expr__
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings:
-                mode: dropNN
-              type: reduce
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
           - refId: C
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
             model:
-              conditions:
-                - evaluator:
-                    params:
-                      - 2000
-                    type: gt
-                  operator:
-                    type: and
-                  query:
-                    params:
-                      - C
-                  reducer:
-                    params: []
-                    type: last
-                  type: query
-              datasource:
-                type: __expr__
-                uid: __expr__
+              datasource: {type: __expr__, uid: __expr__}
               expression: B
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
               type: threshold
-        noDataState: OK
+              conditions: [{evaluator: {params: [9], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
         execErrState: Error
-        for: 0s
+        for: 60s
         annotations:
-          description: The current CLOB source timestamp is older than the two-second BTC execution freshness limit. BTC entry execution must remain ineligible until a fresh book arrives.
-          summary: CLOB evidence is too old for BTC execution
-        labels:
-          condition: clob_book_source_stale_for_execution
-          environment: $GRAFANA_ALERT_ENVIRONMENT
-          family: clob_market_data
-          service: polymarket-bot
-          severity: critical
+          summary: "Execution freshness repeatedly rejected"
+          description: "At least ten stale or noncausal book/reference rejections occurred for this process in five minutes, sustained for one minute. These are prevented executions, not stale fills. Inspect source and receipt ages and the process configured limit."
+        labels: {service: polymarket-bot, family: execution_freshness, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false
       - uid: binance_reference_unavailable
         title: Binance required reference feed unavailable for trading
         condition: C
         data:
           - refId: A
-            datasourceUid: polymarket-bot-runtime
-            relativeTimeRange:
-              from: 60
-              to: 0
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
             model:
-              columns:
-                - selector: shared_market_data.metrics.binance_transport.recovery_unavailable_age_milliseconds
-                  text: Binance Reference Recovery Unavailable Age
-                  type: number
-              datasource:
-                type: yesoreyeram-infinity-datasource
-                uid: polymarket-bot-runtime
-              format: table
-              intervalMs: 1000
-              json_options:
-                root_is_not_array: true
-              maxDataPoints: 43200
-              parser: backend
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: "(1 - min(polymarket_market_data_product_ready{product=\"binance_spot_btcusdt_one_second_ohlcv\"})) or clamp_max(sum(polymarket_execution_freshness_expected), 1) or (0 * max(polymarket_execution_freshness_exporter_ready))"
+              instant: true
               refId: A
-              root_selector: ""
-              source: url
-              type: json
-              url: http://polymarket-bot:8097/admin/strategy/btc-5m/readiness
-              url_options:
-                data: ""
-                method: GET
           - refId: B
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
-            model:
-              datasource:
-                type: __expr__
-                uid: __expr__
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings:
-                mode: dropNN
-              type: reduce
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
           - refId: C
             datasourceUid: __expr__
-            relativeTimeRange:
-              from: 0
-              to: 0
             model:
-              conditions:
-                - evaluator:
-                    params:
-                      - 60000
-                    type: gt
-                  operator:
-                    type: and
-                  query:
-                    params:
-                      - C
-                  reducer:
-                    params: []
-                    type: last
-                  type: query
-              datasource:
-                type: __expr__
-                uid: __expr__
+              datasource: {type: __expr__, uid: __expr__}
               expression: B
-              intervalMs: 1000
-              maxDataPoints: 43200
-              refId: C
               type: threshold
-        noDataState: OK
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
         execErrState: Error
-        for: 0s
+        for: 90s
         annotations:
-          description: The required Binance aggregate-trade reference feed has remained unavailable to the trading path for more than 60 seconds.
-          summary: Required Binance reference-price evidence is unavailable for trading
-        labels:
-          condition: binance_reference_feed_unavailable
-          environment: $GRAFANA_ALERT_ENVIRONMENT
-          family: reference_market_data
-          service: polymarket-bot
-          severity: warning
+          summary: "Binance required reference feed unavailable for trading"
+          description: "The canonical binance_spot_btcusdt_one_second_ohlcv product is unready, or its readiness series is missing while a BTC process is active. This monitors product availability; execution-specific freshness is monitored separately."
+        labels: {service: polymarket-bot, family: execution_freshness, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false
 
   - orgId: 1

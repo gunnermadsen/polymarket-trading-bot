@@ -94,6 +94,10 @@ pub trait LivePrePostGuard: live_pre_post_guard_sealed::Sealed + Send + Sync {
         &self,
         request: &OrderRequest,
     ) -> Result<Option<LiveExecutionGateReason>>;
+
+    /// Observe the actual POST boundary after awaited preparation and authorization.
+    /// Telemetry only; this never changes durable trading authorization.
+    fn observe_post_attempt(&self, _request: &OrderRequest) {}
 }
 
 #[derive(Debug, Clone, Serialize)]

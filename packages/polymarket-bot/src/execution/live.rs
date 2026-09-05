@@ -2750,6 +2750,7 @@ impl ExecutionVenue for LiveVenue {
         if let Some(reason) = commit_reason {
             return persist_pre_submit_gate_rejection(&store, pending_order, reason).await;
         }
+        pre_post_guard.observe_post_attempt(&request);
         let submit_result = client
             .post_order(signed)
             .await

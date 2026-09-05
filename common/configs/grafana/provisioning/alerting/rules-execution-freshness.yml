@@ -1,0 +1,72 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: execution-freshness-20s
+    folder: Polymarket Trading Path
+    interval: 20s
+    rules:
+      - uid: execution_freshness_violation
+        title: Order execution freshness invariant violated
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: "max by (process_id, execution_mode) ((polymarket_execution_freshness_last_violation_timestamp_seconds > bool 0) * (polymarket_execution_freshness_last_violation_timestamp_seconds > bool (time() - 600))) or (0 * max(polymarket_execution_freshness_exporter_ready))"
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: "Order execution freshness invariant violated"
+          description: "A paper fill or live POST attempt used stale, noncausal or missing canonical book evidence within the last ten minutes. Inspect the process-scoped execution log and recorded paper evidence. Live evidence is measured locally before POST, not at exchange arrival. This alert does not disable trading."
+        labels: {service: polymarket-bot, family: execution_freshness, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: execution_freshness_monitor_missing
+        title: Execution freshness monitoring unavailable
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: "(polymarket_execution_freshness_expected unless on (process_id, execution_mode, instance, job) ((polymarket_execution_freshness_monitor_ready == 1) and polymarket_execution_freshness_executions_total and polymarket_execution_freshness_violations_total and polymarket_execution_freshness_book_rejections_total and polymarket_execution_freshness_reference_rejections_total)) or (1 - up{job=\"polymarket-bot\"}) or absent(polymarket_execution_freshness_exporter_ready) or (0 * max(polymarket_execution_freshness_exporter_ready))"
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 60s
+        annotations:
+          summary: "Execution freshness monitoring unavailable"
+          description: "The bot scrape/exporter or an active process execution monitor is missing. Idle processes export initialized zero counters and should not alert. Recovery is automatic; no trading authorization is changed."
+        labels: {service: polymarket-bot, family: execution_freshness, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
