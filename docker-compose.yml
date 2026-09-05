@@ -231,6 +231,11 @@ services:
       INGESTER_PMDATA_CHAINLINK_TWAP_LAKE_ROOT: "/var/lib/pmdata-chainlink-twap"
       INGESTER_POLYMARKET_CHAINLINK_TWAP_LAKE_ROOT: "/var/lib/polymarket-chainlink-twap"
       INGESTER_REFERENCE_PRICE_TICKS_LAKE_ROOT: "/var/lib/reference-price-ticks"
+      INGESTER_CHAINLINK_ONE_MINUTE_CANDLES_LAKE_ROOT: "/var/lib/chainlink-one-minute-candles"
+      INGESTER_BTC_CAPACITY_EXECUTION_SNAPSHOTS_LAKE_ROOT: "/var/lib/btc-capacity-execution-snapshots"
+      INGESTER_BTC_FEATURE_SNAPSHOTS_LAKE_ROOT: "/var/lib/btc-feature-snapshots"
+      INGESTER_BINANCE_SPOT_L2_SNAPSHOTS_LAKE_ROOT: "/var/lib/binance-spot-l2-snapshots"
+      INGESTER_POLYGON_CHAINLINK_ORACLE_ROUNDS_LAKE_ROOT: "/var/lib/polygon-chainlink-oracle-rounds"
       INGESTER_CRYPTOHFT_ARCHIVE_ROOT: "/var/lib/binance-l2"
       INGESTER_CRYPTOHFT_TEMPORARY_DIRECTORY: "/var/lib/binance-l2/tmp"
       INGESTER_COINAPI_ARCHIVE_ROOT: "/var/lib/binance-l2/coinapi"
@@ -258,6 +263,11 @@ services:
       - ${PMDATA_CHAINLINK_TWAP_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/pmdata-chainlink-twap}:/var/lib/pmdata-chainlink-twap
       - ${POLYMARKET_CHAINLINK_TWAP_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/polymarket-chainlink-twap}:/var/lib/polymarket-chainlink-twap
       - ${REFERENCE_PRICE_TICKS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/reference-price-ticks}:/var/lib/reference-price-ticks
+      - ${CHAINLINK_ONE_MINUTE_CANDLES_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/chainlink-one-minute-candles}:/var/lib/chainlink-one-minute-candles
+      - ${BTC_CAPACITY_EXECUTION_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/btc-capacity-execution-snapshots}:/var/lib/btc-capacity-execution-snapshots
+      - ${BTC_FEATURE_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/btc-feature-snapshots}:/var/lib/btc-feature-snapshots
+      - ${BINANCE_SPOT_L2_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-spot-l2-snapshots}:/var/lib/binance-spot-l2-snapshots
+      - ${POLYGON_CHAINLINK_ORACLE_ROUNDS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/polygon-chainlink-oracle-rounds}:/var/lib/polygon-chainlink-oracle-rounds
       - ${KRAKEN_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/kraken-data}:/var/lib/kraken-data
       - ${FINANCIAL_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/global-financial-data}:/var/lib/financial-data
     depends_on:

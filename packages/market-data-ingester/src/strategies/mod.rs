@@ -265,6 +265,26 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
             drains::ReferencePriceTicksDrain::from_environment()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
+        Arc::new(
+            drains::ChainlinkOneMinuteCandlesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BtcCapacityExecutionSnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BtcFeatureSnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BinanceSpotL2SnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolygonChainlinkOracleRoundsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
     ];
     StrategyRegistry::from_factories(factories)?
         .with_backfills(backfills)?
@@ -342,9 +362,14 @@ mod tests {
             drains,
             vec![
                 "binance_spot_btcusdt_aggregate_trades",
+                "binance_spot_btcusdt_l2_snapshots",
                 "binance_spot_btcusdt_one_second_ohlcv",
+                "chainlink_btcusd_one_minute_candles",
                 "pmdata_chainlink_btcusd_reference_price",
                 "pmdata_chainlink_btcusd_twap",
+                "polygon_chainlink_btcusd_oracle_rounds",
+                "polymarket_btc_capacity_execution_snapshots",
+                "polymarket_btc_feature_snapshots",
                 "polymarket_btc_five_minute_orderbooks",
                 "polymarket_chainlink_btcusd_twap",
                 "polymarket_reference_price_ticks",
