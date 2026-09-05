@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use futures_util::TryStreamExt;
 use serde_json::json;
-use sqlx::Row;
 use tokio::fs;
 
 use crate::domain::{
@@ -100,6 +99,7 @@ impl PolymarketOrderbooksDrain {
                     .send(orderbook_schema::to_batch(std::mem::take(&mut buffer))?)
                     .await
                     .map_err(|_| io_error("Parquet writer stopped"))?;
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
             }
         }
         if !buffer.is_empty() {
@@ -167,12 +167,23 @@ impl DrainWorkerStrategy for PolymarketOrderbooksDrain {
         request: DrainRequest,
     ) -> Result<DrainOutcome, DrainExecutionError> {
         self.validate_request(&request)?;
+        let snapshot_at = sqlx::query_scalar::<_, chrono::DateTime<Utc>>(
+            "SELECT requested_at FROM ingester.drain_jobs WHERE job_id=$1",
+        )
+        .bind(context.job_id)
+        .fetch_one(&context.pool)
+        .await
+        .map_err(db_error)?;
         let chunks = self.chunks(&context).await?;
-        let eligible: Vec<_> = chunks
+        let copyable: Vec<_> = chunks
             .iter()
-            .filter(|chunk| chunk.range_end <= request.cutoff)
+            .filter(|chunk| chunk.range_end <= snapshot_at)
             .cloned()
             .collect();
+        let removable = copyable
+            .iter()
+            .filter(|chunk| chunk.range_end <= request.cutoff)
+            .count();
         if request.dry_run {
             return Ok(DrainOutcome {
                 rows_exported: 0,
@@ -181,17 +192,24 @@ impl DrainWorkerStrategy for PolymarketOrderbooksDrain {
                 bytes_written: 0,
                 summary: json!({
                     "cutoff": request.cutoff,
-                    "eligible_chunks": eligible.len(),
+                    "copyable_closed_chunks": copyable.len(),
+                    "eligible_chunks": removable,
+                    "open_chunks": chunks.len() - copyable.len(),
                     "relation": RELATION,
-                    "retained_chunks": chunks.len() - eligible.len(),
+                    "retained_chunks": chunks.len() - removable,
                     "retention_days": RETENTION_DAYS,
+                    "snapshot_at": snapshot_at,
                 }),
             });
         }
         fs::create_dir_all(self.root.join(".staging"))
             .await
             .map_err(io_error)?;
-        for chunk in eligible {
+        let mut rows_exported = 0i64;
+        let mut rows_removed = 0i64;
+        let mut objects_published = 0i64;
+        let mut bytes_written = 0i64;
+        for chunk in copyable {
             if context.shutdown.is_cancelled() {
                 return Err(DrainExecutionError::new(
                     "drain_cancelled",
@@ -206,31 +224,30 @@ impl DrainWorkerStrategy for PolymarketOrderbooksDrain {
                 }
                 None => self.export_chunk(&context, &chunk).await?,
             };
-            sqlx::query_scalar::<_, i64>("SELECT ingester.remove_verified_drain_chunk($1,$2)")
+            rows_exported += publication.row_count;
+            objects_published += 1;
+            bytes_written += publication.byte_size;
+            if chunk.range_end <= request.cutoff {
+                rows_removed += sqlx::query_scalar::<_, i64>(
+                    "SELECT ingester.remove_verified_drain_chunk($1,$2)",
+                )
                 .bind(publication.object_id)
                 .bind(&publication.sha256)
                 .fetch_one(&context.pool)
                 .await
                 .map_err(db_error)?;
+            }
         }
-        let totals = sqlx::query(
-            "SELECT COALESCE(sum(row_count),0)::bigint,COALESCE(sum(byte_size),0)::bigint,\
-             count(*)::bigint FROM ingester.drain_objects WHERE job_id=$1 AND status='removed'",
-        )
-        .bind(context.job_id)
-        .fetch_one(&context.pool)
-        .await
-        .map_err(db_error)?;
-        let rows: i64 = totals.try_get(0).map_err(db_error)?;
         Ok(DrainOutcome {
-            rows_exported: rows,
-            rows_removed: rows,
-            bytes_written: totals.try_get(1).map_err(db_error)?,
-            objects_published: totals.try_get(2).map_err(db_error)?,
+            rows_exported,
+            rows_removed,
+            bytes_written,
+            objects_published,
             summary: json!({
                 "cutoff": request.cutoff,
                 "relation": RELATION,
                 "retention_days": RETENTION_DAYS,
+                "snapshot_at": snapshot_at,
             }),
         })
     }
