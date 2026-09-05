@@ -192,7 +192,8 @@ export class CanonicalizeChainlinkReferencePriceStorage1788647000000
       ALTER TABLE ${relation} SET (
         timescaledb.compress = true,
         timescaledb.compress_orderby = 'source_timestamp ASC, report_sha256 ASC',
-        timescaledb.compress_segmentby = 'feed_id, source, strategy_key'
+        timescaledb.compress_segmentby =
+          'feed_id, source, strategy_key, capture_artifact_id, backfill_artifact_id'
       );
       SELECT add_compression_policy('${relation}', INTERVAL '2 days', if_not_exists => TRUE);
       CREATE INDEX IF NOT EXISTS idx_market_data_${suffix}_recovery
