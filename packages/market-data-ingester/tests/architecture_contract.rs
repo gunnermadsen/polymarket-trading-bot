@@ -416,6 +416,40 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
 }
 
 #[test]
+fn binance_l2_feature_strategies_have_one_destination_per_market() {
+    let root = repository_root();
+    let spot = "market_data.binance_spot_btcusdt_l2_one_second_features";
+    let futures = "market_data.binance_futures_btcusdt_l2_one_second_features";
+    let files = [
+        (
+            "packages/market-data-ingester/src/strategies/binance/spot_l2_one_second_features_backfill.rs",
+            spot,
+        ),
+        (
+            "packages/market-data-ingester/src/strategies/binance/coinapi_spot_l2_one_second_features_backfill.rs",
+            spot,
+        ),
+        (
+            "packages/market-data-ingester/src/strategies/binance/futures_l2_one_second_features_backfill.rs",
+            futures,
+        ),
+    ];
+    for (relative, canonical) in files {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(source.contains(canonical), "{relative} omits {canonical}");
+        assert!(!source.contains("polymarket.binance_spot_btcusdt_l2_one_second_features"));
+        assert!(!source.contains("polymarket.binance_btcusdt_l2_one_second_features"));
+        assert!(!source.contains("_staging"));
+    }
+    let persistence = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/binance/l2_backfill_support.rs"),
+    )
+    .unwrap();
+    assert!(!persistence.contains("_staging"));
+    assert!(persistence.contains("ON CONFLICT (symbol,second_start) DO NOTHING"));
+}
+
+#[test]
 fn binance_backfills_use_the_authoritative_support_module() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(root.join("src/strategies/backfill_support.rs").exists());
