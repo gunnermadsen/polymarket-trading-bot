@@ -5,11 +5,13 @@ const products = [
     source: 'polymarket.binance_spot_btcusdt_l2_one_second_features',
     target: 'market_data.binance_spot_btcusdt_l2_one_second_features',
     name: 'binance_spot_btcusdt_l2_one_second_features',
+    indexPrefix: 'idx_md_binance_spot_l2',
   },
   {
     source: 'polymarket.binance_btcusdt_l2_one_second_features',
     target: 'market_data.binance_futures_btcusdt_l2_one_second_features',
     name: 'binance_futures_btcusdt_l2_one_second_features',
+    indexPrefix: 'idx_md_binance_futures_l2',
   },
 ];
 
@@ -46,9 +48,9 @@ export class AddCanonicalBinanceL2FeatureStorage1788648000000
         SELECT add_compression_policy(
           '${product.target}', INTERVAL '7 days', if_not_exists => TRUE
         );
-        CREATE INDEX idx_market_data_${product.name}_available
+        CREATE INDEX ${product.indexPrefix}_available
           ON ${product.target} (symbol, available_at DESC, second_start DESC);
-        CREATE INDEX idx_market_data_${product.name}_artifact
+        CREATE INDEX ${product.indexPrefix}_artifact
           ON ${product.target} (artifact_id, second_start);
         CREATE TRIGGER trg_reject_market_data_${product.name}_change
           BEFORE UPDATE OR DELETE ON ${product.target}
