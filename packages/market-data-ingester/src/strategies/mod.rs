@@ -245,6 +245,26 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
             drains::PolymarketOrderbooksDrain::from_environment()
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
+        Arc::new(
+            drains::BinanceOneSecondOhlcvDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PmdataChainlinkReferencePricesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PmdataChainlinkTwapDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolymarketChainlinkTwapDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::ReferencePriceTicksDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
     ];
     StrategyRegistry::from_factories(factories)?
         .with_backfills(backfills)?
@@ -322,7 +342,12 @@ mod tests {
             drains,
             vec![
                 "binance_spot_btcusdt_aggregate_trades",
+                "binance_spot_btcusdt_one_second_ohlcv",
+                "pmdata_chainlink_btcusd_reference_price",
+                "pmdata_chainlink_btcusd_twap",
                 "polymarket_btc_five_minute_orderbooks",
+                "polymarket_chainlink_btcusd_twap",
+                "polymarket_reference_price_ticks",
             ]
         );
         assert!(registry
