@@ -2,7 +2,6 @@
 
 mod aggregate_trades;
 mod aggregate_trades_backfill;
-mod aggregate_trades_drain;
 pub(crate) mod archive_support;
 mod coinapi_spot_l2_one_second_features_backfill;
 mod five_minute_open_interest_backfill;
@@ -19,7 +18,6 @@ mod types;
 
 pub use aggregate_trades::BinanceSpotAggregateTradesFactory;
 pub use aggregate_trades_backfill::BinanceSpotAggregateTradesBackfill;
-pub use aggregate_trades_drain::BinanceAggregateTradesDrain;
 pub use coinapi_spot_l2_one_second_features_backfill::CoinapiBinanceSpotL2OneSecondFeaturesBackfill;
 pub use five_minute_open_interest_backfill::BinanceFuturesFiveMinuteOpenInterestBackfill;
 pub use futures_l2_one_second_features_backfill::BinanceFuturesL2OneSecondFeaturesBackfill;

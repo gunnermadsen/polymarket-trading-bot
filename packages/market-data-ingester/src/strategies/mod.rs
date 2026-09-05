@@ -11,6 +11,7 @@ mod backfill_support;
 pub mod binance;
 pub mod chainlink;
 mod datasets;
+pub mod drains;
 pub mod economic;
 pub mod kraken;
 pub mod pmdata;
@@ -235,10 +236,16 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
     ];
-    let drains: Vec<Arc<dyn DrainWorkerStrategy>> = vec![Arc::new(
-        binance::BinanceAggregateTradesDrain::from_environment()
-            .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
-    )];
+    let drains: Vec<Arc<dyn DrainWorkerStrategy>> = vec![
+        Arc::new(
+            drains::BinanceAggregateTradesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolymarketOrderbooksDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+    ];
     StrategyRegistry::from_factories(factories)?
         .with_backfills(backfills)?
         .with_drains(drains)
@@ -311,7 +318,13 @@ mod tests {
             .drains()
             .map(|strategy| strategy.descriptor().strategy_key.as_ref())
             .collect::<Vec<_>>();
-        assert_eq!(drains, vec!["binance_spot_btcusdt_aggregate_trades"]);
+        assert_eq!(
+            drains,
+            vec![
+                "binance_spot_btcusdt_aggregate_trades",
+                "polymarket_btc_five_minute_orderbooks",
+            ]
+        );
         assert!(registry
             .backfill("binance_spot_btcusdt_aggregate_trades")
             .is_none());
