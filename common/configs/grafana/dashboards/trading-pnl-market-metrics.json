@@ -1860,7 +1860,7 @@
           "calcs": [
             "last"
           ],
-          "fields": "",
+          "fields": "/^(Current Position Snapshot Unrealized PnL|Current Market Entry Orders)$/",
           "values": false
         },
         "showPercentChange": false,
