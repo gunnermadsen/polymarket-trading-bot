@@ -109,13 +109,6 @@ impl PolymarketOrderbooksDrain {
                 .map_err(|_| io_error("Parquet writer stopped"))?;
         }
         finish_writer(sender, writer).await?;
-        if count == 0 {
-            let _ = fs::remove_file(&staging).await;
-            return Err(invalid(
-                "drain_empty_chunk",
-                "eligible Timescale chunk contained no rows",
-            ));
-        }
         let partition = format!(
             "verified-chunks-v1/year={}/month={}/day={}",
             chunk.range_start.format("%Y"),
