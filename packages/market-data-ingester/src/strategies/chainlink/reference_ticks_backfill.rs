@@ -3,12 +3,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::json;
-use sqlx::{Postgres, QueryBuilder};
 
 use crate::{
     domain::{
         BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillRequest, BackfillShard,
         BackfillWorkerStrategy, StrategyDescriptor, ValidatedBackfillRequest,
+    },
+    persistence::{
+        insert_chainlink_reference_prices, ChainlinkReferencePriceWrite, ReferencePriceArtifact,
     },
     strategies::{backfill_support, binance::archive_support::ArchiveCancellation},
 };
@@ -22,7 +24,7 @@ use super::{
 };
 
 pub const STRATEGY_KEY: &str = "chainlink_btcusd_reference_ticks_backfill";
-const DURABLE_TARGET: &str = "polymarket.chainlink_btcusd_archive_ticks";
+const DURABLE_TARGET: &str = "market_data.chainlink_btcusd_reference_prices";
 
 pub struct ChainlinkBtcusdReferenceTicksBackfill {
     descriptor: StrategyDescriptor,
@@ -174,22 +176,31 @@ async fn persist(
         .await
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
-    for chunk in records.chunks(1_000) {
-        let mut query = QueryBuilder::<Postgres>::new("INSERT INTO polymarket.chainlink_btcusd_archive_ticks (feed_id,source_timestamp,valid_from_timestamp,price,bid,ask,report_sha256,artifact_id) ");
-        query.push_values(chunk, |mut row, value| {
-            row.push_bind(&value.feed_id)
-                .push_bind(value.source_timestamp)
-                .push_bind(value.valid_from_timestamp)
-                .push_bind(value.price)
-                .push_bind(value.bid)
-                .push_bind(value.ask)
-                .push_bind(&value.report_sha256)
-                .push_bind(artifact_id);
-        });
-        query.push(" ON CONFLICT (feed_id,source_timestamp) DO NOTHING");
-        query
-            .build()
-            .execute(&mut *tx)
+    let received_at = chrono::Utc::now();
+    for (chunk_index, chunk) in records.chunks(1_000).enumerate() {
+        let writes = chunk
+            .iter()
+            .enumerate()
+            .map(|(row_index, value)| ChainlinkReferencePriceWrite {
+                feed_id: &value.feed_id,
+                source_timestamp: value.source_timestamp,
+                valid_from_timestamp: Some(value.valid_from_timestamp),
+                provider_available_at: None,
+                received_at,
+                price: value.price,
+                bid: Some(value.bid),
+                ask: Some(value.ask),
+                report_sha256: &value.report_sha256,
+                payload_sha256: &value.report_sha256,
+                artifact: ReferencePriceArtifact::Backfill(artifact_id),
+                expires_at: None,
+                report_version: None,
+                source_date: Some(value.source_timestamp.date_naive()),
+                archive_row_number: Some((chunk_index * 1_000 + row_index) as i64),
+                report_hash_kind: "signed_report",
+            })
+            .collect::<Vec<_>>();
+        insert_chainlink_reference_prices(&mut tx, STRATEGY_KEY, &writes)
             .await
             .map_err(backfill_support::database_error)?;
     }

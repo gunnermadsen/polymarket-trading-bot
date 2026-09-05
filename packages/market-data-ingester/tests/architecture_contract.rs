@@ -358,6 +358,35 @@ fn polymarket_orderbooks_have_one_final_physical_table_contract() {
 }
 
 #[test]
+fn chainlink_reference_products_have_exclusive_persistence_boundaries() {
+    let root = repository_root();
+    let persistence = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/persistence/chainlink_reference_prices.rs"),
+    )
+    .unwrap();
+    assert!(persistence.contains("market_data.chainlink_btcusd_reference_prices"));
+    assert!(persistence.contains("market_data.pmdata_chainlink_btcusd_reference_prices"));
+
+    for relative in [
+        "packages/market-data-ingester/src/strategies/chainlink/reference_price.rs",
+        "packages/market-data-ingester/src/strategies/chainlink/reference_ticks_backfill.rs",
+        "packages/market-data-ingester/src/strategies/pmdata/backfill_runtime.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(!source.contains("INSERT INTO market_data.chainlink_btcusd_reference_prices"));
+        assert!(
+            !source.contains("INSERT INTO market_data.pmdata_chainlink_btcusd_reference_prices")
+        );
+        assert!(!source.contains("INSERT INTO polymarket.chainlink_btcusd_archive_ticks"));
+    }
+
+    let bindings =
+        fs::read_to_string(root.join("packages/market-data-ingester/src/strategies/datasets.rs"))
+            .unwrap();
+    assert!(bindings.contains("DatasetKey::PmdataChainlinkBtcusdReferencePrices"));
+}
+
+#[test]
 fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() {
     let root = repository_root();
     let repository = fs::read_to_string(
