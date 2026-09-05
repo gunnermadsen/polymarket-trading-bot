@@ -773,7 +773,6 @@ impl PaperVenue {
                 serde_json::json!({
                     "reject_reason": null,
                     "paper_execution": {
-                        "book_checked_at": book_checked_at,
                         "arrival_checkpoint_id": checkpoint.checkpoint_id,
                         "arrival_checkpoint": checkpoint,
                         "arrival_source_age_ms": source_age.num_milliseconds(),
