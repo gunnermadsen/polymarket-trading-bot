@@ -19,8 +19,16 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - build the polymarket bot with provenance env var: POLYMARKET_GIT_REVISION=<GIT_COMMIT_HASH> docker compose build polymarket-bot
 - Do not rebuild an image when its component's code did not change.
 - put sensitive secrets in .env files
+- Treat the main worktree's `.env` file as the source of truth for API-key secrets. Worktrees and services must reference or inherit those secrets without creating independent secret values.
 - put non-sensitive runtime configuration in docker-compose files
 - .env example files are templates, do not put plaintext env vars in the example env files.
+
+## Rust file organization
+- Organize Rust code by domain responsibility, with one clear purpose per module.
+- Keep files narrowly scoped; split files that mix unrelated responsibilities or become difficult to navigate.
+- Place shared types and behavior in the nearest common domain module. Do not create generic dumping-ground modules such as `utils` or `common`.
+- Keep public module interfaces minimal and expose implementation details only when required by another module.
+- Follow the existing crate and module structure unless the requested change requires a focused reorganization.
 
 # Source Control and Worktrees
 
@@ -35,7 +43,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - The integration branch is the single collection point for the cycle. Do not create feature-specific, defect-specific, candidate-specific, or secondary integration branches.
 - Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
 - A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
-- Merge a selected feature or defect branch into the integration branch with `--no-ff` only after the user explicitly authorizes merging that exact branch. Verification findings must be reported but do not create an additional authorization gate. Never merge a feature or defect branch directly into `development`.
+- Merge a selected feature or defect branch into the integration branch only after the user explicitly authorizes merging that exact branch. Verification findings must be reported but do not create an additional authorization gate. Never merge a feature or defect branch directly into `development`.
 - Abandon a rejected candidate branch rather than repairing its integration history with merge reverts. Preserve the rejected branch until its result and any reusable commits are accounted for.
 
 ## Abandoned Lineages
@@ -93,7 +101,10 @@ Think of Capitonic as a vision to generate income through systems with automatio
   - whether it incorporates the latest integration tip; and
   - its commit log and diff against the active integration branch.
 - These findings are disclosure requirements, not independent vetoes. Explicit user authorization naming the exact branch or commit is sufficient to proceed. Stop only when the target is ambiguous, uncommitted work would be lost, or the action requires destructive history rewriting that the user did not explicitly authorize.
-- Merge each explicitly authorized feature or defect branch into the active integration branch using `--no-ff`. Never infer merge permission from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
+- Merge an explicitly authorized feature or defect branch into the integration branch using `--ff-only` when the integration branch has not diverged from the feature branch's merge base.
+- When the branches have diverged, merge the explicitly authorized feature or defect branch using `--no-ff`.
+- Never rebase, rewrite, or discard either lineage merely to make a fast-forward merge possible.
+- Never infer merge permission from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
 - Do not merge an old, pre-cycle, cross-cycle, abandoned, or otherwise unrelated branch implicitly. Explicit user authorization naming the exact branch or commit is sufficient authorization for that merge; disclose its lineage and status before proceeding.
 - After integration collects new work, create subsequent feature and defect branches from the new integration tip so they begin with the complete collected code.
 - Advance `development` only through the golden admission and fast-forward promotion rules above.
