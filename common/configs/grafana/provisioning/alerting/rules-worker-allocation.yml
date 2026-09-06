@@ -1,0 +1,101 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: ingester-worker-allocation-20s
+    folder: Market Data Ingestion
+    interval: 20s
+    rules:
+      - uid: ingester_worker_realtime_saturation
+        title: Ingester worker owns multiple realtime strategies
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max by (worker_id) (market_data_ingester_worker_realtime_leases)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [1], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations: {summary: A worker owns more than one realtime strategy lease}
+        labels: {service: ingester, family: worker_allocation, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: ingester_worker_capacity_exceeded
+        title: Ingester worker allocation exceeds capacity
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max by (worker_id) (market_data_ingester_worker_allocated_units - market_data_ingester_worker_capacity_units)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations: {summary: A worker has more leased allocation units than configured capacity}
+        labels: {service: ingester, family: worker_allocation, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false
+      - uid: ingester_realtime_distribution_deficit
+        title: Realtime strategies are not distributed one per worker
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'count(market_data_ingester_strategy_state{desired_state="running",observed_state=~"starting|running|degraded|restarting"}) - count(market_data_ingester_worker_realtime_leases == 1)'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+        annotations: {summary: Desired realtime strategies lack distinct worker allocations}
+        labels: {service: ingester, family: worker_allocation, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        isPaused: false

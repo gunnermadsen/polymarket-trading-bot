@@ -13,8 +13,8 @@ pub use artifacts::{
     ArtifactBatch, ArtifactPersistenceError, ArtifactRepository, NewCaptureArtifact,
 };
 pub use backfills::{
-    BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob, WorkerRecord,
-    WorkerRegistration,
+    BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob,
+    WorkerAllocationRecord, WorkerRecord, WorkerRegistration,
 };
 pub use chainlink_reference_prices::{
     insert_chainlink_reference_prices, insert_pmdata_chainlink_reference_prices,

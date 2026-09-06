@@ -9,6 +9,7 @@ mod profile;
 mod strategy;
 mod timestamps;
 mod watermark;
+mod worker_allocation;
 
 pub use artifact::{ArtifactStatus, CaptureArtifact};
 pub use backfill::{
@@ -26,3 +27,8 @@ pub use profile::{DesiredState, HealthStatus, IngesterProfile, ObservedState};
 pub use strategy::{IngesterStrategyKey, RealtimeWorkerStrategy, StrategyError, StrategyErrorKind};
 pub use timestamps::FactualTimestamps;
 pub use watermark::StrategyWatermarks;
+pub use worker_allocation::{
+    admits_backfill, admits_realtime, backfill_profile, realtime_profile, IsolationClass,
+    WorkloadProfile, ALLOCATION_CONTRACT_VERSION, DEFAULT_REALTIME_SLOT_LIMIT,
+    DEFAULT_WORKER_CAPACITY_UNITS,
+};

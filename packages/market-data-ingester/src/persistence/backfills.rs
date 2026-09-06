@@ -9,7 +9,8 @@ use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::domain::{
-    BackfillFailureKind, BackfillOutcome, BackfillShard, ValidatedBackfillRequest,
+    backfill_profile, realtime_profile, BackfillFailureKind, BackfillOutcome, BackfillShard,
+    IngesterStrategyKey, IsolationClass, ValidatedBackfillRequest, ALLOCATION_CONTRACT_VERSION,
 };
 
 const JOB_COLUMNS: &str = r#"
@@ -20,7 +21,7 @@ const JOB_COLUMNS: &str = r#"
   required_deployment, lease_token, lease_expires_at, heartbeat_at,
   progress, checkpoint, verified_coverage, summary, last_error_kind,
   last_error_code, last_error_message, requested_at, started_at,
-  completed_at, cancel_requested_at, assigned_worker_image_digest,
+  completed_at, cancel_requested_at, allocation_units, assigned_worker_image_digest,
   assigned_worker_source_revision, created_at, updated_at
 "#;
 
@@ -58,6 +59,7 @@ pub struct BackfillJobRecord {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub cancel_requested_at: Option<DateTime<Utc>>,
+    pub allocation_units: i32,
     pub assigned_worker_image_digest: Option<String>,
     pub assigned_worker_source_revision: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -89,6 +91,9 @@ pub struct WorkerRegistration {
     pub worker_contract_version: i32,
     pub supported_strategies: BTreeMap<String, i32>,
     pub maximum_backfills: i32,
+    pub capacity_units: i32,
+    pub realtime_slot_limit: i32,
+    pub allocation_contract_version: i32,
     #[serde(default)]
     pub realtime_strategies: Vec<String>,
     pub image_digest: String,
@@ -109,8 +114,14 @@ impl WorkerRegistration {
                 bail!("{name} must be non-empty and at most 255 bytes");
             }
         }
-        if self.worker_contract_version <= 0 || self.maximum_backfills != 1 {
-            bail!("worker contract version must be positive and worker capacity must be one");
+        if self.worker_contract_version <= 0
+            || self.maximum_backfills <= 0
+            || self.maximum_backfills > self.capacity_units
+            || !(1..=32).contains(&self.capacity_units)
+            || self.realtime_slot_limit != 1
+            || self.allocation_contract_version != ALLOCATION_CONTRACT_VERSION
+        {
+            bail!("worker allocation capacity or contract is invalid");
         }
         if self.supported_strategies.is_empty()
             || self
@@ -132,6 +143,9 @@ pub struct WorkerRecord {
     pub supported_strategies: Value,
     pub maximum_backfills: i32,
     pub active_backfills: i32,
+    pub capacity_units: i32,
+    pub realtime_slot_limit: i32,
+    pub allocation_contract_version: i32,
     pub realtime_strategies: Value,
     pub image_digest: String,
     pub source_revision: String,
@@ -140,6 +154,15 @@ pub struct WorkerRecord {
     pub started_at: DateTime<Utc>,
     pub heartbeat_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct WorkerAllocationRecord {
+    pub worker_id: String,
+    pub capacity_units: i32,
+    pub allocated_units: i64,
+    pub realtime_leases: i64,
+    pub backfill_leases: i64,
 }
 
 #[derive(Clone)]
@@ -161,6 +184,7 @@ impl BackfillRepository {
             bail!("a backfill request must produce at least one shard");
         }
         let canonical = canonical_request(request);
+        let allocation_units = backfill_profile(request.strategy_key.as_ref()).capacity_units;
         let request_hash = sha256_json(&canonical)?;
         let mut tx = self
             .pool
@@ -172,8 +196,8 @@ impl BackfillRepository {
             INSERT INTO ingester.backfill_jobs (
               job_kind, strategy_key, strategy_contract_version,
               request_schema_version, canonical_request, request_hash,
-              range_start, range_end, required_worker_id, required_deployment
-            ) VALUES ('request',$1,$2,$3,$4,$5,$6,$7,$8,$9)
+              range_start, range_end, required_worker_id, required_deployment, allocation_units
+            ) VALUES ('request',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
             ON CONFLICT (request_hash) WHERE job_kind='request' AND legacy_source IS NULL
             DO UPDATE SET updated_at=ingester.backfill_jobs.updated_at
             RETURNING {JOB_COLUMNS}
@@ -189,6 +213,7 @@ impl BackfillRepository {
             .bind(request.range_end)
             .bind(request.execution.required_worker_id.as_deref())
             .bind(request.execution.required_deployment.as_deref())
+            .bind(allocation_units)
             .fetch_one(&mut *tx)
             .await
             .context("insert canonical backfill request")?;
@@ -216,8 +241,8 @@ impl BackfillRepository {
                       parent_job_id, job_kind, strategy_key, strategy_contract_version,
                       request_schema_version, canonical_request, request_hash,
                       range_start, range_end, shard_key, required_worker_id,
-                      required_deployment
-                    ) VALUES ($1,'shard',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                      required_deployment, allocation_units
+                    ) VALUES ($1,'shard',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                     "#,
                 )
                 .bind(parent.job_id)
@@ -231,6 +256,7 @@ impl BackfillRepository {
                 .bind(&shard.shard_key)
                 .bind(request.execution.required_worker_id.as_deref())
                 .bind(request.execution.required_deployment.as_deref())
+                .bind(allocation_units)
                 .execute(&mut *tx)
                 .await
                 .context("insert canonical backfill shard")?;
@@ -381,8 +407,9 @@ impl BackfillRepository {
             r#"
             INSERT INTO ingester.workers (
               worker_id,hostname,worker_contract_version,supported_strategies,
-              maximum_backfills,realtime_strategies,image_digest,source_revision,deployment_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+              maximum_backfills,realtime_strategies,image_digest,source_revision,deployment_id,
+              capacity_units,realtime_slot_limit,allocation_contract_version
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             ON CONFLICT (worker_id) DO UPDATE SET
               hostname=EXCLUDED.hostname,
               worker_contract_version=EXCLUDED.worker_contract_version,
@@ -392,6 +419,9 @@ impl BackfillRepository {
               image_digest=EXCLUDED.image_digest,
               source_revision=EXCLUDED.source_revision,
               deployment_id=EXCLUDED.deployment_id,
+              capacity_units=EXCLUDED.capacity_units,
+              realtime_slot_limit=EXCLUDED.realtime_slot_limit,
+              allocation_contract_version=EXCLUDED.allocation_contract_version,
               lifecycle_state='active',heartbeat_at=now(),updated_at=now()
             RETURNING *
             "#,
@@ -405,6 +435,9 @@ impl BackfillRepository {
         .bind(&worker.image_digest)
         .bind(&worker.source_revision)
         .bind(&worker.deployment_id)
+        .bind(worker.capacity_units)
+        .bind(worker.realtime_slot_limit)
+        .bind(worker.allocation_contract_version)
         .fetch_one(&self.pool)
         .await?)
     }
@@ -434,6 +467,33 @@ impl BackfillRepository {
                 .fetch_all(&self.pool)
                 .await?,
         )
+    }
+
+    pub async fn list_worker_allocations(&self) -> Result<Vec<WorkerAllocationRecord>> {
+        Ok(sqlx::query_as(
+            r#"
+            SELECT worker.worker_id, worker.capacity_units,
+              COALESCE(realtime.units,0) + COALESCE(backfill.units,0) AS allocated_units,
+              COALESCE(realtime.leases,0) AS realtime_leases,
+              COALESCE(backfill.leases,0) AS backfill_leases
+            FROM ingester.workers worker
+            LEFT JOIN LATERAL (
+              SELECT count(*)::bigint AS leases, count(*)::bigint * 2 AS units
+              FROM ingester.profiles profile
+              WHERE profile.lease_owner=worker.worker_id AND profile.lease_expires_at>now()
+            ) realtime ON true
+            LEFT JOIN LATERAL (
+              SELECT count(*)::bigint AS leases, COALESCE(sum(job.allocation_units),0)::bigint AS units
+              FROM ingester.backfill_jobs job
+              WHERE job.assigned_worker_id=worker.worker_id
+                AND job.status IN ('running','cancel_requested') AND job.lease_expires_at>now()
+            ) backfill ON true
+            WHERE worker.lifecycle_state='active' AND worker.heartbeat_at>now()-interval '30 seconds'
+            ORDER BY worker.worker_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn claim(
@@ -518,6 +578,36 @@ impl BackfillRepository {
             tx.commit().await?;
             return Ok(None);
         }
+        let active_backfill_units: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(sum(allocation_units),0)::bigint FROM ingester.backfill_jobs WHERE assigned_worker_id=$1 AND status IN ('running','cancel_requested') AND lease_expires_at>now()",
+        )
+        .bind(worker_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let realtime_key: Option<String> = sqlx::query_scalar(
+            "SELECT strategy_key FROM ingester.profiles WHERE lease_owner=$1 AND lease_expires_at>now() ORDER BY strategy_key LIMIT 1",
+        )
+        .bind(worker_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let active_realtime = realtime_key
+            .as_deref()
+            .and_then(|key| key.parse::<IngesterStrategyKey>().ok())
+            .map(realtime_profile);
+        if active_realtime
+            .is_some_and(|profile| profile.isolation == IsolationClass::LatencyCritical)
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let realtime_units = active_realtime.map_or(0, |profile| profile.capacity_units);
+        let remaining_units = i64::from(worker.capacity_units)
+            .saturating_sub(active_backfill_units)
+            .saturating_sub(i64::from(realtime_units));
+        if remaining_units <= 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
         let query = r#"
             WITH candidate AS (
               SELECT job.job_id
@@ -528,6 +618,8 @@ impl BackfillRepository {
                 AND ($2::jsonb ->> job.strategy_key)::integer = job.strategy_contract_version
                 AND (job.required_worker_id IS NULL OR job.required_worker_id=$1)
                 AND (job.required_deployment IS NULL OR job.required_deployment=$3)
+                AND job.allocation_units <= $8
+                AND NOT (job.allocation_units = $9 AND ($10 OR $11 > 0))
               ORDER BY
                 CASE
                   WHEN job.required_worker_id=$1 THEN 0
@@ -554,6 +646,10 @@ impl BackfillRepository {
             .bind(lease_seconds)
             .bind(&worker.image_digest)
             .bind(&worker.source_revision)
+            .bind(remaining_units)
+            .bind(worker.capacity_units)
+            .bind(active_realtime.is_some())
+            .bind(active_backfill_units)
             .fetch_optional(&mut *tx)
             .await?;
         if let Some(job) = &job {

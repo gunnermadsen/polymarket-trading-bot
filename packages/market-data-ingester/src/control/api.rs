@@ -809,8 +809,13 @@ async fn readiness(State(state): State<ApiState>) -> StatusCode {
 
 async fn prometheus_metrics(State(state): State<ApiState>) -> Result<Response, ApiError> {
     let profiles = state.profiles.list().await.map_err(ApiError::internal)?;
-    let body =
-        metrics::render(&profiles, state.readiness.is_ready()).map_err(ApiError::internal)?;
+    let allocations = state
+        .backfills
+        .list_worker_allocations()
+        .await
+        .map_err(ApiError::internal)?;
+    let body = metrics::render(&profiles, &allocations, state.readiness.is_ready())
+        .map_err(ApiError::internal)?;
     Ok((
         [(
             CONTENT_TYPE,

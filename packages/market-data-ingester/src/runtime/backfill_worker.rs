@@ -5,12 +5,16 @@ use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::PgPool;
+use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::{
-    domain::{BackfillContext, BackfillFailureKind, BackfillOutcome, BackfillShard},
+    domain::{
+        BackfillContext, BackfillFailureKind, BackfillOutcome, BackfillShard,
+        ALLOCATION_CONTRACT_VERSION, DEFAULT_REALTIME_SLOT_LIMIT, DEFAULT_WORKER_CAPACITY_UNITS,
+    },
     persistence::{ClaimedBackfillJob, WorkerRegistration},
 };
 
@@ -59,6 +63,15 @@ impl BackfillWorkerRuntime {
                 .unwrap_or_else(|_| "1".to_owned())
                 .parse()
                 .context("INGESTER_WORKER_MAX_BACKFILLS must be an integer")?,
+            capacity_units: env::var("INGESTER_WORKER_CAPACITY_UNITS")
+                .unwrap_or_else(|_| DEFAULT_WORKER_CAPACITY_UNITS.to_string())
+                .parse()
+                .context("INGESTER_WORKER_CAPACITY_UNITS must be an integer")?,
+            realtime_slot_limit: env::var("INGESTER_WORKER_REALTIME_SLOT_LIMIT")
+                .unwrap_or_else(|_| DEFAULT_REALTIME_SLOT_LIMIT.to_string())
+                .parse()
+                .context("INGESTER_WORKER_REALTIME_SLOT_LIMIT must be an integer")?,
+            allocation_contract_version: ALLOCATION_CONTRACT_VERSION,
             realtime_strategies: registry.keys().map(|key| key.as_str().to_owned()).collect(),
             image_digest: env::var("INGESTER_IMAGE_DIGEST")
                 .unwrap_or_else(|_| "development".to_owned()),
@@ -84,22 +97,41 @@ impl BackfillWorkerRuntime {
     }
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
-        self.register().await?;
-        info!(worker_id=%self.worker.worker_id, "ingester worker registered");
+        let runtime = Arc::new(self);
+        runtime.register().await?;
+        info!(worker_id=%runtime.worker.worker_id, capacity_units=runtime.worker.capacity_units, realtime_slot_limit=runtime.worker.realtime_slot_limit, "ingester worker registered");
         let mut idle = tokio::time::interval(Duration::from_secs(1));
         idle.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut active = JoinSet::new();
         loop {
             tokio::select! {
-                _ = shutdown.cancelled() => return Ok(()),
+                _ = shutdown.cancelled() => {
+                    while active.join_next().await.is_some() {}
+                    return Ok(());
+                },
+                completed = active.join_next(), if !active.is_empty() => {
+                    if let Some(Err(error)) = completed {
+                        warn!(error=%error, "backfill execution task failed");
+                    }
+                },
                 _ = idle.tick() => {
-                    if let Err(error) = self.worker_heartbeat().await {
+                    if let Err(error) = runtime.worker_heartbeat().await {
                         warn!(error=%error, "ingester worker heartbeat failed");
                         continue;
                     }
-                    match self.claim().await {
-                        Ok(Some(claim)) => self.execute(claim, shutdown.clone()).await,
-                        Ok(None) => {},
-                        Err(error) => warn!(error=%error, "ingester worker assignment request failed"),
+                    while active.len() < usize::try_from(runtime.worker.maximum_backfills).unwrap_or(1) {
+                        match runtime.claim().await {
+                            Ok(Some(claim)) => {
+                                let execution = Arc::clone(&runtime);
+                                let execution_shutdown = shutdown.clone();
+                                active.spawn(async move { execution.execute(claim, execution_shutdown).await });
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                warn!(error=%error, "ingester worker assignment request failed");
+                                break;
+                            }
+                        }
                     }
                 }
             }

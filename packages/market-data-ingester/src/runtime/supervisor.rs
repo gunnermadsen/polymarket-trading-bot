@@ -247,6 +247,9 @@ where
         self.abort_expired_stops().await?;
 
         for profile in profiles.values() {
+            if !self.active.is_empty() {
+                break;
+            }
             if profile.desired_state != DesiredState::Running
                 || self.active.contains_key(&profile.strategy_key)
                 || self.retry_is_active(profile.strategy_key, profile.desired_generation)

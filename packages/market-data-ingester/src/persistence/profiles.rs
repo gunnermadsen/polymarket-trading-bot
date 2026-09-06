@@ -8,7 +8,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::domain::{
-    DesiredState, HealthStatus, IngesterProfile, IngesterStrategyKey, ObservedState,
+    admits_realtime, realtime_profile, DesiredState, HealthStatus, IngesterProfile,
+    IngesterStrategyKey, ObservedState, ALLOCATION_CONTRACT_VERSION,
 };
 
 const PROFILE_COLUMNS: &str = r#"
@@ -240,6 +241,58 @@ impl ProfileRepository {
     ) -> Result<Option<(IngesterProfile, Uuid)>> {
         let token = Uuid::new_v4();
         let lease_milliseconds = duration_milliseconds(lease_duration)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .context("begin profile lease admission")?;
+        let worker = sqlx::query_as::<_, (i32, i32, i32, DateTime<Utc>, String)>(
+            "SELECT capacity_units,realtime_slot_limit,allocation_contract_version,heartbeat_at,lifecycle_state FROM ingester.workers WHERE worker_id=$1 FOR UPDATE",
+        )
+        .bind(owner)
+        .fetch_optional(&mut *transaction)
+        .await
+        .context("lock worker allocation for profile lease")?;
+        let Some((
+            capacity_units,
+            realtime_slot_limit,
+            allocation_version,
+            heartbeat_at,
+            lifecycle_state,
+        )) = worker
+        else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if lifecycle_state != "active"
+            || allocation_version != ALLOCATION_CONTRACT_VERSION
+            || heartbeat_at < Utc::now() - chrono::Duration::seconds(30)
+        {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let active_realtime: i64 = sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM ingester.profiles WHERE lease_owner=$1 AND lease_expires_at>now()",
+        )
+        .bind(owner)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let active_backfill_units: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(sum(allocation_units),0)::bigint FROM ingester.backfill_jobs WHERE assigned_worker_id=$1 AND status IN ('running','cancel_requested') AND lease_expires_at>now()",
+        )
+        .bind(owner)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !admits_realtime(
+            capacity_units,
+            realtime_slot_limit,
+            active_realtime,
+            active_backfill_units,
+            realtime_profile(key),
+        ) {
+            transaction.commit().await?;
+            return Ok(None);
+        }
         let query = format!(
             r#"
             UPDATE ingester.profiles
@@ -265,18 +318,19 @@ impl ProfileRepository {
             RETURNING {PROFILE_COLUMNS}
             "#
         );
-        sqlx::query_as::<_, ProfileRow>(&query)
+        let profile = sqlx::query_as::<_, ProfileRow>(&query)
             .bind(key.as_str())
             .bind(generation)
             .bind(owner)
             .bind(token)
             .bind(lease_milliseconds)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await
             .context("failed to claim ingester profile lease")?
             .map(TryInto::try_into)
-            .transpose()
-            .map(|profile| profile.map(|profile| (profile, token)))
+            .transpose()?;
+        transaction.commit().await?;
+        Ok(profile.map(|profile| (profile, token)))
     }
 
     pub async fn renew_lease(

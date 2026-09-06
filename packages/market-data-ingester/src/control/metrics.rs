@@ -5,7 +5,7 @@ use prometheus_client::{
     registry::Registry,
 };
 
-use crate::domain::IngesterProfile;
+use crate::{domain::IngesterProfile, persistence::WorkerAllocationRecord};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct StrategyStateLabels {
@@ -20,17 +20,50 @@ struct StrategyLabels {
     strategy: String,
 }
 
-pub fn render(profiles: &[IngesterProfile], ready: bool) -> Result<String> {
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct WorkerLabels {
+    worker_id: String,
+}
+
+pub fn render(
+    profiles: &[IngesterProfile],
+    allocations: &[WorkerAllocationRecord],
+    ready: bool,
+) -> Result<String> {
     let mut registry = Registry::with_prefix("market_data_ingester");
     let liveness = Gauge::<i64>::default();
     let readiness = Gauge::<i64>::default();
     let strategy_state = Family::<StrategyStateLabels, Gauge<i64>>::default();
     let last_persistence = Family::<StrategyLabels, Gauge<i64>>::default();
+    let worker_capacity = Family::<WorkerLabels, Gauge<i64>>::default();
+    let worker_allocated = Family::<WorkerLabels, Gauge<i64>>::default();
+    let worker_realtime = Family::<WorkerLabels, Gauge<i64>>::default();
+    let worker_backfills = Family::<WorkerLabels, Gauge<i64>>::default();
 
     registry.register(
         "liveness",
         "Whether the market-data-ingester HTTP process is live.",
         liveness.clone(),
+    );
+    registry.register(
+        "worker_capacity_units",
+        "Configured worker allocation capacity.",
+        worker_capacity.clone(),
+    );
+    registry.register(
+        "worker_allocated_units",
+        "Currently leased worker allocation units.",
+        worker_allocated.clone(),
+    );
+    registry.register(
+        "worker_realtime_leases",
+        "Current realtime leases owned by a worker.",
+        worker_realtime.clone(),
+    );
+    registry.register(
+        "worker_backfill_leases",
+        "Current backfill leases owned by a worker.",
+        worker_backfills.clone(),
     );
     registry.register(
         "readiness",
@@ -67,6 +100,23 @@ pub fn render(profiles: &[IngesterProfile], ready: bool) -> Result<String> {
                     .last_persisted_at
                     .map_or(0, |timestamp| timestamp.timestamp()),
             );
+    }
+    for allocation in allocations {
+        let labels = WorkerLabels {
+            worker_id: allocation.worker_id.clone(),
+        };
+        worker_capacity
+            .get_or_create(&labels)
+            .set(i64::from(allocation.capacity_units));
+        worker_allocated
+            .get_or_create(&labels)
+            .set(allocation.allocated_units);
+        worker_realtime
+            .get_or_create(&labels)
+            .set(allocation.realtime_leases);
+        worker_backfills
+            .get_or_create(&labels)
+            .set(allocation.backfill_leases);
     }
 
     let mut body = String::new();
@@ -120,7 +170,7 @@ mod tests {
             updated_at: persisted_at,
         };
 
-        let rendered = render(&[profile], true).expect("metrics render");
+        let rendered = render(&[profile], &[], true).expect("metrics render");
 
         assert!(rendered.contains("market_data_ingester_liveness 1"));
         assert!(rendered.contains("market_data_ingester_readiness 1"));
@@ -176,7 +226,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let rendered = render(&profiles, true).expect("metrics render");
+        let rendered = render(&profiles, &[], true).expect("metrics render");
         assert_eq!(
             rendered
                 .matches("market_data_ingester_strategy_state{")

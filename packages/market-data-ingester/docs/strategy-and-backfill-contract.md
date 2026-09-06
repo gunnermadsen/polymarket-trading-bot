@@ -19,6 +19,18 @@ Both images are built from this package and run the same `ingester` binary with 
 8. Strategy deployment is additive: deploy a new `ingester-worker` image under a deployment identifier, wait for registration, optionally target that deployment through the API, then retire old workers after their leases drain.
 9. Historical legacy tables remain read-only until every row and lineage record has been reconciled in the canonical ledger. They are not scheduling inputs and must not be deleted as part of strategy work.
 
+## Worker allocation contract
+
+- Realtime strategies are not sharded, and an `ingester-worker` may own at most one current realtime strategy lease.
+- Every worker registers allocation contract version 1, a positive capacity-unit budget, and a realtime-slot limit of exactly one.
+- Scheduling weights and isolation classes are execution metadata. They do not change dataset, request, checkpoint, or streaming contract versions.
+- Realtime profile acquisition and backfill assignment lock the same `ingester.workers` row before evaluating current unexpired leases. Capacity validation and lease mutation commit in the same transaction.
+- Polymarket orderbooks and Binance spot L2 are latency-critical realtime workloads and cannot share a worker with a backfill shard. Standard realtime workloads may share only when the combined allocation fits the worker budget.
+- PMXT Polymarket orderbook archive work is exclusive. Heavy and exclusive backfills cannot be admitted when their allocation would exceed capacity.
+- Capacity rejection leaves a backfill shard queued and does not stop, disable, or mutate a realtime strategy. Expired or released leases restore capacity automatically.
+- `ingester.backfill_jobs` remains the sole job ledger, `ingester-master` remains the sole backfill scheduler/API, and `ingester-worker` remains the sole worker runtime.
+- The gRPC outbound stream, provider collection paths, canonical persistence, and strategy-owned deterministic sharding are outside this allocation contract and remain unchanged.
+
 ## Canonical dataset contract
 
 A strategy identifies how data is collected; it does not define the data model. Every strategy is bound to exactly one `DatasetKey` in `strategies/datasets.rs`. Compatible realtime and backfill strategies bind to the same dataset. A strategy must not define an alternative dataset identity because its transport, provider endpoint, or execution mode differs.
