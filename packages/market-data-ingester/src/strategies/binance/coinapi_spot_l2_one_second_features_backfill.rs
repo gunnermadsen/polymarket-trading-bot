@@ -23,7 +23,7 @@ use crate::strategies::backfill_support;
 
 pub const STRATEGY_KEY: &str = "coinapi_binance_spot_btcusdt_l2_one_second_features_backfill";
 const ARTIFACT_KEY: &str = "binance_spot_btcusdt_l2_one_second_features";
-const TARGET: &str = "polymarket.binance_spot_btcusdt_l2_one_second_features";
+const TARGET: &str = "market_data.binance_spot_btcusdt_l2_one_second_features";
 const PROVIDER: &str = "coinapi";
 const SYMBOL: &str = "BTCUSDT";
 const COINAPI_SYMBOL: &str = "BINANCE_SPOT_BTC_USDT";
@@ -189,7 +189,7 @@ async fn execute(
     let source_snapshot_count = snapshots.len();
     let (states, rejected) = select_states(snapshots)?;
     let existing: BTreeSet<DateTime<Utc>> = sqlx::query_scalar(
-        "SELECT second_start FROM polymarket.binance_spot_btcusdt_l2_one_second_features WHERE symbol=$1 AND second_start >= $2 AND second_start < $3",
+        "SELECT second_start FROM market_data.binance_spot_btcusdt_l2_one_second_features WHERE symbol=$1 AND second_start >= $2 AND second_start < $3",
     )
     .bind(SYMBOL)
     .bind(shard.range_start)

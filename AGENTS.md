@@ -162,6 +162,8 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 ## Data artifacts
 - Store all backtesting and model-training data only in Parquet format, including weather-model predictions and Kraken futures test data.
+- Direct Chainlink Data Streams reference prices use only `market_data.chainlink_btcusd_reference_prices`; PMData reference prices use only `market_data.pmdata_chainlink_btcusd_reference_prices`. Strategies must call the corresponding shared persistence function and must not issue table-specific insert SQL.
+- A one-off historical drain is copy-only: it may read source tables and write canonical Parquet, but it must not mutate its database sources. Source removal happens only through a separately guarded database migration after complete manifest validation.
 
 # Database and migrations
 - all non trading process database mutations or changes must be executed through database migrations.

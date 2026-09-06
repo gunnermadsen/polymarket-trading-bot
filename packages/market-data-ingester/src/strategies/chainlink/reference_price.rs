@@ -22,7 +22,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -33,7 +33,9 @@ use crate::{
         StrategyError, StrategyErrorKind,
     },
     persistence::{
-        ArtifactBatch, ArtifactRepository, NewCaptureArtifact, ProfileRepository, StrategyProgress,
+        insert_chainlink_reference_prices, ArtifactBatch, ArtifactRepository,
+        ChainlinkReferencePriceWrite, NewCaptureArtifact, ProfileRepository,
+        ReferencePriceArtifact, StrategyProgress,
     },
     runtime::{StrategyFactory, StrategyFactoryError},
 };
@@ -44,7 +46,6 @@ pub const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 pub const API_KEY_ENV: &str = "MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_KEY";
 pub const API_SECRET_ENV: &str = "MARKET_DATA_INGESTER_CHAINLINK_DATA_STREAMS_API_SECRET";
 
-const SOURCE: &str = "chainlink_data_streams";
 const DEFAULT_REST_BASE_URL: &str = "https://api.dataengine.chain.link";
 const BTCUSD_FEED_ID: &str = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8";
 const MAX_HTTP_RESPONSE_BYTES: usize = 4 * 1_048_576;
@@ -311,12 +312,6 @@ struct StoredReferencePrice {
     ask: Decimal,
     provider_available_at: Option<DateTime<Utc>>,
     payload_sha256: String,
-}
-
-#[derive(Debug, FromRow)]
-struct InsertedReferencePrice {
-    source_timestamp: DateTime<Utc>,
-    report_sha256: String,
 }
 
 #[async_trait]
@@ -1681,39 +1676,36 @@ impl ChainlinkBtcusdReferencePriceStrategy {
     ) -> Result<PersistedBatch, StrategyError> {
         let mut batch = PersistedBatch::default();
         for chunk in observations.chunks(MAX_INSERT_ROWS) {
-            let mut query = QueryBuilder::<Postgres>::new(
-                "INSERT INTO market_data.chainlink_btcusd_reference_prices (\
-                 source, feed_id, source_timestamp, valid_from_timestamp, \
-                 price, bid, ask, provider_available_at, received_at, \
-                 report_sha256, payload_sha256, strategy_key, capture_artifact_id) ",
-            );
-            query.push_values(chunk, |mut row, observation| {
-                row.push_bind(SOURCE)
-                    .push_bind(&observation.feed_id)
-                    .push_bind(observation.source_timestamp)
-                    .push_bind(observation.valid_from_timestamp)
-                    .push_bind(observation.price)
-                    .push_bind(observation.bid)
-                    .push_bind(observation.ask)
-                    .push_bind(observation.provider_available_at)
-                    .push_bind(observation.received_at)
-                    .push_bind(&observation.report_sha256)
-                    .push_bind(&observation.payload_sha256)
-                    .push_bind(STRATEGY_KEY.as_str())
-                    .push_bind(artifact_id);
-            });
-            query.push(
-                " ON CONFLICT (feed_id, source_timestamp, report_sha256) DO NOTHING \
-                 RETURNING source_timestamp, report_sha256::text AS report_sha256",
-            );
-            let inserted = query
-                .build_query_as::<InsertedReferencePrice>()
-                .fetch_all(&mut **transaction)
-                .await
-                .map_err(database_error("chainlink_reference_insert_facts"))?;
+            let writes = chunk
+                .iter()
+                .map(|observation| ChainlinkReferencePriceWrite {
+                    feed_id: &observation.feed_id,
+                    source_timestamp: observation.source_timestamp,
+                    valid_from_timestamp: Some(observation.valid_from_timestamp),
+                    provider_available_at: observation.provider_available_at,
+                    received_at: observation.received_at,
+                    price: observation.price,
+                    bid: Some(observation.bid),
+                    ask: Some(observation.ask),
+                    report_sha256: &observation.report_sha256,
+                    payload_sha256: &observation.payload_sha256,
+                    artifact: ReferencePriceArtifact::Capture(artifact_id),
+                    expires_at: None,
+                    report_version: None,
+                    source_date: None,
+                    archive_row_number: None,
+                    report_hash_kind: "signed_report",
+                })
+                .collect::<Vec<_>>();
+            let inserted =
+                insert_chainlink_reference_prices(transaction, STRATEGY_KEY.as_str(), &writes)
+                    .await
+                    .map_err(database_error("chainlink_reference_insert_facts"))?;
             let inserted_identities = inserted
                 .into_iter()
-                .map(|row| (row.source_timestamp.timestamp(), row.report_sha256))
+                .map(|(source_timestamp, report_sha256)| {
+                    (source_timestamp.timestamp(), report_sha256)
+                })
                 .collect::<HashSet<_>>();
 
             for observation in chunk {
