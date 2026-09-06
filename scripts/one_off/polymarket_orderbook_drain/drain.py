@@ -40,10 +40,15 @@ SELECT sampled_at, source_timestamp, provider_available_at, received_at,
   best_ask, bid_depth, ask_depth, bids, asks, source_hash, book_sha256,
   sampling_policy, sampling_policy_sha256, payload_sha256, strategy_key,
   capture_artifact_id, ingested_at
-FROM market_data.polymarket_btc_five_minute_orderbook_snapshots
+FROM {relation}
 WHERE source_timestamp >= %s AND source_timestamp < %s
 ORDER BY source_timestamp, sampled_at, market_id, token_id
 """
+
+CANONICAL_RELATIONS = (
+    "polymarket.btc_five_minute_orderbook_snapshots",
+    "market_data.polymarket_btc_five_minute_orderbook_snapshots",
+)
 
 
 def connection() -> psycopg.Connection[Any]:
@@ -71,6 +76,13 @@ def rows(cursor: psycopg.Cursor[Any], query: str, start: datetime, end: datetime
         yield from batch
 
 
+def canonical_relation(db: psycopg.Connection[Any]) -> str:
+    for relation in CANONICAL_RELATIONS:
+        if db.execute("SELECT to_regclass(%s)", (relation,)).fetchone()["to_regclass"] is not None:
+            return relation
+    raise RuntimeError("canonical Polymarket orderbook relation does not exist")
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -79,7 +91,9 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def drain_hour(db: psycopg.Connection[Any], root: Path, start: datetime) -> dict[str, Any]:
+def drain_hour(
+    db: psycopg.Connection[Any], root: Path, start: datetime, canonical: str
+) -> dict[str, Any]:
     end = start + timedelta(hours=1)
     directory = root / f"date={start:%Y-%m-%d}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -100,9 +114,9 @@ def drain_hour(db: psycopg.Connection[Any], root: Path, start: datetime) -> dict
             if row["condition_id"] is None or row["outcome"] is None:
                 unmapped += 1
             records.append(normalize_legacy(row))
-        for row in rows(cursor, CANONICAL_QUERY, start, end):
+        for row in rows(cursor, CANONICAL_QUERY.format(relation=canonical), start, end):
             source_counts["canonical"] += 1
-            records.append(normalize_canonical(row))
+            records.append(normalize_canonical(row, source_relation=canonical))
     if unmapped:
         raise RuntimeError(f"{unmapped} legacy records cannot be mapped in {start.isoformat()}")
 
@@ -153,6 +167,36 @@ def hour_floor(value: datetime) -> datetime:
     return value.replace(minute=0, second=0, microsecond=0)
 
 
+def refresh_root_manifest(root: Path) -> dict[str, Any]:
+    partitions = [
+        json.loads(path.read_text())
+        for path in sorted(root.glob("date=*/hour=*.manifest.json"))
+    ]
+    if not partitions:
+        raise RuntimeError("no partition manifests found")
+    totals = {
+        key: sum(partition[key] for partition in partitions)
+        for key in ("source_total", "duplicate_count", "output_count", "file_size_bytes")
+    }
+    source_counts = {
+        key: sum(partition["source_counts"][key] for partition in partitions)
+        for key in ("legacy", "canonical")
+    }
+    manifest = {
+        "contract_version": CONTRACT_VERSION,
+        "window_start": min(partition["window_start"] for partition in partitions),
+        "window_end": max(partition["window_end"] for partition in partitions),
+        "partition_count": len(partitions),
+        "source_counts": source_counts,
+        **totals,
+        "partitions": [partition["file"] for partition in partitions],
+    }
+    temporary = root / "manifest.json.partial"
+    temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    temporary.replace(root / "manifest.json")
+    return manifest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Drain Polymarket orderbook tables to canonical Parquet")
     parser.add_argument("--output", required=True, type=Path)
@@ -164,25 +208,16 @@ def main() -> None:
         parser.error("--end must be after --start")
     args.output.mkdir(parents=True, exist_ok=True)
     totals = {"source_total": 0, "duplicate_count": 0, "output_count": 0, "file_size_bytes": 0}
-    partitions = []
     with connection() as db:
+        canonical = canonical_relation(db)
         current = start
         while current < end:
-            manifest = drain_hour(db, args.output, current)
-            partitions.append(manifest)
+            manifest = drain_hour(db, args.output, current, canonical)
             for key in totals:
                 totals[key] += manifest[key]
             print(json.dumps({"completed": current.isoformat(), **totals}), flush=True)
             current += timedelta(hours=1)
-    run_manifest = {
-        "contract_version": CONTRACT_VERSION,
-        "window_start": start.isoformat(),
-        "window_end": end.isoformat(),
-        "partition_count": len(partitions),
-        **totals,
-        "partitions": [item["file"] for item in partitions],
-    }
-    (args.output / "manifest.json").write_text(json.dumps(run_manifest, indent=2, sort_keys=True) + "\n")
+    refresh_root_manifest(args.output)
 
 
 if __name__ == "__main__":

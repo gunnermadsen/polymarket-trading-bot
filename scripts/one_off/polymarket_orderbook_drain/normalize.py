@@ -88,7 +88,9 @@ def normalize_legacy(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def normalize_canonical(row: dict[str, Any]) -> dict[str, Any]:
+def normalize_canonical(
+    row: dict[str, Any], *, source_relation: str
+) -> dict[str, Any]:
     result = dict(row)
     for key in ("sampled_at", "source_timestamp", "provider_available_at", "received_at", "window_start", "window_end", "ingested_at"):
         result[key] = _utc(result[key])
@@ -102,7 +104,7 @@ def normalize_canonical(row: dict[str, Any]) -> dict[str, Any]:
         result["sampling_policy_sha256"],
     ))
     result.update({
-        "archive_source_relation": "market_data.polymarket_btc_five_minute_orderbook_snapshots",
+        "archive_source_relation": source_relation,
         "archive_source_record_id": source_record_id,
         "archive_source_contract": "canonical-sampled-snapshot-v1",
     })

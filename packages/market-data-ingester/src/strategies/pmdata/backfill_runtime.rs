@@ -7,6 +7,10 @@ use super::{
 };
 use crate::{
     domain::{BackfillContext, BackfillExecutionError, BackfillOutcome, BackfillShard},
+    persistence::{
+        insert_pmdata_chainlink_reference_prices, ChainlinkReferencePriceWrite,
+        ReferencePriceArtifact,
+    },
     strategies::{backfill_support, binance::archive_support::ArchiveCancellation},
 };
 use serde_json::json;
@@ -129,7 +133,7 @@ pub async fn execute_refprice(
         &logical_key,
         PMDATA_REFPRICE_PROVIDER,
         &source_uri,
-        "market_data.chainlink_btcusd_reference_prices",
+        "market_data.pmdata_chainlink_btcusd_reference_prices",
     )
     .await?;
     let archive = config
@@ -151,6 +155,7 @@ pub async fn execute_refprice(
         &records,
         &archive.sha256,
         archive.bytes,
+        strategy_key,
     )
     .await?;
     Ok(backfill_support::outcome(
@@ -220,6 +225,7 @@ async fn persist_refprice(
     records: &[PmdataChainlinkBtcusdRefpriceRecord],
     checksum: &str,
     bytes: u64,
+    strategy_key: &str,
 ) -> Result<(), BackfillExecutionError> {
     let mut tx = context
         .pool
@@ -228,32 +234,28 @@ async fn persist_refprice(
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
     for chunk in records.chunks(1_000) {
-        let mut query=QueryBuilder::<Postgres>::new("INSERT INTO market_data.chainlink_btcusd_reference_prices (source,feed_id,source_timestamp,valid_from_timestamp,provider_available_at,received_at,price,bid,ask,report_sha256,payload_sha256,strategy_key,capture_artifact_id,expires_at,report_version,source_date,archive_row_number,backfill_artifact_id,report_hash_kind) ");
-        query.push_values(chunk, |mut row, r| {
-            row.push_bind("pmdata_chainlink_streams")
-                .push_bind("0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8")
-                .push_bind(r.source_timestamp)
-                .push_bind(r.valid_from_timestamp)
-                .push_bind(r.provider_received_at)
-                .push_bind(r.provider_received_at)
-                .push_bind(r.price)
-                .push_bind(r.bid)
-                .push_bind(r.ask)
-                .push_bind(&r.canonical_row_sha256)
-                .push_bind(&r.canonical_row_sha256)
-                .push_bind("chainlink_btcusd_reference_price")
-                .push_bind(Option::<uuid::Uuid>::None)
-                .push_bind(r.expires_at)
-                .push_bind(&r.report_version)
-                .push_bind(r.source_date)
-                .push_bind(r.archive_row_number)
-                .push_bind(artifact_id)
-                .push_bind("canonical_archive_row");
-        });
-        query.push(" ON CONFLICT DO NOTHING");
-        query
-            .build()
-            .execute(&mut *tx)
+        let writes = chunk
+            .iter()
+            .map(|r| ChainlinkReferencePriceWrite {
+                feed_id: "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8",
+                source_timestamp: r.source_timestamp,
+                valid_from_timestamp: r.valid_from_timestamp,
+                provider_available_at: Some(r.provider_received_at),
+                received_at: r.provider_received_at,
+                price: r.price,
+                bid: r.bid,
+                ask: r.ask,
+                report_sha256: &r.canonical_row_sha256,
+                payload_sha256: &r.canonical_row_sha256,
+                artifact: ReferencePriceArtifact::Backfill(artifact_id),
+                expires_at: r.expires_at,
+                report_version: r.report_version.as_deref(),
+                source_date: Some(r.source_date),
+                archive_row_number: Some(r.archive_row_number),
+                report_hash_kind: "canonical_archive_row",
+            })
+            .collect::<Vec<_>>();
+        insert_pmdata_chainlink_reference_prices(&mut tx, strategy_key, &writes)
             .await
             .map_err(backfill_support::database_error)?;
     }

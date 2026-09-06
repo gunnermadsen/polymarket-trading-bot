@@ -237,6 +237,7 @@ pub enum DatasetKey {
     BinanceSpotL2OneSecondFeatures,
     BinanceFuturesL2OneSecondFeatures,
     ChainlinkBtcusdReferencePrices,
+    PmdataChainlinkBtcusdReferencePrices,
     ChainlinkBtcusdOneMinuteCandles,
     PolygonChainlinkBtcusdOracleRounds,
     PmdataChainlinkBtcusdTwap,
@@ -256,6 +257,9 @@ impl DatasetKey {
                 "binance_futures_btcusdt_l2_one_second_features"
             }
             Self::ChainlinkBtcusdReferencePrices => "chainlink_btcusd_reference_prices",
+            Self::PmdataChainlinkBtcusdReferencePrices => {
+                "pmdata_chainlink_btcusd_reference_prices"
+            }
             Self::ChainlinkBtcusdOneMinuteCandles => "chainlink_btcusd_one_minute_candles",
             Self::PolygonChainlinkBtcusdOracleRounds => "polygon_chainlink_btcusd_oracle_rounds",
             Self::PmdataChainlinkBtcusdTwap => "pmdata_chainlink_btcusd_twap",
@@ -459,6 +463,33 @@ pub const CONTRACTS: &[DatasetContract] = &[
         ],
     ),
     contract(
+        DatasetKey::PmdataChainlinkBtcusdReferencePrices,
+        "market_data.pmdata_chainlink_btcusd_reference_prices",
+        &["source", "feed_id", "source_timestamp", "report_sha256"],
+        &[
+            "source",
+            "feed_id",
+            "source_timestamp",
+            "valid_from_timestamp",
+            "provider_available_at",
+            "received_at",
+            "price",
+            "bid",
+            "ask",
+            "report_sha256",
+            "payload_sha256",
+            "strategy_key",
+            "capture_artifact_id",
+            "ingested_at",
+            "expires_at",
+            "report_version",
+            "source_date",
+            "archive_row_number",
+            "backfill_artifact_id",
+            "report_hash_kind",
+        ],
+    ),
+    contract(
         DatasetKey::ChainlinkBtcusdOneMinuteCandles,
         "market_data.chainlink_btcusd_one_minute_candles",
         &["source", "symbol", "open_timestamp"],
@@ -557,7 +588,7 @@ pub const CONTRACTS: &[DatasetContract] = &[
     ),
     contract(
         DatasetKey::PolymarketBtcFiveMinuteOrderbookSnapshots,
-        "market_data.polymarket_btc_five_minute_orderbook_snapshots",
+        "polymarket.btc_five_minute_orderbook_snapshots",
         &["source", "token_id", "sampled_at"],
         &[
             "sampled_at",

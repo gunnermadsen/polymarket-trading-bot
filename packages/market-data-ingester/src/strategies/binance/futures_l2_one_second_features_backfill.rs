@@ -9,7 +9,7 @@ use crate::strategies::backfill_support;
 
 pub const STRATEGY_KEY: &str = "binance_futures_btcusdt_l2_one_second_features_backfill";
 const LEGACY_KEY: &str = "binance_btcusdt_l2_one_second_features";
-const TARGET: &str = "polymarket.binance_btcusdt_l2_one_second_features";
+const TARGET: &str = "market_data.binance_futures_btcusdt_l2_one_second_features";
 
 pub struct BinanceFuturesL2OneSecondFeaturesBackfill {
     descriptor: StrategyDescriptor,
