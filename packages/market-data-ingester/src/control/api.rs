@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
+    coverage::{self, CoverageTarget},
     domain::{
         BackfillFailureKind, BackfillOutcome, BackfillRequest, DesiredState, DrainRequest,
         IngesterProfile, IngesterStrategyKey,
@@ -79,6 +80,7 @@ impl ControlApi {
             .route("/drains/:job_id", get(get_drain))
             .route("/drains/:job_id/cancel", post(cancel_drain))
             .route("/drains/:job_id/retry", post(retry_drain))
+            .route("/datasets/coverage", get(dataset_coverage))
             .route("/workers", get(list_workers))
             .route("/stream/routes", post(resolve_stream_routes))
             .route("/internal/workers/register", post(register_worker))
@@ -134,6 +136,33 @@ impl ControlApi {
             .await
             .context("market-data ingester API failed")
     }
+}
+
+async fn dataset_coverage(
+    State(state): State<ApiState>,
+) -> Result<Json<coverage::CoverageReport>, ApiError> {
+    let backfill_keys = state
+        .registry
+        .backfills()
+        .map(|strategy| strategy.descriptor().strategy_key.to_string())
+        .collect::<BTreeSet<_>>();
+    let targets = state
+        .registry
+        .drains()
+        .map(|strategy| {
+            let descriptor = strategy.descriptor();
+            let candidate = format!("{}_backfill", descriptor.strategy_key);
+            CoverageTarget {
+                product_key: descriptor.strategy_key.to_string(),
+                relation: descriptor.relation.to_string(),
+                backfill_strategy_key: backfill_keys.contains(&candidate).then_some(candidate),
+            }
+        })
+        .collect();
+    coverage::detect(state.profiles.pool(), targets)
+        .await
+        .map(Json)
+        .map_err(ApiError::internal)
 }
 
 #[derive(Clone)]
