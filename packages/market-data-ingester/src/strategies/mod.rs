@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    domain::BackfillWorkerStrategy,
+    domain::{BackfillWorkerStrategy, DrainWorkerStrategy},
     runtime::{StrategyFactory, StrategyFactoryError, StrategyRegistry},
 };
 
@@ -11,6 +11,7 @@ mod backfill_support;
 pub mod binance;
 pub mod chainlink;
 mod datasets;
+pub mod drains;
 pub mod economic;
 pub mod kraken;
 pub mod pmdata;
@@ -235,7 +236,59 @@ pub fn registry() -> Result<StrategyRegistry, StrategyFactoryError> {
                 .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
         ),
     ];
-    StrategyRegistry::from_factories(factories)?.with_backfills(backfills)
+    let drains: Vec<Arc<dyn DrainWorkerStrategy>> = vec![
+        Arc::new(
+            drains::BinanceAggregateTradesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolymarketOrderbooksDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BinanceOneSecondOhlcvDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PmdataChainlinkReferencePricesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PmdataChainlinkTwapDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolymarketChainlinkTwapDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::ReferencePriceTicksDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::ChainlinkOneMinuteCandlesDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BtcCapacityExecutionSnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BtcFeatureSnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::BinanceSpotL2SnapshotsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+        Arc::new(
+            drains::PolygonChainlinkOracleRoundsDrain::from_environment()
+                .map_err(|error| StrategyFactoryError::Construction(error.to_string()))?,
+        ),
+    ];
+    StrategyRegistry::from_factories(factories)?
+        .with_backfills(backfills)?
+        .with_drains(drains)
 }
 
 #[cfg(test)]
@@ -296,6 +349,38 @@ mod tests {
         ] {
             assert!(backfills.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn drain_is_opt_in_and_does_not_extend_backfill_contracts() {
+        let registry = registry().unwrap();
+        let drains = registry
+            .drains()
+            .map(|strategy| strategy.descriptor().strategy_key.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            drains,
+            vec![
+                "binance_spot_btcusdt_aggregate_trades",
+                "binance_spot_btcusdt_l2_snapshots",
+                "binance_spot_btcusdt_one_second_ohlcv",
+                "chainlink_btcusd_one_minute_candles",
+                "pmdata_chainlink_btcusd_reference_price",
+                "pmdata_chainlink_btcusd_twap",
+                "polygon_chainlink_btcusd_oracle_rounds",
+                "polymarket_btc_capacity_execution_snapshots",
+                "polymarket_btc_feature_snapshots",
+                "polymarket_btc_five_minute_orderbooks",
+                "polymarket_chainlink_btcusd_twap",
+                "polymarket_reference_price_ticks",
+            ]
+        );
+        assert!(registry
+            .backfill("binance_spot_btcusdt_aggregate_trades")
+            .is_none());
+        assert!(registry
+            .backfill("binance_spot_btcusdt_aggregate_trades_backfill")
+            .is_some());
     }
 
     #[test]
