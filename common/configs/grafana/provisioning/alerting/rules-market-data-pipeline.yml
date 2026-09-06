@@ -382,7 +382,7 @@ groups:
           description: Source connection readiness or valid provider event age exceeded the trading input safety bound.
         labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
         dashboardUid: market-data-pipeline
-        panelId: 11
+        panelId: 27
         isPaused: false
       - uid: mdp_rtds_reconnect_storm
         title: Polymarket RTDS reconnect storm
@@ -417,5 +417,5 @@ groups:
           description: More than three provider reconnects occurred within ten minutes. Inspect the bounded reason label.
         labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
         dashboardUid: market-data-pipeline
-        panelId: 12
+        panelId: 28
         isPaused: false
