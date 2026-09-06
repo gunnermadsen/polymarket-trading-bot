@@ -27,7 +27,7 @@ const SPEC: RetainedDrainSpec = RetainedDrainSpec {
     table: "btc_feature_snapshots",
     retention_days: Some(14),
 };
-const BATCH_ROWS: usize = 100;
+const BATCH_ROWS: usize = 500;
 const COLUMNS: [&str; 39] = [
     "snapshot_id",
     "feature_as_of",
