@@ -4,9 +4,7 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
-  "links": [
-    {"title": "Ingester health", "type": "link", "url": "/d/market-data-ingester-health", "targetBlank": false}
-  ],
+  "links": [],
   "panels": [
     {
       "id": 1, "type": "stat", "title": "Worker Route Coverage", "description": "Active direct worker routes compared with the routes required by the deduplicated selector union.", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
@@ -563,6 +561,455 @@
           "editorMode": "code"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 19,
+      "panels": [],
+      "title": "Market Data Ingester Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Down"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "Live"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 64
+      },
+      "id": 20,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "market_data_ingester_liveness",
+          "instant": true,
+          "legendFormat": "Service",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Service Liveness",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Not ready"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "Ready"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 64
+      },
+      "id": 21,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "market_data_ingester_readiness",
+          "instant": true,
+          "legendFormat": "Supervisor",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Supervisor Readiness",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Unhealthy"
+                },
+                "1": {
+                  "color": "orange",
+                  "text": "Degraded"
+                },
+                "2": {
+                  "color": "green",
+                  "text": "Healthy"
+                },
+                "-1": {
+                  "color": "gray",
+                  "text": "Unknown"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": -1,
+          "max": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "gray",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "id": 22,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "2 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"healthy\"}) or 1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"degraded\"}) or 0 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unhealthy\"}) or -1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unknown\"})",
+          "instant": true,
+          "legendFormat": "{{strategy}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Current Strategy Health",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Unavailable"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "Available"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "id": 23,
+      "options": {
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "showValue": "never",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",observed_state=~\"running|degraded\"}) or on (strategy) (0 * max by (strategy) (market_data_ingester_strategy_state))",
+          "instant": false,
+          "legendFormat": "{{strategy}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Strategy Availability History",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 79
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "clamp_min(time() - market_data_ingester_strategy_last_persistence_timestamp_seconds, 0)",
+          "instant": false,
+          "legendFormat": "{{strategy}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Seconds Since Last Durable Persistence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "min": 0,
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 88
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "sum by (strategy, error_code) (count_over_time({service_name=\"ingester\",strategy=~\"^(binance_spot_btcusdt_aggregate_trades|binance_spot_btcusdt_one_second_ohlcv|binance_spot_btcusdt_l2_snapshots|binance_futures_btcusdt_open_interest|chainlink_btcusd_reference_price|chainlink_btcusd_one_minute_ohlc|polygon_chainlink_btcusd_oracle|polymarket_btc_five_minute_market_contracts|polymarket_btc_five_minute_orderbooks|polymarket_btc_five_minute_resolutions|polymarket_chainlink_btcusd_twap)$\",error_code=~\"^(binance_aggregate_trade_id_jump|binance_aggregate_trade_gap_unrecoverable|binance_one_second_kline_gap|binance_ohlcv_gap_unrecoverable|binance_l2_sequence_gap|binance_l2_invalid_sequence|binance_l2_invalid_snapshot_sequence|binance_l2_crossed_book|binance_l2_invalid_level|binance_l2_consumer_backpressure|binance_l2_websocket_closed|binance_l2_websocket_connect_failed|binance_l2_websocket_connect_timeout|binance_l2_websocket_eof|binance_l2_websocket_read_failed|binance_l2_websocket_read_timeout|binance_l2_websocket_write_failed|binance_l2_websocket_write_timeout|binance_l2_io_worker_stopped|binance_open_interest_interval_missing|chainlink_reference_http_request|chainlink_reference_http_retryable_status|chainlink_reference_read_response|chainlink_reference_pagination_budget_exhausted|chainlink_reference_response_too_large|chainlink_reference_decode_response|chainlink_reference_response_limit_exceeded|chainlink_reference_page_regressed|chainlink_reference_boundary_overlap_missing|chainlink_reference_boundary_saturated|chainlink_reference_invalid_page|chainlink_reference_nonmonotonic_page|chainlink_reference_duplicate_report|chainlink_reference_feed_mismatch|chainlink_reference_envelope_timestamp_mismatch|chainlink_reference_invalid_prices|chainlink_one_minute_candle_gap|polygon_finalized_head_regressed|polygon_finalized_checkpoint_reorg|polygon_removed_oracle_log|polygon_oracle_log_block_hash_mismatch|polygon_durable_log_missing_from_canonical_overlap|polygon_canonical_log_changed|chainlink_aggregator_round_gap|polymarket_gamma_contract_window_unavailable|polymarket_gamma_contract_permanently_absent|polymarket_sampling_bucket_gap|polymarket_clob_bootstrap_timeout|polymarket_sampling_persistence_backpressure|polymarket_clob_consumer_backpressure|polymarket_clob_closed|polymarket_clob_connect_failed|polymarket_clob_connect_timeout|polymarket_clob_eof|polymarket_clob_read_failed|polymarket_clob_read_timeout|polymarket_clob_write_failed|polymarket_clob_write_timeout|polymarket_clob_pong_timeout|polymarket_clob_io_worker_stopped|polymarket_resolution_unavailable|polymarket_resolution_terminal_evidence_absent|polymarket_resolution_websocket_closed|polymarket_resolution_websocket_connect_failed|polymarket_resolution_websocket_connect_timeout|polymarket_resolution_websocket_eof|polymarket_resolution_websocket_read_failed|polymarket_resolution_websocket_read_timeout|polymarket_resolution_websocket_pong_timeout|polymarket_resolution_websocket_worker_stopped|polymarket_resolution_clob_request_failed|polymarket_resolution_gamma_request_failed|polymarket_twap_transport_gap|polymarket_rtds_thirty_stale|polymarket_rtds_sixty_stale)$\"}[5m]))",
+          "legendFormat": "{{strategy}} · {{error_code}}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Selected Critical Failure Evidence (5m)",
+      "type": "timeseries"
     }
   ],
   "refresh": "10s",
@@ -600,5 +1047,5 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 6
+  "version": 7
 }
