@@ -34,6 +34,10 @@ Source-specific parsers may use private wire types, but normalized records share
 
 Realtime and backfill remain separate strategy implementations. They must normalize equivalent source observations to the same dataset contract. `strategy_key` is lineage, not record identity, so records collected through different modes can converge and deduplicate on the dataset natural key.
 
+Direct Chainlink Data Streams reports and PMData reference-price archive rows are separate products even when their timestamps and prices coincide. Direct realtime and direct archive backfill strategies bind to `ChainlinkBtcusdReferencePrices` and persist only through the shared direct repository into `market_data.chainlink_btcusd_reference_prices`. The PMData backfill binds to `PmdataChainlinkBtcusdReferencePrices` and persists only through the PMData repository into `market_data.pmdata_chainlink_btcusd_reference_prices`. Neither strategy may substitute another strategy key, write the other product's table, or issue its own insert SQL.
+
+Historical drain tools are copy-only. They normalize source rows to the exact canonical table-shaped Parquet contract, keep provider products separate, and record complete row accounting and file hashes. They never delete, update, rename, or truncate source relations. A legacy table may be removed only by a guarded migration after the final archive watermark and manifest validation are established.
+
 ## API
 
 All control endpoints except health and metrics require the administrative bearer token.

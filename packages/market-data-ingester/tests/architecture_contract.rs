@@ -327,6 +327,66 @@ fn binance_open_interest_strategies_share_the_canonical_table() {
 }
 
 #[test]
+fn polymarket_orderbooks_have_one_final_physical_table_contract() {
+    let root = repository_root();
+    let dataset =
+        fs::read_to_string(root.join("packages/market-data-ingester/src/domain/dataset.rs"))
+            .unwrap();
+    let strategy = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/polymarket/orderbook_snapshots.rs"),
+    )
+    .unwrap();
+    let final_table = "polymarket.btc_five_minute_orderbook_snapshots";
+    let retired_table = "market_data.polymarket_btc_five_minute_orderbook_snapshots";
+    assert!(dataset.contains(final_table));
+    assert!(strategy.contains(final_table));
+    assert!(!dataset.contains(retired_table));
+    assert!(!strategy.contains(retired_table));
+
+    let migration = fs::read_to_string(root.join(
+        "packages/db-migrate/src/migrations/1788646000000-FinalizePolymarketOrderbookStorage.ts",
+    ))
+    .unwrap();
+    let cleanup = fs::read_to_string(root.join(
+        "packages/db-migrate/src/migrations/1788646001000-DropLegacyPolymarketOrderbookStorage.ts",
+    ))
+    .unwrap();
+    assert!(cleanup.contains("DROP TABLE ${LEGACY}"));
+    assert!(cleanup.contains("drop_chunks"));
+    assert!(migration.contains("must be fully stopped before table cutover"));
+    assert!(migration.contains("advanced beyond archived watermark"));
+}
+
+#[test]
+fn chainlink_reference_products_have_exclusive_persistence_boundaries() {
+    let root = repository_root();
+    let persistence = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/persistence/chainlink_reference_prices.rs"),
+    )
+    .unwrap();
+    assert!(persistence.contains("market_data.chainlink_btcusd_reference_prices"));
+    assert!(persistence.contains("market_data.pmdata_chainlink_btcusd_reference_prices"));
+
+    for relative in [
+        "packages/market-data-ingester/src/strategies/chainlink/reference_price.rs",
+        "packages/market-data-ingester/src/strategies/chainlink/reference_ticks_backfill.rs",
+        "packages/market-data-ingester/src/strategies/pmdata/backfill_runtime.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(!source.contains("INSERT INTO market_data.chainlink_btcusd_reference_prices"));
+        assert!(
+            !source.contains("INSERT INTO market_data.pmdata_chainlink_btcusd_reference_prices")
+        );
+        assert!(!source.contains("INSERT INTO polymarket.chainlink_btcusd_archive_ticks"));
+    }
+
+    let bindings =
+        fs::read_to_string(root.join("packages/market-data-ingester/src/strategies/datasets.rs"))
+            .unwrap();
+    assert!(bindings.contains("DatasetKey::PmdataChainlinkBtcusdReferencePrices"));
+}
+
+#[test]
 fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() {
     let root = repository_root();
     let repository = fs::read_to_string(
@@ -353,6 +413,52 @@ fn aggregate_trade_persistence_has_one_repository_and_no_legacy_runtime_table() 
             );
         }
     }
+}
+
+#[test]
+fn binance_l2_feature_strategies_have_one_destination_per_market() {
+    let root = repository_root();
+    let spot = "market_data.binance_spot_btcusdt_l2_one_second_features";
+    let futures = "market_data.binance_futures_btcusdt_l2_one_second_features";
+    let files = [
+        (
+            "packages/market-data-ingester/src/strategies/binance/spot_l2_one_second_features_backfill.rs",
+            spot,
+        ),
+        (
+            "packages/market-data-ingester/src/strategies/binance/coinapi_spot_l2_one_second_features_backfill.rs",
+            spot,
+        ),
+        (
+            "packages/market-data-ingester/src/strategies/binance/futures_l2_one_second_features_backfill.rs",
+            futures,
+        ),
+    ];
+    for (relative, canonical) in files {
+        let source = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(source.contains(canonical), "{relative} omits {canonical}");
+        assert!(!source.contains("polymarket.binance_spot_btcusdt_l2_one_second_features"));
+        assert!(!source.contains("polymarket.binance_btcusdt_l2_one_second_features"));
+        assert!(!source.contains("_staging"));
+    }
+    let persistence = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/binance/l2_backfill_support.rs"),
+    )
+    .unwrap();
+    assert!(!persistence.contains("_staging"));
+    assert!(persistence.contains("ON CONFLICT (symbol,second_start) DO NOTHING"));
+}
+
+#[test]
+fn polymarket_execution_snapshots_have_one_physical_write_destination() {
+    let root = repository_root();
+    let support = fs::read_to_string(
+        root.join("packages/market-data-ingester/src/strategies/polymarket/backfill/support.rs"),
+    )
+    .unwrap();
+    assert!(support.contains("INSERT INTO polymarket.btc_market_capacity_execution_snapshots"));
+    assert!(!support.contains("INSERT INTO polymarket.btc_market_execution_snapshots"));
+    assert!(!support.contains("INSERT INTO polymarket.btc_market_decision_execution_snapshots"));
 }
 
 #[test]

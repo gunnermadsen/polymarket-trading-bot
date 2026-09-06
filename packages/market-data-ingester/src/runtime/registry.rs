@@ -5,7 +5,8 @@ use sqlx::PgPool;
 use thiserror::Error;
 
 use crate::domain::{
-    BackfillWorkerStrategy, IngesterProfile, IngesterStrategyKey, RealtimeWorkerStrategy,
+    BackfillWorkerStrategy, DrainWorkerStrategy, IngesterProfile, IngesterStrategyKey,
+    RealtimeWorkerStrategy,
 };
 
 pub trait StrategyFactory: Send + Sync {
@@ -23,6 +24,7 @@ pub trait StrategyFactory: Send + Sync {
 pub struct StrategyRegistry {
     factories: Arc<BTreeMap<IngesterStrategyKey, Arc<dyn StrategyFactory>>>,
     backfills: Arc<BTreeMap<String, Arc<dyn BackfillWorkerStrategy>>>,
+    drains: Arc<BTreeMap<String, Arc<dyn DrainWorkerStrategy>>>,
 }
 
 impl StrategyRegistry {
@@ -39,7 +41,29 @@ impl StrategyRegistry {
         Ok(Self {
             factories: Arc::new(registered),
             backfills: Arc::new(BTreeMap::new()),
+            drains: Arc::new(BTreeMap::new()),
         })
+    }
+
+    pub fn with_drains(
+        mut self,
+        strategies: impl IntoIterator<Item = Arc<dyn DrainWorkerStrategy>>,
+    ) -> Result<Self, StrategyFactoryError> {
+        let mut registered = BTreeMap::new();
+        for strategy in strategies {
+            let descriptor = strategy.descriptor();
+            if descriptor.strategy_key.trim().is_empty() || descriptor.contract_version <= 0 {
+                return Err(StrategyFactoryError::InvalidDrainDescriptor(
+                    "drain strategy key must be non-empty and contract version positive".into(),
+                ));
+            }
+            let key = descriptor.strategy_key.to_string();
+            if registered.insert(key.clone(), strategy).is_some() {
+                return Err(StrategyFactoryError::DuplicateDrainRegistration(key));
+            }
+        }
+        self.drains = Arc::new(registered);
+        Ok(self)
     }
 
     pub fn with_backfills(
@@ -77,6 +101,14 @@ impl StrategyRegistry {
         self.backfills.values()
     }
 
+    pub fn drain(&self, key: &str) -> Option<&Arc<dyn DrainWorkerStrategy>> {
+        self.drains.get(key)
+    }
+
+    pub fn drains(&self) -> impl Iterator<Item = &Arc<dyn DrainWorkerStrategy>> {
+        self.drains.values()
+    }
+
     pub fn validate_profile(&self, profile: &IngesterProfile) -> Result<(), StrategyFactoryError> {
         let factory = self
             .factory(profile.strategy_key)
@@ -98,8 +130,12 @@ pub enum StrategyFactoryError {
     DuplicateRegistration(IngesterStrategyKey),
     #[error("backfill strategy {0} is registered more than once")]
     DuplicateBackfillRegistration(String),
+    #[error("drain strategy {0} is registered more than once")]
+    DuplicateDrainRegistration(String),
     #[error("invalid strategy descriptor: {0}")]
     InvalidDescriptor(String),
+    #[error("invalid drain strategy descriptor: {0}")]
+    InvalidDrainDescriptor(String),
     #[error("strategy {0} is not compiled into this service")]
     Unsupported(IngesterStrategyKey),
     #[error("strategy {key} config schema mismatch: expected {expected}, received {actual}")]

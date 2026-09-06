@@ -2,6 +2,7 @@
 
 pub mod bootstrap;
 pub mod control;
+pub mod coverage;
 pub mod domain;
 pub mod persistence;
 pub mod runtime;

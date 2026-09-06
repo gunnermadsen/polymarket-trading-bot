@@ -10,7 +10,10 @@ use tracing::{info, warn};
 use crate::{
     control::{ControlApi, ControlReadiness},
     persistence::ProfileRepository,
-    runtime::{BackfillWorkerRuntime, StrategyRegistry, StrategySupervisor, SupervisorSettings},
+    runtime::{
+        BackfillWorkerRuntime, DrainWorkerRuntime, StrategyRegistry, StrategySupervisor,
+        SupervisorSettings,
+    },
     streaming::Publisher,
 };
 
@@ -154,8 +157,15 @@ impl Application {
             self.settings.service_instance.clone(),
             SupervisorSettings::default(),
         )?;
-        let backfills =
-            BackfillWorkerRuntime::from_environment(self.registry, self.strategy_pool.clone())?;
+        let backfills = BackfillWorkerRuntime::from_environment(
+            self.registry.clone(),
+            self.strategy_pool.clone(),
+        )?;
+        let drains = DrainWorkerRuntime::from_environment(
+            self.registry,
+            self.strategy_pool.clone(),
+            self.control_pool.clone(),
+        )?;
         let shutdown = CancellationToken::new();
         let publisher = Publisher::install(self.settings.service_instance.clone());
         info!(service_instance=%self.settings.service_instance, "ingester worker starting");
@@ -168,6 +178,16 @@ impl Application {
                     .run(realtime_shutdown, readiness_sender)
                     .await
                     .context("ingester realtime supervisor stopped"),
+            )
+        });
+        let drain_shutdown = shutdown.clone();
+        components.spawn(async move {
+            (
+                "drain worker",
+                drains
+                    .run(drain_shutdown)
+                    .await
+                    .context("ingester drain worker stopped"),
             )
         });
         let stream_shutdown = shutdown.clone();

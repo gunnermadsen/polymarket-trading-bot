@@ -224,6 +224,18 @@ services:
       CRYPTOHFT_BASE_URL: "https://api.cryptohftdata.com"
       COINAPI_API_ORIGIN: "https://api-ncsa.coinapi.io"
       INGESTER_BINANCE_CACHE_DIRECTORY: "/var/lib/binance-l2/binance-public"
+      INGESTER_BINANCE_AGG_TRADE_LAKE_ROOT: "/var/lib/binance-aggregate-trades"
+      INGESTER_POLYMARKET_ORDERBOOK_LAKE_ROOT: "/var/lib/polymarket-orderbooks"
+      INGESTER_BINANCE_ONE_SECOND_OHLCV_LAKE_ROOT: "/var/lib/binance-one-second-ohlcv"
+      INGESTER_PMDATA_CHAINLINK_REFERENCE_PRICE_LAKE_ROOT: "/var/lib/pmdata-chainlink-reference-prices"
+      INGESTER_PMDATA_CHAINLINK_TWAP_LAKE_ROOT: "/var/lib/pmdata-chainlink-twap"
+      INGESTER_POLYMARKET_CHAINLINK_TWAP_LAKE_ROOT: "/var/lib/polymarket-chainlink-twap"
+      INGESTER_REFERENCE_PRICE_TICKS_LAKE_ROOT: "/var/lib/reference-price-ticks"
+      INGESTER_CHAINLINK_ONE_MINUTE_CANDLES_LAKE_ROOT: "/var/lib/chainlink-one-minute-candles"
+      INGESTER_BTC_CAPACITY_EXECUTION_SNAPSHOTS_LAKE_ROOT: "/var/lib/btc-capacity-execution-snapshots"
+      INGESTER_BTC_FEATURE_SNAPSHOTS_LAKE_ROOT: "/var/lib/btc-feature-snapshots"
+      INGESTER_BINANCE_SPOT_L2_SNAPSHOTS_LAKE_ROOT: "/var/lib/binance-spot-l2-snapshots"
+      INGESTER_POLYGON_CHAINLINK_ORACLE_ROUNDS_LAKE_ROOT: "/var/lib/polygon-chainlink-oracle-rounds"
       INGESTER_CRYPTOHFT_ARCHIVE_ROOT: "/var/lib/binance-l2"
       INGESTER_CRYPTOHFT_TEMPORARY_DIRECTORY: "/var/lib/binance-l2/tmp"
       INGESTER_COINAPI_ARCHIVE_ROOT: "/var/lib/binance-l2/coinapi"
@@ -244,6 +256,18 @@ services:
     volumes:
       - ${WEATHER_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/temperature-expectancy}:/var/lib/weather
       - ${BINANCE_L2_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-l2}:/var/lib/binance-l2
+      - ${BINANCE_AGG_TRADE_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-aggregate-trades}:/var/lib/binance-aggregate-trades
+      - ${POLYMARKET_ORDERBOOK_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/orderbook-drain}:/var/lib/polymarket-orderbooks
+      - ${BINANCE_ONE_SECOND_OHLCV_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-one-second-ohlcv}:/var/lib/binance-one-second-ohlcv
+      - ${PMDATA_CHAINLINK_REFERENCE_PRICE_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/pmdata-chainlink-reference-prices}:/var/lib/pmdata-chainlink-reference-prices
+      - ${PMDATA_CHAINLINK_TWAP_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/pmdata-chainlink-twap}:/var/lib/pmdata-chainlink-twap
+      - ${POLYMARKET_CHAINLINK_TWAP_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/polymarket-chainlink-twap}:/var/lib/polymarket-chainlink-twap
+      - ${REFERENCE_PRICE_TICKS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/reference-price-ticks}:/var/lib/reference-price-ticks
+      - ${CHAINLINK_ONE_MINUTE_CANDLES_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/chainlink-one-minute-candles}:/var/lib/chainlink-one-minute-candles
+      - ${BTC_CAPACITY_EXECUTION_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/btc-capacity-execution-snapshots}:/var/lib/btc-capacity-execution-snapshots
+      - ${BTC_FEATURE_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/btc-feature-snapshots}:/var/lib/btc-feature-snapshots
+      - ${BINANCE_SPOT_L2_SNAPSHOTS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/binance-spot-l2-snapshots}:/var/lib/binance-spot-l2-snapshots
+      - ${POLYGON_CHAINLINK_ORACLE_ROUNDS_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/polygon-chainlink-oracle-rounds}:/var/lib/polygon-chainlink-oracle-rounds
       - ${KRAKEN_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/kraken-data}:/var/lib/kraken-data
       - ${FINANCIAL_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/global-financial-data}:/var/lib/financial-data
     depends_on:

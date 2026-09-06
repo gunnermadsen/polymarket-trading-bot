@@ -198,7 +198,6 @@ pub(super) async fn persist(
     bytes: u64,
     metadata: serde_json::Value,
 ) -> Result<(), BackfillExecutionError> {
-    let staging = format!("{target}_staging");
     let mut tx = context
         .pool
         .begin()
@@ -206,7 +205,7 @@ pub(super) async fn persist(
         .map_err(backfill_support::database_error)?;
     backfill_support::require_lease(&mut tx, context).await?;
     for chunk in records.chunks(BATCH_ROWS) {
-        let mut query = QueryBuilder::<Postgres>::new(format!("INSERT INTO {staging} (symbol,second_start,source_event_timestamp,provider_received_at,available_at,source_update_id,feature_schema_version,quality_status,midpoint,microprice,spread_bps,bid_depth_5,ask_depth_5,imbalance_5,bid_depth_10,ask_depth_10,imbalance_10,bid_depth_20,ask_depth_20,imbalance_20,bid_depth_slope_20,ask_depth_slope_20,bid_depth_concentration_20,ask_depth_concentration_20,bid_quote_replenishment_1s,ask_quote_replenishment_1s,bid_quote_churn_1s,ask_quote_churn_1s,midpoint_change_bps_1s,spread_bps_delta_1s,depth_20_change_bps_1s,imbalance_20_delta_1s,midpoint_change_bps_5s,spread_bps_delta_5s,depth_20_change_bps_5s,imbalance_20_delta_5s,midpoint_change_bps_15s,spread_bps_delta_15s,depth_20_change_bps_15s,imbalance_20_delta_15s,midpoint_change_bps_30s,spread_bps_delta_30s,depth_20_change_bps_30s,imbalance_20_delta_30s,midpoint_change_bps_60s,spread_bps_delta_60s,depth_20_change_bps_60s,imbalance_20_delta_60s,artifact_id) "));
+        let mut query = QueryBuilder::<Postgres>::new(format!("INSERT INTO {target} (symbol,second_start,source_event_timestamp,provider_received_at,available_at,source_update_id,feature_schema_version,quality_status,midpoint,microprice,spread_bps,bid_depth_5,ask_depth_5,imbalance_5,bid_depth_10,ask_depth_10,imbalance_10,bid_depth_20,ask_depth_20,imbalance_20,bid_depth_slope_20,ask_depth_slope_20,bid_depth_concentration_20,ask_depth_concentration_20,bid_quote_replenishment_1s,ask_quote_replenishment_1s,bid_quote_churn_1s,ask_quote_churn_1s,midpoint_change_bps_1s,spread_bps_delta_1s,depth_20_change_bps_1s,imbalance_20_delta_1s,midpoint_change_bps_5s,spread_bps_delta_5s,depth_20_change_bps_5s,imbalance_20_delta_5s,midpoint_change_bps_15s,spread_bps_delta_15s,depth_20_change_bps_15s,imbalance_20_delta_15s,midpoint_change_bps_30s,spread_bps_delta_30s,depth_20_change_bps_30s,imbalance_20_delta_30s,midpoint_change_bps_60s,spread_bps_delta_60s,depth_20_change_bps_60s,imbalance_20_delta_60s,artifact_id) "));
         query.push_values(chunk, |mut row, r| {
             row.push_bind(&r.symbol)
                 .push_bind(r.second_start)
@@ -258,30 +257,15 @@ pub(super) async fn persist(
                 .push_bind(r.imbalance_20_delta_60s)
                 .push_bind(artifact_id);
         });
-        query.push(" ON CONFLICT (artifact_id,symbol,second_start) DO NOTHING");
+        query.push(" ON CONFLICT (symbol,second_start) DO NOTHING");
         query
             .build()
             .execute(&mut *tx)
             .await
             .map_err(backfill_support::database_error)?;
     }
-    let count: i64 = sqlx::query_scalar(&format!(
-        "SELECT count(*)::bigint FROM {staging} WHERE artifact_id=$1"
-    ))
-    .bind(artifact_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(backfill_support::database_error)?;
-    if count
-        != i64::try_from(records.len())
-            .map_err(|_| backfill_support::integrity("record count overflow"))?
-    {
-        return Err(backfill_support::integrity(
-            "staged Binance L2 record count mismatch",
-        ));
-    }
-    let columns = "symbol,second_start,source_event_timestamp,provider_received_at,available_at,source_update_id,feature_schema_version,quality_status,midpoint,microprice,spread_bps,bid_depth_5,ask_depth_5,imbalance_5,bid_depth_10,ask_depth_10,imbalance_10,bid_depth_20,ask_depth_20,imbalance_20,bid_depth_slope_20,ask_depth_slope_20,bid_depth_concentration_20,ask_depth_concentration_20,bid_quote_replenishment_1s,ask_quote_replenishment_1s,bid_quote_churn_1s,ask_quote_churn_1s,midpoint_change_bps_1s,spread_bps_delta_1s,depth_20_change_bps_1s,imbalance_20_delta_1s,midpoint_change_bps_5s,spread_bps_delta_5s,depth_20_change_bps_5s,imbalance_20_delta_5s,midpoint_change_bps_15s,spread_bps_delta_15s,depth_20_change_bps_15s,imbalance_20_delta_15s,midpoint_change_bps_30s,spread_bps_delta_30s,depth_20_change_bps_30s,imbalance_20_delta_30s,midpoint_change_bps_60s,spread_bps_delta_60s,depth_20_change_bps_60s,imbalance_20_delta_60s,artifact_id";
-    sqlx::query(&format!("INSERT INTO {target} ({columns}) SELECT {columns} FROM {staging} WHERE artifact_id=$1 ORDER BY symbol,second_start ON CONFLICT (symbol,second_start) DO NOTHING")).bind(artifact_id).execute(&mut *tx).await.map_err(backfill_support::database_error)?;
+    let count = i64::try_from(records.len())
+        .map_err(|_| backfill_support::integrity("record count overflow"))?;
     backfill_support::complete_artifact(
         &mut tx,
         context,
@@ -296,11 +280,6 @@ pub(super) async fn persist(
         },
     )
     .await?;
-    sqlx::query(&format!("DELETE FROM {staging} WHERE artifact_id=$1"))
-        .bind(artifact_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backfill_support::database_error)?;
     tx.commit()
         .await
         .map_err(backfill_support::database_error)?;

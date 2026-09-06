@@ -59,7 +59,7 @@ pub const STRATEGY_DATASETS: &[StrategyDatasetBinding] = &[
     ),
     binding(
         "pmdata_chainlink_btcusd_refprice_backfill",
-        DatasetKey::ChainlinkBtcusdReferencePrices,
+        DatasetKey::PmdataChainlinkBtcusdReferencePrices,
     ),
     binding(
         "chainlink_btcusd_one_minute_ohlc",
@@ -144,10 +144,6 @@ mod tests {
             (
                 "chainlink_btcusd_reference_price",
                 "chainlink_btcusd_reference_ticks_backfill",
-            ),
-            (
-                "chainlink_btcusd_reference_price",
-                "pmdata_chainlink_btcusd_refprice_backfill",
             ),
             (
                 "chainlink_btcusd_one_minute_ohlc",
