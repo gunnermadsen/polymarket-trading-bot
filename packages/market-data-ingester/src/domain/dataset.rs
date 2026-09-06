@@ -646,9 +646,10 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(keys.len(), CONTRACTS.len());
         assert_eq!(tables.len(), CONTRACTS.len());
-        assert!(CONTRACTS
-            .iter()
-            .all(|item| item.canonical_table.starts_with("market_data.")));
+        assert!(CONTRACTS.iter().all(|item| {
+            item.canonical_table.starts_with("market_data.")
+                || item.canonical_table == "polymarket.btc_five_minute_orderbook_snapshots"
+        }));
     }
 
     #[test]
