@@ -104,6 +104,7 @@ pub fn start_writer(
             .set_compression(Compression::ZSTD(
                 ZstdLevel::try_new(6).map_err(|error| error.to_string())?,
             ))
+            .set_max_row_group_size(5_000)
             .build();
         let mut writer = ArrowWriter::try_new(file, schema, Some(properties))
             .map_err(|error| error.to_string())?;
