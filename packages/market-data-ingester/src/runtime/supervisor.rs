@@ -395,7 +395,14 @@ where
             .await
             .with_context(|| format!("failed to mark strategy {} running", profile.strategy_key))?;
         if !marked_running {
-            warn!(strategy = %profile.strategy_key, "strategy lease was lost before startup");
+            warn!(
+                event = "realtime_assignment_failed",
+                strategy = %profile.strategy_key,
+                worker_id = %self.instance,
+                generation = profile.desired_generation,
+                reason = "lease_lost_before_startup",
+                "strategy lease was lost before startup"
+            );
             return Ok(());
         }
 
@@ -416,7 +423,13 @@ where
             },
         );
         self.retry_after.remove(&key);
-        info!(strategy = %key, generation = profile.desired_generation, "ingester strategy started");
+        info!(
+            event = "realtime_assignment_acquired",
+            strategy = %key,
+            worker_id = %self.instance,
+            generation = profile.desired_generation,
+            "ingester strategy started"
+        );
         Ok(())
     }
 
@@ -451,7 +464,11 @@ where
             );
         }
         warn!(
+            event = "realtime_assignment_failed",
             strategy = %profile.strategy_key,
+            worker_id = %self.instance,
+            generation = profile.desired_generation,
+            reason = code,
             error_code = code,
             error = message,
             "ingester strategy startup rejected"
@@ -539,7 +556,14 @@ where
                 .mark_stopped(key, &self.instance, lease_token, generation)
                 .await
                 .with_context(|| format!("failed to persist stop state for strategy {key}"))?;
-            info!(strategy = %key, reason = ?stop.reason, "ingester strategy stopped");
+            info!(
+                event = "realtime_assignment_released",
+                strategy = %key,
+                worker_id = %self.instance,
+                generation,
+                reason = ?stop.reason,
+                "ingester strategy stopped"
+            );
             return Ok(());
         }
 
@@ -552,7 +576,16 @@ where
         if persisted {
             self.defer_retry(key, generation, stored_failure_count);
         }
-        warn!(strategy = %key, error_code = code, error = %message, "ingester strategy exited unexpectedly");
+        warn!(
+            event = "realtime_assignment_failed",
+            strategy = %key,
+            worker_id = %self.instance,
+            generation,
+            reason = code,
+            error_code = code,
+            error = %message,
+            "ingester strategy exited unexpectedly"
+        );
         Ok(())
     }
 

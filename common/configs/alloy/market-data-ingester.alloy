@@ -1,71 +1,161 @@
 logging {
-  level  = "warn"
-  format = "logfmt"
+	level  = "warn"
+	format = "logfmt"
 }
 
 discovery.docker "local" {
-  host = "unix:///var/run/docker.sock"
+	host = "unix:///var/run/docker.sock"
 }
 
 discovery.relabel "market_data_ingester" {
-  targets = []
+	targets = []
 
-  rule {
-    source_labels = ["__meta_docker_container_name"]
-    regex         = "/.*ingester-(master|worker).*"
-    action        = "keep"
-  }
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/.*ingester-(master|worker).*"
+		action        = "keep"
+	}
 
-  rule {
-    source_labels = ["__meta_docker_container_name"]
-    regex         = "/(.*)"
-    target_label  = "container"
-  }
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
 
-  rule {
-    replacement  = "ingester"
-    target_label = "service_name"
-  }
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		replacement   = "$1"
+		target_label  = "service_instance"
+	}
+
+	rule {
+		replacement  = "ingester"
+		target_label = "service_name"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/.*ingester-master.*"
+		replacement   = "master"
+		target_label  = "service_role"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/.*ingester-worker.*"
+		replacement   = "worker"
+		target_label  = "service_role"
+	}
 }
 
 loki.source.docker "market_data_ingester" {
-  host           = "unix:///var/run/docker.sock"
-  targets        = discovery.docker.local.targets
-  labels         = {"service_name" = "ingester"}
-  relabel_rules  = discovery.relabel.market_data_ingester.rules
-  refresh_interval = "5s"
-  forward_to     = [loki.process.market_data_ingester.receiver]
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.docker.local.targets
+	labels           = {"service_name" = "ingester"}
+	relabel_rules    = discovery.relabel.market_data_ingester.rules
+	refresh_interval = "5s"
+	forward_to       = [loki.process.market_data_ingester.receiver]
 }
 
 loki.process "market_data_ingester" {
-  stage.drop {
-    older_than          = "1h"
-    drop_counter_reason = "stale_container_history"
-  }
+	stage.drop {
+		older_than          = "1h"
+		drop_counter_reason = "stale_container_history"
+	}
 
-  stage.json {
-    expressions = {
-      level      = "level",
-      target     = "target",
-      strategy   = "fields.strategy",
-      error_code = "fields.error_code",
-    }
-  }
+	stage.json {
+		expressions = {
+			level      = "level",
+			target     = "target",
+			event      = "fields.event",
+			strategy   = "fields.strategy",
+			error_code = "fields.error_code",
+		}
+	}
 
-  stage.labels {
-    values = {
-      level      = "",
-      target     = "",
-      strategy   = "",
-      error_code = "",
-    }
-  }
+	stage.labels {
+		values = {
+			level      = "",
+			target     = "",
+			event      = "",
+			strategy   = "",
+			error_code = "",
+		}
+	}
 
-  forward_to = [loki.write.local.receiver]
+	forward_to = [loki.write.local.receiver]
+}
+
+discovery.relabel "polymarket_bot" {
+	targets = []
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/polymarket-bot"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		target_label  = "container"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/(.*)"
+		replacement   = "$1"
+		target_label  = "service_instance"
+	}
+
+	rule {
+		replacement  = "polymarket-bot"
+		target_label = "service_name"
+	}
+
+	rule {
+		replacement  = "trading-runtime"
+		target_label = "service_role"
+	}
+}
+
+loki.source.docker "polymarket_bot" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.docker.local.targets
+	labels           = {"service_name" = "polymarket-bot", "service_role" = "trading-runtime"}
+	relabel_rules    = discovery.relabel.polymarket_bot.rules
+	refresh_interval = "5s"
+	forward_to       = [loki.process.polymarket_bot.receiver]
+}
+
+loki.process "polymarket_bot" {
+	stage.drop {
+		older_than          = "1h"
+		drop_counter_reason = "stale_container_history"
+	}
+
+	stage.json {
+		expressions = {
+			level      = "level",
+			target     = "target",
+			error_code = "fields.error_code",
+		}
+	}
+
+	stage.labels {
+		values = {
+			level      = "",
+			target     = "",
+			error_code = "",
+		}
+	}
+
+	forward_to = [loki.write.local.receiver]
 }
 
 loki.write "local" {
-  endpoint {
-    url = "http://loki:3100/loki/api/v1/push"
-  }
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
 }

@@ -2283,6 +2283,106 @@
       ],
       "title": "Freshness rejections (5m)",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 65
+      },
+      "id": 28,
+      "panels": [],
+      "title": "Realtime Assignment Ownership",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "description": "Authoritative current realtime strategy lease ownership from the bounded ingester profile registry.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"},
+            "footer": {"reducers": []},
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
+      "id": 29,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "sortBy": [{"desc": false, "displayName": "Strategy"}]
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT strategy_key AS \"Strategy\", COALESCE(lease_owner, 'Unassigned') AS \"Worker\", desired_state AS \"Desired State\", observed_state AS \"Observed State\", desired_generation AS \"Desired Generation\", applied_generation AS \"Applied Generation\", heartbeat_at AS \"Last Heartbeat\", lease_expires_at AS \"Lease Expires\", CASE WHEN desired_state = 'running' AND (lease_owner IS NULL OR lease_expires_at <= now()) THEN 'Unowned' WHEN desired_state = 'running' AND lease_owner IS NOT NULL AND lease_expires_at > now() THEN 'Owned' ELSE 'Not requested' END AS \"Ownership\" FROM ingester.profiles ORDER BY strategy_key LIMIT 100;",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Strategy Ownership",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Assignment acquisition, release, and failure events emitted by ingester workers.",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
+      "id": 30,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "datasource": {"type": "loki", "uid": "loki"},
+          "editorMode": "code",
+          "expr": "{service_name=\"ingester\",service_role=\"worker\",event=~\"realtime_assignment_(acquired|released|failed)\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent Assignment Events",
+      "type": "logs"
     }
   ],
   "preload": false,
@@ -2329,6 +2429,6 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 15,
+  "version": 16,
   "weekStart": ""
 }
