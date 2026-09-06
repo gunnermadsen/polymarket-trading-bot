@@ -3500,6 +3500,464 @@
       ],
       "title": "Connection Stability",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      },
+      "id": 32,
+      "panels": [],
+      "title": "Directional Execution Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Unavailable"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "Ready"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 84
+      },
+      "id": 33,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "polymarket_btc_rtds_chainlink_candle_window_ready",
+          "instant": true,
+          "legendFormat": "RTDS candles",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "RTDS Chainlink Candle Window",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 61,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "green",
+                "value": 61
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 84
+      },
+      "id": 34,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "polymarket_btc_rtds_chainlink_candle_complete_minutes",
+          "instant": false,
+          "legendFormat": "Complete minutes",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "RTDS Complete Candle Minutes",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "Unavailable"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "Ready"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 92
+      },
+      "id": 35,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "polymarket_btc_polygon_oracle_ready",
+          "instant": true,
+          "legendFormat": "Polygon oracle",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Polygon Oracle",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1800
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      },
+      "id": 36,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "polymarket_btc_polygon_oracle_age_seconds",
+          "instant": false,
+          "legendFormat": "Oracle age",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Polygon Oracle Round Age",
+      "type": "timeseries"
+    },
+    {
+      "id": 37,
+      "title": "Execution freshness violations (since process start)",
+      "description": "Paper fills and local live POST attempts with stale, noncausal or missing canonical book evidence. Counters reset with the process; see alert history for prior incidents.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "polymarket_execution_freshness_violations_total{process_id=~\"${process_id:regex}\"}",
+          "legendFormat": "{{process_id}} {{execution_mode}} {{evidence}}",
+          "range": true,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "title": "Freshness rejections (5m)",
+      "description": "Prevented executions, not unsafe fills. No requests means zero rejections.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "increase(polymarket_execution_freshness_book_rejections_total{process_id=~\"${process_id:regex}\"}[5m]) + increase(polymarket_execution_freshness_reference_rejections_total{process_id=~\"${process_id:regex}\"}[5m])",
+          "legendFormat": "{{process_id}} {{execution_mode}} {{evidence}}",
+          "range": true,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "title": "Execution freshness monitoring coverage",
+      "description": "One is instrumented; zero is an active process with missing instrumentation. Missing data is not healthy. Idle instrumented processes remain one.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 108
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(polymarket_execution_freshness_expected{process_id=~\"${process_id:regex}\"} * on(process_id, execution_mode, job, instance) polymarket_execution_freshness_monitor_ready{process_id=~\"${process_id:regex}\"}) or (0 * polymarket_execution_freshness_expected{process_id=~\"${process_id:regex}\"})",
+          "legendFormat": "{{process_id}} {{execution_mode}} {{evidence}}",
+          "range": true,
+          "editorMode": "code"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Book ages at last execution",
+      "description": "Canonical checkpoint source and receipt ages measured at the paper fill snapshot or local live POST. These are not current feed ages or exchange-arrival measurements.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 108
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "polymarket_execution_freshness_last_execution_book_age_milliseconds{process_id=~\"${process_id:regex}\"}",
+          "legendFormat": "{{process_id}} {{execution_mode}} {{evidence}}",
+          "range": true,
+          "editorMode": "code"
+        }
+      ]
     }
   ],
   "preload": false,
@@ -3566,6 +4024,6 @@
   "timezone": "browser",
   "title": "Trading, PNL & Market Metrics",
   "uid": "polymarket-bot",
-  "version": 22,
+  "version": 23,
   "weekStart": ""
 }

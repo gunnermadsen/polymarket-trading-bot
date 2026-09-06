@@ -5,8 +5,7 @@
   "graphTooltip": 1,
   "id": null,
   "links": [
-    {"title": "Ingester health", "type": "link", "url": "/d/market-data-ingester-health", "targetBlank": false},
-    {"title": "Directional runtime", "type": "link", "url": "/d/directional-runtime-health", "targetBlank": false}
+    {"title": "Ingester health", "type": "link", "url": "/d/market-data-ingester-health", "targetBlank": false}
   ],
   "panels": [
     {
@@ -116,5 +115,5 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 3
+  "version": 4
 }
