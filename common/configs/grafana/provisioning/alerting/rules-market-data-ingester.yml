@@ -65,8 +65,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_2
         title: Binance 1-second OHLCV health impaired
@@ -101,8 +101,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_3
         title: Binance spot L2 health impaired
@@ -137,8 +137,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_4
         title: Binance futures OI health impaired
@@ -173,8 +173,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_5
         title: Chainlink reference price health impaired
@@ -209,8 +209,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_6
         title: Chainlink one-minute candles health impaired
@@ -245,8 +245,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_7
         title: Polygon Chainlink oracle health impaired
@@ -281,8 +281,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_8
         title: Polymarket contracts health impaired
@@ -317,8 +317,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_9
         title: Polymarket orderbooks health impaired
@@ -353,8 +353,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_10
         title: Polymarket resolutions health impaired
@@ -389,8 +389,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
       - uid: mdi_health_11
         title: Polymarket Chainlink TWAP health impaired
@@ -425,8 +425,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: warning
-        dashboardUid: market-data-ingester-health
-        panelId: 3
+        dashboardUid: market-data-pipeline
+        panelId: 22
         isPaused: false
   - orgId: 1
     name: market-data-ingester-critical-20s
@@ -471,8 +471,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_2
         title: Binance 1-second OHLCV critical failure
@@ -512,8 +512,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_3
         title: Binance spot L2 critical failure
@@ -553,8 +553,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_4
         title: Binance futures OI critical failure
@@ -594,8 +594,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_5
         title: Chainlink reference price critical failure
@@ -635,8 +635,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_6
         title: Chainlink one-minute candles critical failure
@@ -676,8 +676,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_7
         title: Polygon Chainlink oracle critical failure
@@ -717,8 +717,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_8
         title: Polymarket contracts critical failure
@@ -758,8 +758,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_9
         title: Polymarket orderbooks critical failure
@@ -799,8 +799,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_10
         title: Polymarket resolutions critical failure
@@ -840,8 +840,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_critical_11
         title: Polymarket Chainlink TWAP critical failure
@@ -881,8 +881,8 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 6
+        dashboardUid: market-data-pipeline
+        panelId: 25
         isPaused: false
       - uid: mdi_observability_path
         title: Market-data observability path impaired
@@ -916,6 +916,6 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
-        dashboardUid: market-data-ingester-health
-        panelId: 1
+        dashboardUid: market-data-pipeline
+        panelId: 20
         isPaused: false
