@@ -4,6 +4,7 @@ pub mod binance_spot_l2;
 pub mod directional_external_runtime;
 pub mod directional_features;
 pub mod directional_model;
+pub mod execution_freshness;
 pub mod execution_guard;
 pub mod execution_lifecycle;
 pub mod feed_contract;

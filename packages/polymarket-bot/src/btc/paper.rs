@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use super::{
+    execution_freshness::{BookEvidence, ExecutionFreshnessMetrics},
     execution_guard::{
         reference_execution_guard, BtcReferenceExecutionAssessment, BtcReferenceExecutionGuard,
         BtcReferenceExecutionRejectReason,
@@ -138,6 +139,7 @@ pub struct PaperVenue {
     max_depth_participation: Decimal,
     execution: EffectiveProcessExecutionConfig,
     reference_execution_policy: Option<ReferenceExecutionPolicy>,
+    freshness_metrics: Option<Arc<ExecutionFreshnessMetrics>>,
     state: Arc<Mutex<PaperState>>,
     /// Serializes arrival simulation so concurrent retries cannot both fill the same client id.
     submit_guard: Arc<Mutex<()>>,
@@ -260,7 +262,15 @@ impl PaperVenue {
             bail!("paper max_depth_participation must be in (0, 1]");
         }
         let starting_collateral_usd = config.starting_collateral_usd;
+        let freshness_metrics = reference_execution_policy.map(|policy| {
+            ExecutionFreshnessMetrics::new(
+                policy.expected_process_id,
+                "paper",
+                config.max_book_age.num_milliseconds(),
+            )
+        });
         Ok(Self {
+            freshness_metrics,
             registry,
             config,
             max_depth_participation,
@@ -313,6 +323,18 @@ impl PaperVenue {
             policy.max_reference_age,
             policy.max_directional_feature_age,
         )
+    }
+
+    fn record_reference_rejection(&self, reason: BtcReferenceExecutionRejectReason) {
+        if matches!(
+            reason,
+            BtcReferenceExecutionRejectReason::StaleEvidence
+                | BtcReferenceExecutionRejectReason::FutureEvidence
+        ) {
+            if let Some(metrics) = &self.freshness_metrics {
+                metrics.reject_reference();
+            }
+        }
     }
 
     pub fn registry(&self) -> Arc<RwLock<BookRegistry>> {
@@ -504,6 +526,9 @@ impl PaperVenue {
                     );
                 }
                 Err(reason) => {
+                    if enforce_collateral {
+                        self.record_reference_rejection(reason);
+                    }
                     return paper_reject(
                         merge_json(
                             base,
@@ -567,6 +592,11 @@ impl PaperVenue {
         if !exit_book_ready {
             return paper_reject(base, "missing_or_unready_exit_orderbook");
         }
+        if enforce_collateral {
+            if let Some(metrics) = &self.freshness_metrics {
+                metrics.check(checkpoint.as_ref().map(BookEvidence::from), book_checked_at);
+            }
+        }
         let Some(mut checkpoint) = checkpoint else {
             return paper_reject(base, "missing_arrival_orderbook");
         };
@@ -586,6 +616,11 @@ impl PaperVenue {
         if checkpoint.received_at > book_checked_at
             || checkpoint.source_timestamp - book_checked_at > max_book_age
         {
+            if enforce_collateral {
+                if let Some(metrics) = &self.freshness_metrics {
+                    metrics.reject_book();
+                }
+            }
             return paper_reject_with_checkpoint(base, "future_arrival_orderbook", &checkpoint);
         }
         let source_age = book_checked_at - checkpoint.source_timestamp;
@@ -595,6 +630,11 @@ impl PaperVenue {
             || receive_age > max_book_age
             || source_to_receive_lag > max_book_age
         {
+            if enforce_collateral {
+                if let Some(metrics) = &self.freshness_metrics {
+                    metrics.reject_book();
+                }
+            }
             return paper_reject_with_checkpoint(base, "stale_arrival_orderbook", &checkpoint);
         }
         let Some(depth) =
@@ -715,6 +755,15 @@ impl PaperVenue {
                 &walked,
             );
         }
+        if enforce_collateral {
+            if let Some(metrics) = &self.freshness_metrics {
+                metrics.execution(
+                    Some(BookEvidence::from(&checkpoint)),
+                    book_checked_at,
+                    request.client_order_id,
+                );
+            }
+        }
         let average_price = filled_notional / filled_size;
         PaperExecution {
             state: OrderState::Filled,
@@ -762,6 +811,9 @@ impl ExecutionVenue for PaperVenue {
             );
         }
 
+        if let Some(metrics) = &self.freshness_metrics {
+            metrics.attempt();
+        }
         let requested_notional = request
             .price
             .checked_mul(request.size)
@@ -803,6 +855,7 @@ impl ExecutionVenue for PaperVenue {
                 Ok(Some((guard, assessment))) => (Some(guard), Some(assessment)),
                 Ok(None) => (None, None),
                 Err(reason) => {
+                    self.record_reference_rejection(reason);
                     let execution = paper_reject(
                         reference_execution_rejection_metadata("submit", submitted_at, reason),
                         reason.as_str(),
@@ -1644,6 +1697,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn freshness_metrics_exclude_previews_and_replays() {
+        let bound = ChronoDuration::seconds(2);
+        let venue = guarded_venue(
+            registry_with_book(
+                Utc::now(),
+                vec![OrderbookLevel {
+                    price: dec!(0.40),
+                    size: dec!(10),
+                }],
+            ),
+            Duration::ZERO,
+            bound,
+            None,
+        );
+        let req = guarded_request(Utc::now(), bound);
+        let preview = PaperPreviewConfig {
+            scenario_key: "test".into(),
+            arrival_latency: Duration::ZERO,
+            visible_depth_haircut: Decimal::ONE,
+        };
+        assert_eq!(
+            venue.preview_order(&req, &preview).await.unwrap().state,
+            OrderState::Filled
+        );
+        let metrics = venue.freshness_metrics.as_ref().unwrap();
+        assert_eq!(metrics.counts(), (0, 0, 0, 0, 0));
+        assert_eq!(
+            venue.submit_order(req.clone()).await.unwrap().state,
+            OrderState::Filled
+        );
+        assert_eq!(metrics.counts(), (1, 1, 0, 0, 0));
+        venue.submit_order(req).await.unwrap();
+        assert_eq!(metrics.counts(), (1, 1, 0, 0, 0));
+    }
+
+    #[tokio::test]
     async fn production_venue_fills_directional_model_guard_without_chainlink() {
         let max_reference_age = ChronoDuration::seconds(2);
         let venue = guarded_venue(
@@ -1715,6 +1804,10 @@ mod tests {
             .await
             .unwrap();
         let status = venue.status().await;
+        assert_eq!(
+            venue.freshness_metrics.as_ref().unwrap().counts(),
+            (1, 0, 0, 0, 1)
+        );
 
         assert_eq!(order.state, OrderState::Rejected);
         assert_eq!(

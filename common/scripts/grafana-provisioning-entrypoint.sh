@@ -93,6 +93,7 @@ cp "${SRC_DIR}/dashboards/dashboards.yml" "${DST_DIR}/dashboards/dashboards.yml"
 cp "${SRC_DIR}/alerting/rules-clob-market-data.yml" "${DST_DIR}/alerting/rules-clob-market-data.yml"
 cp "${SRC_DIR}/alerting/rules-prometheus.yml" "${DST_DIR}/alerting/rules-prometheus.yml"
 cp "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" "${DST_DIR}/alerting/rules-directional-runtime-health.yml"
+cp "${SRC_DIR}/alerting/rules-execution-freshness.yml" "${DST_DIR}/alerting/rules-execution-freshness.yml"
 cp "${SRC_DIR}/alerting/rules-market-data-ingester.yml" "${DST_DIR}/alerting/rules-market-data-ingester.yml"
 
 cat > "${DST_DIR}/datasources/postgres.yml" <<EOF
