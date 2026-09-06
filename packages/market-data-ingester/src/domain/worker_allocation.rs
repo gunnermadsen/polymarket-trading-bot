@@ -32,11 +32,11 @@ pub const fn realtime_profile(key: IngesterStrategyKey) -> WorkloadProfile {
 
 pub fn backfill_profile(strategy_key: &str) -> WorkloadProfile {
     match strategy_key {
-        "pmxt_polymarket_orderbook_archives" => WorkloadProfile {
+        "pmxt_polymarket_orderbook_archives_backfill" => WorkloadProfile {
             capacity_units: 4,
             isolation: IsolationClass::Exclusive,
         },
-        "binance_spot_btcusdt_aggregate_trades" => WorkloadProfile {
+        "binance_spot_btcusdt_aggregate_trades_backfill" => WorkloadProfile {
             capacity_units: 3,
             isolation: IsolationClass::Heavy,
         },
@@ -120,11 +120,17 @@ mod tests {
 
     #[test]
     fn exclusive_backfill_requires_an_empty_worker() {
-        let candidate = WorkloadProfile {
-            capacity_units: 4,
-            isolation: IsolationClass::Exclusive,
-        };
+        let candidate = backfill_profile("pmxt_polymarket_orderbook_archives_backfill");
+        assert_eq!(candidate.capacity_units, 4);
+        assert_eq!(candidate.isolation, IsolationClass::Exclusive);
         assert!(admits_backfill(4, None, 0, candidate));
         assert!(!admits_backfill(4, None, 2, candidate));
+    }
+
+    #[test]
+    fn aggregate_trade_backfill_is_heavy() {
+        let candidate = backfill_profile("binance_spot_btcusdt_aggregate_trades_backfill");
+        assert_eq!(candidate.capacity_units, 3);
+        assert_eq!(candidate.isolation, IsolationClass::Heavy);
     }
 }
