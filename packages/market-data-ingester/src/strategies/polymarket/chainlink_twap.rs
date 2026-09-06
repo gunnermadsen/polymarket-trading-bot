@@ -37,6 +37,7 @@ const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 const DEFAULT_WEBSOCKET_URL: &str = "wss://ws-live-data.polymarket.com";
 const SYMBOL: &str = "btc/usd";
 const PRODUCT_REFERENCE: &str = "polymarket_rtds_chainlink_reference_price";
+const REFERENCE_RESUBSCRIBE_GRACE: Duration = Duration::from_secs(10);
 const TOPIC_REFERENCE_SNAPSHOT_ALIAS: &str = "crypto_prices";
 const TOPIC_REFERENCE: &str = "crypto_prices_chainlink";
 const TOPIC_THIRTY: &str = "crypto_prices_twap_thirty";
@@ -45,6 +46,34 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 const EVENT_BUFFER: usize = 2_048;
 const COMMAND_BUFFER: usize = 32;
 const MAX_CLOCK_LEAD_MS: i64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceRecoveryAction {
+    Healthy,
+    Resubscribe,
+    AwaitRecovery,
+    Reconnect,
+}
+
+fn reference_recovery_action(
+    source_age: Option<Duration>,
+    connection_age: Duration,
+    recovery_age: Option<Duration>,
+    initial_timeout: Duration,
+) -> ReferenceRecoveryAction {
+    let stale = source_age.map_or(connection_age > initial_timeout, |age| {
+        age > Duration::from_secs(10)
+    });
+    if !stale {
+        ReferenceRecoveryAction::Healthy
+    } else if recovery_age.is_some_and(|age| age > REFERENCE_RESUBSCRIBE_GRACE) {
+        ReferenceRecoveryAction::Reconnect
+    } else if recovery_age.is_some() {
+        ReferenceRecoveryAction::AwaitRecovery
+    } else {
+        ReferenceRecoveryAction::Resubscribe
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -305,15 +334,29 @@ impl RealtimeWorkerStrategy for PolymarketChainlinkBtcusdTwapStrategy {
             let session_started = Utc::now();
             match self.capture_session(&mut checkpoint, &shutdown).await {
                 Ok(()) => {
+                    crate::streaming::set_source_connection_ready(PRODUCT_REFERENCE, false);
+                    crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
                     self.seal_open_artifact().await?;
                     return Ok(());
                 }
                 Err(error) if error.kind == StrategyErrorKind::LeaseLost => {
+                    crate::streaming::set_source_connection_ready(PRODUCT_REFERENCE, false);
+                    crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
                     let _ = self.seal_open_artifact().await;
                     shutdown.cancelled().await;
                     return Ok(());
                 }
                 Err(error) => {
+                    crate::streaming::set_source_connection_ready(PRODUCT_REFERENCE, false);
+                    crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
+                    crate::streaming::observe_source_reconnect(
+                        PRODUCT_REFERENCE,
+                        reconnect_reason(&error),
+                    );
+                    crate::streaming::observe_source_reconnect(
+                        STRATEGY_KEY.as_str(),
+                        reconnect_reason(&error),
+                    );
                     warn!(
                         strategy = %STRATEGY_KEY,
                         error_code = error.code,
@@ -385,6 +428,8 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             self.config.write_timeout_ms,
         )
         .await?;
+        crate::streaming::set_source_connection_ready(PRODUCT_REFERENCE, true);
+        crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), true);
 
         let (events_tx, mut events_rx) = mpsc::channel(EVENT_BUFFER);
         let (commands_tx, mut commands_rx) = mpsc::channel(COMMAND_BUFFER);
@@ -406,6 +451,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             }
         });
         let reader_events = events_tx;
+        let reader_commands = commands_tx.clone();
         let reader = tokio::spawn(async move {
             while let Some(frame) = stream.next().await {
                 let received_at = Utc::now();
@@ -416,7 +462,10 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                             continue;
                         }
                         if value.eq_ignore_ascii_case("PING") {
-                            if commands_tx.try_send(Message::Text("PONG".into())).is_err() {
+                            if reader_commands
+                                .try_send(Message::Text("PONG".into()))
+                                .is_err()
+                            {
                                 IoEvent::Failed(source(
                                     "polymarket_rtds_command_backpressure",
                                     "RTDS writer command buffer is unavailable",
@@ -436,7 +485,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                         received_at,
                     },
                     Ok(Message::Ping(payload)) => {
-                        if commands_tx.try_send(Message::Pong(payload)).is_err() {
+                        if reader_commands.try_send(Message::Pong(payload)).is_err() {
                             IoEvent::Failed(source(
                                 "polymarket_rtds_command_backpressure",
                                 "RTDS writer command buffer is unavailable",
@@ -476,6 +525,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             .map(|_| Instant::now());
         let mut sixty_seen_at = checkpoint.sixty_source_timestamp_ms.map(|_| Instant::now());
         let mut reference_seen_at = None;
+        let mut reference_recovery_started_at = None;
         let connection_id = Uuid::new_v4();
         let mut reference_sequence = 0_u64;
         let mut freshness_tick = tokio::time::interval(Duration::from_secs(1));
@@ -494,8 +544,36 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                     if sixty_seen_at.map_or(now.duration_since(connected_at) > initial, |last| now.duration_since(last) > stale) {
                         return Err(source("polymarket_rtds_sixty_stale", "60-second TWAP stream did not produce a fresh update"));
                     }
-                    if reference_seen_at.map_or(now.duration_since(connected_at) > initial, |last| now.duration_since(last) > Duration::from_secs(10)) {
-                        return Err(source("polymarket_rtds_chainlink_stale", "Chainlink reference stream did not produce a fresh update"));
+                    match reference_recovery_action(
+                        reference_seen_at.map(|last| now.duration_since(last)),
+                        now.duration_since(connected_at),
+                        reference_recovery_started_at.map(|started| now.duration_since(started)),
+                        initial,
+                    ) {
+                        ReferenceRecoveryAction::Reconnect => {
+                            return Err(source("polymarket_rtds_chainlink_stale", "Chainlink reference stream remained stale after topic resubscription"));
+                        }
+                        ReferenceRecoveryAction::Resubscribe => {
+                            crate::streaming::observe_source_stale_transition(PRODUCT_REFERENCE, "topic_stale");
+                            let subscription = json!({
+                                "action": "subscribe",
+                                "subscriptions": [
+                                    {"topic": TOPIC_REFERENCE, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"},
+                                    {"topic": TOPIC_THIRTY, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"},
+                                    {"topic": TOPIC_SIXTY, "type": "update", "filters": "{\"symbol\":\"btc/usd\"}"}
+                                ]
+                            }).to_string();
+                            commands_tx.try_send(Message::Text(subscription.into())).map_err(|_| {
+                                source("polymarket_rtds_resubscribe_failed", "RTDS Chainlink topic resubscription could not be queued")
+                            })?;
+                            reference_recovery_started_at = Some(now);
+                            warn!(
+                                strategy = %STRATEGY_KEY,
+                                product = PRODUCT_REFERENCE,
+                                "stalled RTDS subscription set refreshed without disconnecting the shared session"
+                            );
+                        }
+                        ReferenceRecoveryAction::Healthy | ReferenceRecoveryAction::AwaitRecovery => {}
                     }
                 }
                 event = events_rx.recv() => match event {
@@ -513,7 +591,9 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                                 true,
                                 &observation,
                             ).await;
+                            crate::streaming::observe_source_event(PRODUCT_REFERENCE, observation.received_at);
                             reference_seen_at = Some(Instant::now());
+                            reference_recovery_started_at = None;
                             continue;
                         }
                         if is_reference_topic(&bytes) {
@@ -532,6 +612,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
                             true,
                             &observation,
                         ).await;
+                        crate::streaming::observe_source_event(STRATEGY_KEY.as_str(), observation.received_at);
                         self.persist_observation(checkpoint, &observation).await?;
                         if observation.window_seconds == 30 { thirty_seen_at = Some(Instant::now()); }
                         else { sixty_seen_at = Some(Instant::now()); }
@@ -1289,6 +1370,21 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
 fn source(code: &'static str, message: impl Into<String>) -> StrategyError {
     StrategyError::new(StrategyErrorKind::TransientSource, code, message)
 }
+fn reconnect_reason(error: &StrategyError) -> &'static str {
+    match error.code {
+        "polymarket_rtds_chainlink_stale"
+        | "polymarket_rtds_thirty_stale"
+        | "polymarket_rtds_sixty_stale" => "topic_stale",
+        "polymarket_rtds_closed" | "polymarket_rtds_eof" => "remote_close",
+        "polymarket_rtds_connect_timeout" => "connect_timeout",
+        "polymarket_rtds_resubscribe_failed" => "resubscribe_failed",
+        "polymarket_rtds_read_failed" => "read",
+        "polymarket_rtds_connect_failed" if error.to_string().contains("lookup address") => "dns",
+        "polymarket_rtds_connect_failed" if error.to_string().contains("tls") => "tls",
+        "polymarket_rtds_connect_failed" => "connect",
+        _ => "other",
+    }
+}
 fn db<E: std::fmt::Display>(code: &'static str) -> impl FnOnce(E) -> StrategyError {
     move |error| {
         StrategyError::new(
@@ -1315,6 +1411,76 @@ fn lease_lost(action: &str) -> StrategyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_reasons_are_bounded() {
+        assert_eq!(
+            reconnect_reason(&source(
+                "polymarket_rtds_connect_failed",
+                "failed to lookup address information"
+            )),
+            "dns"
+        );
+        assert_eq!(
+            reconnect_reason(&source(
+                "polymarket_rtds_connect_failed",
+                "tls handshake eof"
+            )),
+            "tls"
+        );
+        assert_eq!(
+            reconnect_reason(&source(
+                "polymarket_rtds_chainlink_stale",
+                "reference topic stale"
+            )),
+            "topic_stale"
+        );
+        assert_eq!(
+            reconnect_reason(&source("unexpected", "unexpected")),
+            "other"
+        );
+    }
+
+    #[test]
+    fn stale_reference_topic_resubscribes_before_reconnecting() {
+        let initial = Duration::from_secs(20);
+        assert_eq!(
+            reference_recovery_action(
+                Some(Duration::from_secs(11)),
+                Duration::from_secs(30),
+                None,
+                initial
+            ),
+            ReferenceRecoveryAction::Resubscribe
+        );
+        assert_eq!(
+            reference_recovery_action(
+                Some(Duration::from_secs(15)),
+                Duration::from_secs(35),
+                Some(Duration::from_secs(5)),
+                initial
+            ),
+            ReferenceRecoveryAction::AwaitRecovery
+        );
+        assert_eq!(
+            reference_recovery_action(
+                Some(Duration::from_secs(22)),
+                Duration::from_secs(42),
+                Some(Duration::from_secs(11)),
+                initial
+            ),
+            ReferenceRecoveryAction::Reconnect
+        );
+        assert_eq!(
+            reference_recovery_action(
+                Some(Duration::from_secs(1)),
+                Duration::from_secs(43),
+                None,
+                initial
+            ),
+            ReferenceRecoveryAction::Healthy
+        );
+    }
 
     #[test]
     fn decodes_each_exact_twap_window() {

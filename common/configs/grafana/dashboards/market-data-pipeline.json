@@ -105,6 +105,34 @@
         {"matcher": {"id": "byName", "options": "Source reconnects · 15m"}, "properties": [{"id": "decimals", "value": 0}]}
       ]},
       "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 10, "type": "row", "title": "Polymarket RTDS Source Health", "collapsed": false, "panels": [], "gridPos": {"x": 0, "y": 30, "w": 24, "h": 1}
+    },
+    {
+      "id": 11, "type": "stat", "title": "RTDS Reference Source", "description": "Provider connection state, age of the latest valid Chainlink source event, and age of the latest canonical publication.", "gridPos": {"x": 0, "y": 31, "w": 10, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "max(ingester_source_connection_ready{product=\"polymarket_rtds_chainlink_reference_price\"})", "instant": true, "legendFormat": "Connected"},
+        {"refId": "B", "expr": "time() - max(ingester_source_last_event_timestamp_seconds{product=\"polymarket_rtds_chainlink_reference_price\"})", "instant": true, "legendFormat": "Source event age"},
+        {"refId": "C", "expr": "time() - max(ingester_stream_last_published_timestamp_seconds{product=\"polymarket_rtds_chainlink_reference_price\"})", "instant": true, "legendFormat": "Publish age"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "Connected"}, "properties": [{"id": "unit", "value": "none"}]},
+        {"matcher": {"id": "byName", "options": "Source event age"}, "properties": [{"id": "unit", "value": "s"}]},
+        {"matcher": {"id": "byName", "options": "Publish age"}, "properties": [{"id": "unit", "value": "s"}]}
+      ]},
+      "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal", "textMode": "value_and_name", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "RTDS Recovery Activity", "description": "Provider reconnects and transitions into source staleness, classified by bounded reason.", "gridPos": {"x": 10, "y": 31, "w": 14, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "sum by (reason) (increase(ingester_source_reconnects_total{product=\"polymarket_rtds_chainlink_reference_price\"}[10m]))", "legendFormat": "Reconnect · {{reason}}"},
+        {"refId": "B", "expr": "sum by (reason) (increase(ingester_source_stale_transitions_total{product=\"polymarket_rtds_chainlink_reference_price\"}[10m]))", "legendFormat": "Stale · {{reason}}"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 12, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
     }
   ],
   "refresh": "10s",
@@ -116,5 +144,5 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 3
+  "version": 4
 }

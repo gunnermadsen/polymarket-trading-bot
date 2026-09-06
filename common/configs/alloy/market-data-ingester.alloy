@@ -21,6 +21,11 @@ discovery.relabel "market_data_ingester" {
     regex         = "/(.*)"
     target_label  = "container"
   }
+
+  rule {
+    replacement  = "ingester"
+    target_label = "service_name"
+  }
 }
 
 loki.source.docker "market_data_ingester" {

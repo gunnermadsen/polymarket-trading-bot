@@ -349,3 +349,73 @@ groups:
           description: Realtime source ownership is duplicated. Correct lease ownership rather than hiding duplicate delivery with query aggregation.
         labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
         isPaused: false
+      - uid: mdp_rtds_reference_source_unavailable
+        title: Polymarket RTDS reference source unavailable
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max(((1 - ingester_source_connection_ready{product="polymarket_rtds_chainlink_reference_price"}) or (time() - ingester_source_last_event_timestamp_seconds{product="polymarket_rtds_chainlink_reference_price"} > bool 30)) * on(instance, product) (ingester_stream_subscribers{product="polymarket_rtds_chainlink_reference_price"} > 0))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: last, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: Alerting
+        execErrState: Error
+        for: 30s
+        annotations:
+          summary: The demanded Polymarket RTDS Chainlink reference source is disconnected or stale
+          description: Source connection readiness or valid provider event age exceeded the trading input safety bound.
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: critical, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        dashboardUid: market-data-pipeline
+        panelId: 11
+        isPaused: false
+      - uid: mdp_rtds_reconnect_storm
+        title: Polymarket RTDS reconnect storm
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum by (reason) (increase(ingester_source_reconnects_total{product="polymarket_rtds_chainlink_reference_price"}[10m]))'
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model: {datasource: {type: __expr__, uid: __expr__}, expression: A, reducer: sum, type: reduce, refId: B}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [3], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: The Polymarket RTDS reference source is reconnecting repeatedly
+          description: More than three provider reconnects occurred within ten minutes. Inspect the bounded reason label.
+        labels: {service: ingester-worker, family: market_data_pipeline, severity: warning, environment: $GRAFANA_ALERT_ENVIRONMENT}
+        dashboardUid: market-data-pipeline
+        panelId: 12
+        isPaused: false
