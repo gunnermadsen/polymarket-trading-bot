@@ -21,11 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
-use tokio::{
-    sync::mpsc,
-    task::JoinHandle,
-    time::{Instant, MissedTickBehavior},
-};
+use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -48,8 +44,8 @@ pub const CONFIG_SCHEMA_VERSION: i32 = 1;
 pub const CHECKPOINT_SCHEMA_VERSION: i32 = 1;
 pub const SYMBOL: &str = "BTCUSDT";
 
-const DEFAULT_WEBSOCKET_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms";
-const ALTERNATE_WEBSOCKET_URL: &str = "wss://stream.binance.com:443/ws/btcusdt@depth@100ms";
+const DEFAULT_WEBSOCKET_URL: &str = "wss://stream.binance.com:443/ws/btcusdt@depth@100ms";
+const ALTERNATE_WEBSOCKET_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@depth@100ms";
 const DEFAULT_REST_DEPTH_URL: &str = "https://api.binance.com/api/v3/depth";
 const ALTERNATE_REST_DEPTH_URL: &str = "https://data-api.binance.vision/api/v3/depth";
 const SAMPLING_POLICY_VERSION: &str = "binance-spot-btcusdt-l2-top-n-v1";
@@ -1080,6 +1076,7 @@ impl CaptureWriter {
     }
 
     async fn persist(&mut self, fact: &SnapshotFact) -> Result<(), StrategyError> {
+        let persistence_started_at = Instant::now();
         let cursor = fact.cursor();
         self.ensure_artifact(fact.received_at, &cursor).await?;
         let artifact_id = self
@@ -1280,6 +1277,10 @@ impl CaptureWriter {
             current.inserted_records += 1;
             current.end_cursor = Some(cursor);
         }
+        crate::streaming::observe_persistence(
+            STRATEGY_KEY.as_str(),
+            persistence_started_at.elapsed(),
+        );
         Ok(())
     }
 
@@ -1580,6 +1581,7 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
                     }
                 }
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
+                    crate::streaming::observe_source_reconnect(STRATEGY_KEY.as_str(), error.code);
                     if !gap_was_recorded(error.code) {
                         if let Some(last_update_id) = continuity.last_update_id {
                             writer
@@ -1653,14 +1655,11 @@ impl BinanceSpotL2SnapshotStrategy {
         let (mut sink, mut stream) = websocket.split();
         let read_timeout = Duration::from_millis(self.config.read_timeout_ms);
         let write_timeout = Duration::from_millis(self.config.connect_timeout_ms);
-        let ping_interval = Duration::from_millis(self.config.ping_interval_ms);
         let (io_sender, mut io_receiver) =
             mpsc::channel::<BinanceIoEvent>(self.config.max_buffered_updates);
         let io_shutdown = CancellationToken::new();
         let worker_shutdown = io_shutdown.clone();
         let io_handle = tokio::spawn(async move {
-            let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
-            ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
             let mut read_deadline = Instant::now() + read_timeout;
             loop {
                 tokio::select! {
@@ -1672,16 +1671,6 @@ impl BinanceSpotL2SnapshotStrategy {
                             "Binance spot L2 websocket produced no frames before its read deadline",
                         ))).await;
                         return;
-                    }
-                    _ = ping.tick() => {
-                        if let Err(error) = send_websocket_control(
-                            &mut sink,
-                            Message::Ping(Vec::new().into()),
-                            write_timeout,
-                        ).await {
-                            let _ = io_sender.send(BinanceIoEvent::Failed(error)).await;
-                            return;
-                        }
                     }
                     frame = stream.next() => {
                         read_deadline = Instant::now() + read_timeout;
@@ -1697,11 +1686,7 @@ impl BinanceSpotL2SnapshotStrategy {
                                 }
                             }
                             Some(Ok(Message::Ping(payload))) => {
-                                if let Err(error) = send_websocket_control(
-                                    &mut sink,
-                                    Message::Pong(payload),
-                                    write_timeout,
-                                ).await {
+                                if let Err(error) = answer_binance_ping(&mut sink, payload, write_timeout).await {
                                     let _ = io_sender.send(BinanceIoEvent::Failed(error)).await;
                                     return;
                                 }
@@ -2026,6 +2011,22 @@ impl BinanceSpotL2SnapshotStrategy {
     }
 }
 
+async fn answer_binance_ping<S>(
+    sink: &mut S,
+    payload: tokio_tungstenite::tungstenite::Bytes,
+    timeout: Duration,
+) -> Result<(), StrategyError>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    crate::streaming::observe_websocket_ping(STRATEGY_KEY.as_str());
+    let started_at = Instant::now();
+    send_websocket_control(sink, Message::Pong(payload), timeout).await?;
+    crate::streaming::observe_websocket_pong(STRATEGY_KEY.as_str(), started_at.elapsed());
+    Ok(())
+}
+
 async fn send_websocket_control<S>(
     sink: &mut S,
     message: Message,
@@ -2084,6 +2085,12 @@ fn lease_error(code: &'static str, message: impl Into<String>) -> StrategyError 
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        convert::Infallible,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     use chrono::TimeDelta;
     use pretty_assertions::assert_eq;
 
@@ -2116,11 +2123,62 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingSink {
+        messages: Vec<Message>,
+        flushes: usize,
+    }
+
+    impl futures_util::Sink<Message> for RecordingSink {
+        type Error = Infallible;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+            self.get_mut().messages.push(message);
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn binance_ping_payload_is_echoed_and_flushed() {
+        let payload = tokio_tungstenite::tungstenite::Bytes::from_static(b"binance-ping");
+        let mut sink = RecordingSink::default();
+
+        answer_binance_ping(&mut sink, payload.clone(), Duration::from_secs(1))
+            .await
+            .expect("pong");
+
+        assert_eq!(sink.messages, vec![Message::Pong(payload)]);
+        assert_eq!(sink.flushes, 1);
+    }
+
     #[test]
     fn config_is_typed_narrow_and_spot_only() {
         let defaults = BinanceSpotL2SnapshotConfig::from_value(&json!({})).expect("default config");
         assert_eq!(defaults.symbol, SYMBOL);
         assert_eq!(defaults.top_n, 20);
+        assert_eq!(defaults.websocket_url, DEFAULT_WEBSOCKET_URL);
         assert!(BinanceSpotL2SnapshotConfig::from_value(&json!({
             "unknown": true
         }))
