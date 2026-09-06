@@ -30,7 +30,7 @@ const SPEC: RetainedDrainSpec = RetainedDrainSpec {
     table: "binance_spot_btcusdt_l2_snapshots",
     retention_days: Some(14),
 };
-const BATCH_ROWS: usize = 2_000;
+const BATCH_ROWS: usize = 250;
 pub struct BinanceSpotL2SnapshotsDrain {
     descriptor: DrainDescriptor,
     root: PathBuf,
