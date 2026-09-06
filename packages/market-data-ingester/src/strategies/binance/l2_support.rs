@@ -40,8 +40,6 @@ pub const DEFAULT_CRYPTOHFT_BASE_URL: &str = "https://api.cryptohftdata.com";
 pub const CRYPTOHFT_SYMBOL: &str = "BTCUSDT";
 pub const DEFAULT_AVAILABILITY_OFFSET_MS: u64 = 100;
 pub const DEFAULT_MAX_STALE_MS: u64 = 1_000;
-pub const DEFAULT_MINIMUM_FREE_FRACTION: f64 = 0.25;
-pub const DEFAULT_MINIMUM_FREE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub const DEFAULT_MINIMUM_WRITE_BYTES_PER_SECOND: u64 = 20 * 1024 * 1024;
 pub const DEFAULT_REQUEST_MINIMUM_INTERVAL: Duration = Duration::from_millis(1_100);
 pub const DEFAULT_MAXIMUM_COMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
@@ -71,7 +69,6 @@ pub const CRYPTOHFT_SPOT_AUDITED_SNAPSHOT_LAST_UPDATE_ID: i64 = 91_924_965_391;
 
 const WRITE_PROBE_BYTES: usize = 16 * 1024 * 1024;
 const IO_BUFFER_BYTES: usize = 1024 * 1024;
-const MAX_CONFIGURED_DOWNLOAD_WORKERS: u64 = 6;
 const STALE_WORK_FILE_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_LOGICAL_EVENT_LEVELS: usize = 10_000;
 const MAX_BOOK_LEVELS_PER_SIDE: usize = 100_000;
@@ -165,8 +162,6 @@ pub struct CryptoHftBinanceL2Config {
     pub temporary_directory: PathBuf,
     pub availability_offset_ms: u64,
     pub max_stale_ms: u64,
-    pub minimum_free_fraction: f64,
-    pub minimum_free_bytes: u64,
     pub minimum_write_bytes_per_second: u64,
     pub request_minimum_interval: Duration,
     pub maximum_compressed_bytes: u64,
@@ -182,8 +177,6 @@ impl CryptoHftBinanceL2Config {
             temporary_directory,
             availability_offset_ms: DEFAULT_AVAILABILITY_OFFSET_MS,
             max_stale_ms: DEFAULT_MAX_STALE_MS,
-            minimum_free_fraction: DEFAULT_MINIMUM_FREE_FRACTION,
-            minimum_free_bytes: DEFAULT_MINIMUM_FREE_BYTES,
             minimum_write_bytes_per_second: DEFAULT_MINIMUM_WRITE_BYTES_PER_SECOND,
             request_minimum_interval: DEFAULT_REQUEST_MINIMUM_INTERVAL,
             maximum_compressed_bytes: DEFAULT_MAXIMUM_COMPRESSED_BYTES,
@@ -205,13 +198,7 @@ impl CryptoHftBinanceL2Config {
         if self.base_url.contains('?') || self.base_url.contains('#') {
             bail!("CryptoHFT base URL must not contain a query or fragment");
         }
-        if !self.minimum_free_fraction.is_finite()
-            || !(DEFAULT_MINIMUM_FREE_FRACTION..1.0).contains(&self.minimum_free_fraction)
-        {
-            bail!("CryptoHFT minimum free fraction must be in [0.25, 1.0)");
-        }
-        if self.minimum_free_bytes == 0
-            || self.minimum_write_bytes_per_second == 0
+        if self.minimum_write_bytes_per_second == 0
             || self.maximum_compressed_bytes == 0
             || self.maximum_decoded_bytes == 0
             || self.download_chunk_idle_timeout.is_zero()
@@ -573,8 +560,6 @@ fn preflight_blocking(config: &CryptoHftBinanceL2Config) -> Result<ArchiveStorag
         bail!("CryptoHFT archive filesystem reported zero capacity");
     }
     let available_fraction = available_bytes as f64 / total_bytes as f64;
-    validate_archive_headroom(config, total_bytes, available_bytes)?;
-
     let measured_write_bytes_per_second = measure_synchronous_write(&canonical_archive_root)?;
     if measured_write_bytes_per_second < config.minimum_write_bytes_per_second {
         bail!(
@@ -598,46 +583,6 @@ fn preflight_blocking(config: &CryptoHftBinanceL2Config) -> Result<ArchiveStorag
         available_fraction,
         measured_write_bytes_per_second,
     })
-}
-
-fn validate_archive_headroom(
-    config: &CryptoHftBinanceL2Config,
-    total_bytes: u64,
-    available_bytes: u64,
-) -> Result<()> {
-    let in_flight_reservation = config
-        .maximum_compressed_bytes
-        .checked_mul(MAX_CONFIGURED_DOWNLOAD_WORKERS)
-        .context("CryptoHFT in-flight storage reservation overflow")?;
-    let available_after_reservation = available_bytes.saturating_sub(in_flight_reservation);
-    if available_after_reservation < config.minimum_free_bytes {
-        bail!(
-            "CryptoHFT archive filesystem has {available_bytes} available bytes; {} bytes plus {in_flight_reservation} bytes of in-flight headroom required",
-            config.minimum_free_bytes
-        );
-    }
-    let fraction_after_reservation = available_after_reservation as f64 / total_bytes as f64;
-    if fraction_after_reservation < config.minimum_free_fraction {
-        bail!(
-            "CryptoHFT archive filesystem would be {:.2}% free after bounded in-flight downloads; {:.2}% required",
-            fraction_after_reservation * 100.0,
-            config.minimum_free_fraction * 100.0
-        );
-    }
-    Ok(())
-}
-
-async fn ensure_archive_headroom(config: &CryptoHftBinanceL2Config) -> Result<()> {
-    let config = config.clone();
-    tokio::task::spawn_blocking(move || {
-        let (total_bytes, available_bytes) = filesystem_capacity(&config.archive_root)?;
-        if total_bytes == 0 {
-            bail!("CryptoHFT archive filesystem reported zero capacity");
-        }
-        validate_archive_headroom(&config, total_bytes, available_bytes)
-    })
-    .await
-    .context("CryptoHFT archive headroom task failed")?
 }
 
 fn cleanup_stale_work_files(directory: &Path, include_parquet: bool) -> Result<()> {
@@ -767,7 +712,6 @@ pub async fn download_hour(
     tokio::task::spawn_blocking(move || cleanup_stale_work_files(&cleanup_parent, false))
         .await
         .context("CryptoHFT stale-partial cleanup task failed")??;
-    ensure_archive_headroom(config).await?;
     wait_for_request_slot(pool, cancellation).await?;
 
     let request = client.get(&spec.source_uri).send();
@@ -3316,10 +3260,6 @@ mod tests {
         let mut relative = config.clone();
         relative.archive_root = PathBuf::from("relative/archive");
         assert!(relative.validate().is_err());
-
-        let mut low_headroom = config.clone();
-        low_headroom.minimum_free_fraction = 0.249;
-        assert!(low_headroom.validate().is_err());
 
         let mut unsafe_rate = config;
         unsafe_rate.request_minimum_interval = Duration::from_millis(999);
