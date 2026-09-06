@@ -10,6 +10,7 @@ fn only_the_registered_relation_is_accepted() {
         strategy_key: "market_data.anything".into(),
         cutoff: Utc::now(),
         dry_run: true,
+        mode: Default::default(),
         execution: ExecutionSelector::default(),
     };
     assert_eq!(

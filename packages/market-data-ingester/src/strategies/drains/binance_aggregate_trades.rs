@@ -9,8 +9,8 @@ use tokio::fs;
 use super::{
     binance_schema::{self, TradeRow},
     common::{
-        create_object, db_error, existing_publication, finish_writer, invalid, io_error,
-        publish_file, start_writer, verify_existing, Chunk, Publication,
+        archived_publications, create_object, db_error, existing_publication, finish_writer,
+        invalid, io_error, publish_file, start_writer, verify_existing, Chunk, Publication,
     },
 };
 use crate::domain::{
@@ -75,30 +75,55 @@ impl DrainWorkerStrategy for BinanceAggregateTradesDrain {
         request: DrainRequest,
     ) -> Result<DrainOutcome, DrainExecutionError> {
         self.validate_request(&request)?;
-        if !request.dry_run {
+        if !request.dry_run && request.mode.removes_source_data() {
             require_stopped(&context).await?;
+        }
+        if !request.dry_run {
             fs::create_dir_all(self.root.join(".staging"))
                 .await
                 .map_err(io_error)?;
         }
+        let snapshot_at = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+            "SELECT requested_at FROM ingester.drain_jobs WHERE job_id=$1",
+        )
+        .bind(context.job_id)
+        .fetch_one(&context.pool)
+        .await
+        .map_err(db_error)?;
         let chunks = sqlx::query_as::<_, Chunk>("SELECT chunk_schema,chunk_name,range_start,range_end FROM timescaledb_information.chunks WHERE hypertable_schema='market_data' AND hypertable_name='binance_spot_btcusdt_aggregate_trades' ORDER BY range_start,chunk_name")
             .fetch_all(&context.pool).await.map_err(db_error)?;
+        let copyable: Vec<_> = chunks
+            .iter()
+            .filter(|chunk| chunk.range_end <= snapshot_at)
+            .cloned()
+            .collect();
         if request.dry_run {
             return Ok(DrainOutcome {
                 rows_exported: 0,
                 rows_removed: 0,
                 objects_published: 0,
                 bytes_written: 0,
-                summary: json!({"eligible_chunks":chunks.len(),"cutoff":request.cutoff,"relation":RELATION}),
+                summary: json!({"copyable_closed_chunks":copyable.len(),"eligible_chunks":chunks.iter().filter(|chunk| chunk.range_end <= request.cutoff).count(),"cutoff":request.cutoff,"mode":request.mode,"open_chunks":chunks.len()-copyable.len(),"relation":RELATION,"snapshot_at":snapshot_at}),
             });
         }
-        if chunks.iter().any(|chunk| chunk.range_end > request.cutoff) {
+        if request.mode.removes_source_data()
+            && chunks.iter().any(|chunk| chunk.range_end > request.cutoff)
+        {
             return Err(invalid(
                 "drain_cutoff_incomplete",
                 "cutoff must cover every source chunk because drain empties the complete relation",
             ));
         }
-        for chunk in chunks {
+        let archived = archived_publications(&context, KEY).await?;
+        for item in &archived {
+            verify_existing(&self.root, &item.publication()).await?;
+        }
+        let mut rows_exported = 0i64;
+        let mut rows_removed = 0i64;
+        let mut objects_published = 0i64;
+        let mut bytes_written = 0i64;
+        let mut objects_created = 0usize;
+        for chunk in copyable {
             if context.shutdown.is_cancelled() {
                 return Err(DrainExecutionError::new(
                     "drain_cancelled",
@@ -108,29 +133,50 @@ impl DrainWorkerStrategy for BinanceAggregateTradesDrain {
             }
             let publication = match existing_publication(&context, KEY, &chunk).await? {
                 Some(publication) => {
-                    verify_existing(&self.root, &publication).await?;
+                    if !archived
+                        .iter()
+                        .any(|item| item.object_id == publication.object_id)
+                    {
+                        verify_existing(&self.root, &publication).await?;
+                    }
                     publication
                 }
-                None => export_chunk(&context, &self.root, &chunk).await?,
+                None => {
+                    objects_created += 1;
+                    export_chunk(&context, &self.root, &chunk).await?
+                }
             };
-            sqlx::query_scalar::<_, i64>(
-                "SELECT ingester.remove_verified_binance_aggregate_trade_chunk($1,$2)",
-            )
-            .bind(publication.object_id)
-            .bind(&publication.sha256)
-            .fetch_one(&context.pool)
-            .await
-            .map_err(db_error)?;
+            rows_exported += publication.row_count;
+            objects_published += 1;
+            bytes_written += publication.byte_size;
+            if request.mode.removes_source_data() {
+                rows_removed += sqlx::query_scalar::<_, i64>(
+                    "SELECT ingester.remove_verified_binance_aggregate_trade_chunk($1,$2)",
+                )
+                .bind(publication.object_id)
+                .bind(&publication.sha256)
+                .fetch_one(&context.pool)
+                .await
+                .map_err(db_error)?;
+            }
         }
-        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_schema='market_data' AND hypertable_name='binance_spot_btcusdt_aggregate_trades'")
-            .fetch_one(&context.pool).await.map_err(db_error)?;
-        if remaining != 0 {
-            return Err(invalid(
-                "drain_relation_not_empty",
-                format!("{remaining} source chunks remain after drain"),
-            ));
+        if request.mode.removes_source_data() {
+            let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM timescaledb_information.chunks WHERE hypertable_schema='market_data' AND hypertable_name='binance_spot_btcusdt_aggregate_trades'")
+                .fetch_one(&context.pool).await.map_err(db_error)?;
+            if remaining != 0 {
+                return Err(invalid(
+                    "drain_relation_not_empty",
+                    format!("{remaining} source chunks remain after drain"),
+                ));
+            }
         }
-        outcome(&context, request.cutoff).await
+        Ok(DrainOutcome {
+            rows_exported,
+            rows_removed,
+            objects_published,
+            bytes_written,
+            summary: json!({"cutoff":request.cutoff,"mode":request.mode,"objects_created":objects_created,"relation":RELATION,"snapshot_at":snapshot_at,"ssd_complete_from":archived.iter().map(|item| item.source_start).min().or_else(|| chunks.iter().filter(|chunk| chunk.range_end <= snapshot_at).map(|chunk| chunk.range_start).min()),"ssd_complete_through":chunks.iter().filter(|chunk| chunk.range_end <= snapshot_at).map(|chunk| chunk.range_end).max().or_else(|| archived.iter().map(|item| item.source_end).max()),"verified_existing_objects":archived.len()}),
+        })
     }
 }
 
@@ -211,22 +257,6 @@ async fn export_chunk(
     let (sha256, byte_size) = publish_file(&staging, root, &relative, count).await?;
     sqlx::query_as::<_, Publication>("UPDATE ingester.drain_objects SET row_count=$2,minimum_aggregate_trade_id=$3,maximum_aggregate_trade_id=$4,relative_path=$5,sha256=$6,byte_size=$7,status='published',published_at=clock_timestamp(),updated_at=clock_timestamp() WHERE object_id=$1 AND status='staging' RETURNING object_id,row_count,relative_path,sha256::text,byte_size,status")
         .bind(object_id).bind(count).bind(minimum_id).bind(maximum_id).bind(relative).bind(sha256).bind(byte_size).fetch_one(&context.pool).await.map_err(db_error)
-}
-
-async fn outcome(
-    context: &DrainContext,
-    cutoff: chrono::DateTime<chrono::Utc>,
-) -> Result<DrainOutcome, DrainExecutionError> {
-    let totals = sqlx::query("SELECT COALESCE(sum(row_count),0)::bigint,COALESCE(sum(byte_size),0)::bigint,count(*)::bigint FROM ingester.drain_objects WHERE job_id=$1 AND status='removed'")
-        .bind(context.job_id).fetch_one(&context.pool).await.map_err(db_error)?;
-    let rows = totals.try_get(0).map_err(db_error)?;
-    Ok(DrainOutcome {
-        rows_exported: rows,
-        rows_removed: rows,
-        bytes_written: totals.try_get(1).map_err(db_error)?,
-        objects_published: totals.try_get(2).map_err(db_error)?,
-        summary: json!({"relation":RELATION,"cutoff":cutoff,"drained":true}),
-    })
 }
 
 #[cfg(test)]

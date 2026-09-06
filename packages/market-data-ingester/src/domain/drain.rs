@@ -11,6 +11,14 @@ use uuid::Uuid;
 
 use super::ExecutionSelector;
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DrainMode {
+    #[default]
+    Drain,
+    Reconcile,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DrainRequest {
@@ -19,7 +27,22 @@ pub struct DrainRequest {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
+    pub mode: DrainMode,
+    #[serde(default)]
     pub execution: ExecutionSelector,
+}
+
+impl DrainMode {
+    pub fn removes_source_data(self) -> bool {
+        self == Self::Drain
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Drain => "drain",
+            Self::Reconcile => "reconcile",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,4 +97,32 @@ pub trait DrainWorkerStrategy: Send + Sync {
         context: DrainContext,
         request: DrainRequest,
     ) -> Result<DrainOutcome, DrainExecutionError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrainMode, DrainRequest};
+
+    #[test]
+    fn omitted_mode_preserves_destructive_drain_contract() {
+        let request: DrainRequest = serde_json::from_value(serde_json::json!({
+            "strategy_key": "dataset",
+            "cutoff": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(request.mode, DrainMode::Drain);
+        assert!(request.mode.removes_source_data());
+    }
+
+    #[test]
+    fn reconcile_mode_is_copy_only() {
+        let request: DrainRequest = serde_json::from_value(serde_json::json!({
+            "strategy_key": "dataset",
+            "cutoff": "2026-01-01T00:00:00Z",
+            "mode": "reconcile"
+        }))
+        .unwrap();
+        assert_eq!(request.mode, DrainMode::Reconcile);
+        assert!(!request.mode.removes_source_data());
+    }
 }

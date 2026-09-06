@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-const COLUMNS: &str = "job_id,strategy_key,strategy_contract_version,cutoff,dry_run,status,required_worker_id,required_deployment,assigned_worker_id,lease_token,lease_expires_at,attempt,max_attempts,rows_exported,rows_removed,objects_published,bytes_written,summary,last_error_code,last_error_message,requested_at,started_at,completed_at,cancel_requested_at,updated_at";
+const COLUMNS: &str = "job_id,strategy_key,strategy_contract_version,cutoff,dry_run,mode,status,required_worker_id,required_deployment,assigned_worker_id,lease_token,lease_expires_at,attempt,max_attempts,rows_exported,rows_removed,objects_published,bytes_written,summary,last_error_code,last_error_message,requested_at,started_at,completed_at,cancel_requested_at,updated_at";
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct DrainJobRecord {
@@ -15,6 +15,7 @@ pub struct DrainJobRecord {
     pub strategy_contract_version: i32,
     pub cutoff: DateTime<Utc>,
     pub dry_run: bool,
+    pub mode: String,
     pub status: String,
     pub required_worker_id: Option<String>,
     pub required_deployment: Option<String>,
@@ -52,12 +53,13 @@ impl DrainRepository {
         Self { pool }
     }
     pub async fn submit(&self, request: &DrainRequest, version: i32) -> Result<DrainJobRecord> {
-        let q=format!("INSERT INTO ingester.drain_jobs (strategy_key,strategy_contract_version,cutoff,dry_run,required_worker_id,required_deployment) VALUES ($1,$2,$3,$4,$5,$6) RETURNING {COLUMNS}");
+        let q=format!("INSERT INTO ingester.drain_jobs (strategy_key,strategy_contract_version,cutoff,dry_run,mode,required_worker_id,required_deployment) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING {COLUMNS}");
         sqlx::query_as(&q)
             .bind(&request.strategy_key)
             .bind(version)
             .bind(request.cutoff)
             .bind(request.dry_run)
+            .bind(request.mode.as_str())
             .bind(request.execution.required_worker_id.as_deref())
             .bind(request.execution.required_deployment.as_deref())
             .fetch_one(&self.pool)

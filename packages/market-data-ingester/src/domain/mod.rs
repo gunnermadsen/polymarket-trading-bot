@@ -18,7 +18,7 @@ pub use backfill::{
 };
 pub use dataset::*;
 pub use drain::{
-    DrainContext, DrainDescriptor, DrainExecutionError, DrainOutcome, DrainRequest,
+    DrainContext, DrainDescriptor, DrainExecutionError, DrainMode, DrainOutcome, DrainRequest,
     DrainWorkerStrategy,
 };
 pub use gap::{DataGap, GapStatus};

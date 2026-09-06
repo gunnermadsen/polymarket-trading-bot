@@ -1,6 +1,6 @@
 use super::StrategyRegistry;
 use crate::{
-    domain::{DrainContext, DrainExecutionError, DrainRequest, ExecutionSelector},
+    domain::{DrainContext, DrainExecutionError, DrainMode, DrainRequest, ExecutionSelector},
     persistence::{ClaimedDrainJob, DrainRepository},
 };
 use anyhow::{Context, Result};
@@ -85,6 +85,23 @@ impl DrainWorkerRuntime {
             strategy_key: claim.job.strategy_key.clone(),
             cutoff: claim.job.cutoff,
             dry_run: claim.job.dry_run,
+            mode: match claim.job.mode.as_str() {
+                "drain" => DrainMode::Drain,
+                "reconcile" => DrainMode::Reconcile,
+                _ => {
+                    let _ = self
+                        .repository
+                        .fail(
+                            claim.job.job_id,
+                            claim.lease_token,
+                            "drain_mode_invalid",
+                            "persisted drain mode is invalid",
+                            false,
+                        )
+                        .await;
+                    return;
+                }
+            },
             execution: ExecutionSelector {
                 required_worker_id: claim.job.required_worker_id.clone(),
                 required_deployment: claim.job.required_deployment.clone(),

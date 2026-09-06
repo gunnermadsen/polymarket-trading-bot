@@ -9,7 +9,10 @@ use crate::domain::{
     DrainContext, DrainDescriptor, DrainExecutionError, DrainOutcome, DrainRequest,
 };
 
-use super::common::{db_error, existing_publication, invalid, verify_existing, Chunk, Publication};
+use super::common::{
+    archived_publications, db_error, existing_publication, invalid, verify_existing, Chunk,
+    Publication,
+};
 
 pub struct RetainedDrainSpec {
     pub key: &'static str,
@@ -93,10 +96,15 @@ pub async fn execute(
         .filter(|chunk| chunk.range_end <= snapshot_at)
         .cloned()
         .collect();
-    let removable = copyable
+    let eligible = copyable
         .iter()
         .filter(|chunk| chunk.range_end <= request.cutoff)
         .count();
+    let removable = if request.mode.removes_source_data() {
+        eligible
+    } else {
+        0
+    };
     if request.dry_run {
         return Ok(DrainOutcome {
             rows_exported: 0,
@@ -106,7 +114,8 @@ pub async fn execute(
             summary: json!({
                 "copyable_closed_chunks": copyable.len(),
                 "cutoff": request.cutoff,
-                "eligible_chunks": removable,
+                "eligible_chunks": eligible,
+                "mode": request.mode,
                 "open_chunks": chunks.len() - copyable.len(),
                 "relation": spec.relation,
                 "retained_chunks": chunks.len() - removable,
@@ -125,6 +134,12 @@ pub async fn execute(
         bytes_written: 0,
         summary: json!({}),
     };
+    let archived = archived_publications(&context, spec.key).await?;
+    for item in &archived {
+        verify_existing(adapter.root(), &item.publication()).await?;
+    }
+    let mut verified_existing_objects = archived.len();
+    let mut objects_created = 0usize;
     for chunk in copyable {
         if context.shutdown.is_cancelled() {
             return Err(DrainExecutionError::new(
@@ -135,15 +150,24 @@ pub async fn execute(
         }
         let publication = match existing_publication(&context, spec.key, &chunk).await? {
             Some(publication) => {
-                verify_existing(adapter.root(), &publication).await?;
+                if !archived
+                    .iter()
+                    .any(|item| item.object_id == publication.object_id)
+                {
+                    verify_existing(adapter.root(), &publication).await?;
+                    verified_existing_objects += 1;
+                }
                 publication
             }
-            None => adapter.export_chunk(&context, &chunk).await?,
+            None => {
+                objects_created += 1;
+                adapter.export_chunk(&context, &chunk).await?
+            }
         };
         outcome.rows_exported += publication.row_count;
         outcome.objects_published += 1;
         outcome.bytes_written += publication.byte_size;
-        if chunk.range_end <= request.cutoff {
+        if request.mode.removes_source_data() && chunk.range_end <= request.cutoff {
             outcome.rows_removed +=
                 sqlx::query_scalar::<_, i64>("SELECT ingester.remove_verified_drain_chunk($1,$2)")
                     .bind(publication.object_id)
@@ -155,9 +179,16 @@ pub async fn execute(
     }
     outcome.summary = json!({
         "cutoff": request.cutoff,
+        "database_retained_from": chunks.iter().filter(|chunk| !request.mode.removes_source_data() || chunk.range_end > request.cutoff).map(|chunk| chunk.range_start).min(),
+        "live_tail_from": chunks.iter().filter(|chunk| chunk.range_end > snapshot_at).map(|chunk| chunk.range_start).min(),
+        "mode": request.mode,
+        "objects_created": objects_created,
         "relation": spec.relation,
         "retention_days": spec.retention_days,
         "snapshot_at": snapshot_at,
+        "ssd_complete_from": archived.iter().map(|item| item.source_start).min().or_else(|| chunks.iter().filter(|chunk| chunk.range_end <= snapshot_at).map(|chunk| chunk.range_start).min()),
+        "ssd_complete_through": chunks.iter().filter(|chunk| chunk.range_end <= snapshot_at).map(|chunk| chunk.range_end).max().or_else(|| archived.iter().map(|item| item.source_end).max()),
+        "verified_existing_objects": verified_existing_objects,
     });
     Ok(outcome)
 }

@@ -9,6 +9,7 @@ fn request(cutoff: chrono::DateTime<Utc>) -> DrainRequest {
         strategy_key: KEY.into(),
         cutoff,
         dry_run: true,
+        mode: Default::default(),
         execution: ExecutionSelector::default(),
     }
 }

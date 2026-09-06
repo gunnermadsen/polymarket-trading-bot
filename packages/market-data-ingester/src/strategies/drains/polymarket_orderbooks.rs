@@ -1,9 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
 use futures_util::TryStreamExt;
-use serde_json::json;
 use tokio::fs;
 
 use crate::domain::{
@@ -13,16 +11,24 @@ use crate::domain::{
 
 use super::{
     common::{
-        create_object, db_error, existing_publication, finish_writer, invalid, io_error,
-        publish_file, start_writer, verify_existing, Chunk, Publication,
+        create_object, db_error, finish_writer, invalid, io_error, publish_file, start_writer,
+        Chunk, Publication,
     },
     orderbook_schema::{self, OrderbookRow},
+    retained::{self, RetainedDrainAdapter, RetainedDrainSpec},
 };
 
 pub const KEY: &str = "polymarket_btc_five_minute_orderbooks";
 pub const RELATION: &str = "polymarket.btc_five_minute_orderbook_snapshots";
 const RETENTION_DAYS: i64 = 14;
 const BATCH_ROWS: usize = 2_000;
+const SPEC: RetainedDrainSpec = RetainedDrainSpec {
+    key: KEY,
+    relation: RELATION,
+    schema: "polymarket",
+    table: "btc_five_minute_orderbook_snapshots",
+    retention_days: Some(RETENTION_DAYS),
+};
 
 pub struct PolymarketOrderbooksDrain {
     descriptor: DrainDescriptor,
@@ -51,19 +57,7 @@ impl PolymarketOrderbooksDrain {
         })
     }
 
-    async fn chunks(&self, context: &DrainContext) -> Result<Vec<Chunk>, DrainExecutionError> {
-        sqlx::query_as(
-            "SELECT chunk_schema,chunk_name,range_start,range_end \
-             FROM timescaledb_information.chunks WHERE hypertable_schema='polymarket' \
-             AND hypertable_name='btc_five_minute_orderbook_snapshots' \
-             ORDER BY range_start,chunk_name",
-        )
-        .fetch_all(&context.pool)
-        .await
-        .map_err(db_error)
-    }
-
-    async fn export_chunk(
+    async fn export_orderbook_chunk(
         &self,
         context: &DrainContext,
         chunk: &Chunk,
@@ -135,30 +129,32 @@ impl PolymarketOrderbooksDrain {
 }
 
 #[async_trait]
+impl RetainedDrainAdapter for PolymarketOrderbooksDrain {
+    fn spec(&self) -> &RetainedDrainSpec {
+        &SPEC
+    }
+
+    fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    async fn export_chunk(
+        &self,
+        context: &DrainContext,
+        chunk: &Chunk,
+    ) -> Result<Publication, DrainExecutionError> {
+        self.export_orderbook_chunk(context, chunk).await
+    }
+}
+
+#[async_trait]
 impl DrainWorkerStrategy for PolymarketOrderbooksDrain {
     fn descriptor(&self) -> &DrainDescriptor {
         &self.descriptor
     }
 
     fn validate_request(&self, request: &DrainRequest) -> Result<(), DrainExecutionError> {
-        if request.strategy_key != KEY {
-            return Err(invalid(
-                "drain_strategy_mismatch",
-                "request does not target the Polymarket orderbook drain",
-            ));
-        }
-        request
-            .execution
-            .validate()
-            .map_err(|error| invalid("drain_execution_selector_invalid", error.to_string()))?;
-        let newest_allowed = Utc::now() - Duration::days(RETENTION_DAYS);
-        if request.cutoff > newest_allowed {
-            return Err(invalid(
-                "drain_retention_violation",
-                format!("cutoff must retain at least {RETENTION_DAYS} days of orderbook data"),
-            ));
-        }
-        Ok(())
+        retained::validate_strategy(self, request)
     }
 
     async fn execute_drain(
@@ -166,90 +162,7 @@ impl DrainWorkerStrategy for PolymarketOrderbooksDrain {
         context: DrainContext,
         request: DrainRequest,
     ) -> Result<DrainOutcome, DrainExecutionError> {
-        self.validate_request(&request)?;
-        let snapshot_at = sqlx::query_scalar::<_, chrono::DateTime<Utc>>(
-            "SELECT requested_at FROM ingester.drain_jobs WHERE job_id=$1",
-        )
-        .bind(context.job_id)
-        .fetch_one(&context.pool)
-        .await
-        .map_err(db_error)?;
-        let chunks = self.chunks(&context).await?;
-        let copyable: Vec<_> = chunks
-            .iter()
-            .filter(|chunk| chunk.range_end <= snapshot_at)
-            .cloned()
-            .collect();
-        let removable = copyable
-            .iter()
-            .filter(|chunk| chunk.range_end <= request.cutoff)
-            .count();
-        if request.dry_run {
-            return Ok(DrainOutcome {
-                rows_exported: 0,
-                rows_removed: 0,
-                objects_published: 0,
-                bytes_written: 0,
-                summary: json!({
-                    "cutoff": request.cutoff,
-                    "copyable_closed_chunks": copyable.len(),
-                    "eligible_chunks": removable,
-                    "open_chunks": chunks.len() - copyable.len(),
-                    "relation": RELATION,
-                    "retained_chunks": chunks.len() - removable,
-                    "retention_days": RETENTION_DAYS,
-                    "snapshot_at": snapshot_at,
-                }),
-            });
-        }
-        fs::create_dir_all(self.root.join(".staging"))
-            .await
-            .map_err(io_error)?;
-        let mut rows_exported = 0i64;
-        let mut rows_removed = 0i64;
-        let mut objects_published = 0i64;
-        let mut bytes_written = 0i64;
-        for chunk in copyable {
-            if context.shutdown.is_cancelled() {
-                return Err(DrainExecutionError::new(
-                    "drain_cancelled",
-                    "drain was cancelled",
-                    true,
-                ));
-            }
-            let publication = match existing_publication(&context, KEY, &chunk).await? {
-                Some(publication) => {
-                    verify_existing(&self.root, &publication).await?;
-                    publication
-                }
-                None => self.export_chunk(&context, &chunk).await?,
-            };
-            rows_exported += publication.row_count;
-            objects_published += 1;
-            bytes_written += publication.byte_size;
-            if chunk.range_end <= request.cutoff {
-                rows_removed += sqlx::query_scalar::<_, i64>(
-                    "SELECT ingester.remove_verified_drain_chunk($1,$2)",
-                )
-                .bind(publication.object_id)
-                .bind(&publication.sha256)
-                .fetch_one(&context.pool)
-                .await
-                .map_err(db_error)?;
-            }
-        }
-        Ok(DrainOutcome {
-            rows_exported,
-            rows_removed,
-            bytes_written,
-            objects_published,
-            summary: json!({
-                "cutoff": request.cutoff,
-                "relation": RELATION,
-                "retention_days": RETENTION_DAYS,
-                "snapshot_at": snapshot_at,
-            }),
-        })
+        retained::execute_strategy(self, context, request).await
     }
 }
 
