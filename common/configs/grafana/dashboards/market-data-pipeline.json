@@ -76,7 +76,8 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
         {"refId": "A", "expr": "increase(polymarket_market_data_grpc_reconnects_total[5m])", "legendFormat": "Worker reconnects · 5m"},
-        {"refId": "B", "expr": "sum by (reason) (increase(polymarket_market_data_route_failures_total[5m]))", "legendFormat": "{{reason}} · 5m"}
+        {"refId": "B", "expr": "sum by (reason) (increase(polymarket_market_data_route_failures_total[5m]))", "legendFormat": "{{reason}} · 5m"},
+        {"refId": "C", "expr": "increase(polymarket_market_data_duplicates_total[15m])", "legendFormat": "Deduplicated · 15m"}
       ],
       "fieldConfig": {"defaults": {"min": 0, "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}}, "overrides": []},
       "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
@@ -599,5 +600,5 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 5
+  "version": 6
 }
