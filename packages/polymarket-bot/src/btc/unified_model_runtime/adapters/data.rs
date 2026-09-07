@@ -8,6 +8,21 @@ pub struct BookHistory {
     snapshots: VecDeque<Arc<OrderbookCheckpoint>>,
 }
 impl BookHistory {
+    pub fn availability_detail(&self, token: &str, at: DateTime<Utc>) -> String {
+        let matching = self
+            .snapshots
+            .iter()
+            .filter(|v| v.token_id == token)
+            .collect::<Vec<_>>();
+        format!(
+            "retained={}, token_snapshots={}, candidate={}, oldest={:?}, newest={:?}",
+            self.snapshots.len(),
+            matching.len(),
+            at,
+            matching.first().map(|v| (v.received_at, v.connection_id)),
+            matching.last().map(|v| (v.received_at, v.connection_id))
+        )
+    }
     pub fn observe(&mut self, book: OrderbookCheckpoint) {
         if self.snapshots.back().is_some_and(|v| {
             v.token_id == book.token_id

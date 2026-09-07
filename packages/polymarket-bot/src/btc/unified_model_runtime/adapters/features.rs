@@ -31,11 +31,27 @@ pub fn build(
     let up = state
         .unified_book_history
         .at(&up.market_id, &up.token_id, up.connection_id, at)
-        .context("UMR causal UP book unavailable")?;
+        .with_context(|| {
+            format!(
+                "UMR causal UP book unavailable: expected_epoch={}; {}",
+                up.connection_id,
+                state
+                    .unified_book_history
+                    .availability_detail(&up.token_id, at)
+            )
+        })?;
     let down = state
         .unified_book_history
         .at(&down.market_id, &down.token_id, down.connection_id, at)
-        .context("UMR causal DOWN book unavailable")?;
+        .with_context(|| {
+            format!(
+                "UMR causal DOWN book unavailable: expected_epoch={}; {}",
+                down.connection_id,
+                state
+                    .unified_book_history
+                    .availability_detail(&down.token_id, at)
+            )
+        })?;
     for book in [up, down] {
         let age = (at - book.received_at).num_milliseconds();
         ensure!(
