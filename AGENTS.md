@@ -171,6 +171,12 @@ Think of Capitonic as a vision to generate income through systems with automatio
 ## Observability provisioning
 - Provision every Grafana, Prometheus, Loki, and Alloy deployment, including all environment configuration changes; do not make manual, unprovisioned changes.
 
+## Observability deployment provenance
+- After provisioning Grafana, Prometheus, Loki, or Alloy configuration, create one annotated tag on the exact source commit using `provisioned/observability/<environment>/<YYYYMMDDTHHMMSSZ>`.
+- Record the target environment, provisioning timestamp, originating branch, deployment result, configuration hash, and every component and configuration path provisioned.
+- Create one tag per provisioning event, including when multiple observability components are deployed together. Do not create separate component tags for the same event.
+- A provisioning tag records deployment history only; it does not imply image, integration, candidate, or golden-release status.
+
 ## Data artifacts
 - Store all backtesting and model-training data only in Parquet format, including weather-model predictions and Kraken futures test data.
 - Direct Chainlink Data Streams reference prices use only `market_data.chainlink_btcusd_reference_prices`; PMData reference prices use only `market_data.pmdata_chainlink_btcusd_reference_prices`. Strategies must call the corresponding shared persistence function and must not issue table-specific insert SQL.
