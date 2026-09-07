@@ -547,6 +547,8 @@ impl BtcRuntime {
             Arc::new(AtomicBool::new(includes_open_interest(&self.sources)));
         let binance_one_second_hydration_started =
             Arc::new(AtomicBool::new(includes_binance_one_second(&self.sources)));
+        let chainlink_hydration_started =
+            Arc::new(AtomicBool::new(includes_chainlink(&self.sources)));
         let (sources_tx, sources_rx) = watch::channel(self.sources);
         let stream_shutdown = CancellationToken::new();
         let stream_shutdown_task = stream_shutdown.clone();
@@ -630,6 +632,8 @@ impl BtcRuntime {
             dynamic_open_interest_hydration_task: StdMutex::new(None),
             binance_one_second_hydration_started,
             dynamic_binance_one_second_hydration_task: StdMutex::new(None),
+            chainlink_hydration_started,
+            dynamic_chainlink_hydration_task: StdMutex::new(None),
         })
     }
 }
@@ -671,6 +675,10 @@ fn includes_binance_one_second(sources: &[SourceSelector]) -> bool {
         .any(|source| source.key == PRODUCT_BINANCE_1S)
 }
 
+fn includes_chainlink(sources: &[SourceSelector]) -> bool {
+    sources.iter().any(|source| source.key == PRODUCT_CHAINLINK)
+}
+
 fn claim_dynamic_open_interest_hydration(
     previous: &[SourceSelector],
     next: &[SourceSelector],
@@ -695,6 +703,18 @@ fn claim_dynamic_binance_one_second_hydration(
             .is_ok()
 }
 
+fn claim_dynamic_chainlink_hydration(
+    previous: &[SourceSelector],
+    next: &[SourceSelector],
+    hydration_started: &AtomicBool,
+) -> bool {
+    !includes_chainlink(previous)
+        && includes_chainlink(next)
+        && hydration_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
 pub struct BtcRuntimeHandle {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -709,6 +729,8 @@ pub struct BtcRuntimeHandle {
     dynamic_open_interest_hydration_task: StdMutex<Option<JoinHandle<()>>>,
     binance_one_second_hydration_started: Arc<AtomicBool>,
     dynamic_binance_one_second_hydration_task: StdMutex<Option<JoinHandle<()>>>,
+    chainlink_hydration_started: Arc<AtomicBool>,
+    dynamic_chainlink_hydration_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 impl BtcRuntimeHandle {
@@ -739,6 +761,14 @@ impl BtcRuntimeHandle {
                 previous.as_slice(),
                 &sources,
                 &self.binance_one_second_hydration_started,
+            )
+        };
+        let hydrate_chainlink = {
+            let previous = self.sources.borrow();
+            claim_dynamic_chainlink_hydration(
+                previous.as_slice(),
+                &sources,
+                &self.chainlink_hydration_started,
             )
         };
         if self.sources.borrow().as_slice() != sources.as_slice() {
@@ -777,6 +807,24 @@ impl BtcRuntimeHandle {
                 .dynamic_binance_one_second_hydration_task
                 .lock()
                 .expect("dynamic Binance one-second hydration task lock")
+                .replace(task);
+            debug_assert!(previous.is_none());
+        }
+        if hydrate_chainlink {
+            let task = spawn_runtime_task(
+                "chainlink_hydration",
+                run_directional_chainlink_hydration_recovery(
+                    self.repository.clone(),
+                    self.state.clone(),
+                    self.shutdown.subscribe(),
+                ),
+                self.running.clone(),
+                self.metrics.clone(),
+            );
+            let previous = self
+                .dynamic_chainlink_hydration_task
+                .lock()
+                .expect("dynamic RTDS Chainlink hydration task lock")
                 .replace(task);
             debug_assert!(previous.is_none());
         }
@@ -833,6 +881,16 @@ impl BtcRuntimeHandle {
                 join_failures.push(error.to_string());
             }
         }
+        let dynamic_chainlink_hydration = self
+            .dynamic_chainlink_hydration_task
+            .lock()
+            .expect("dynamic RTDS Chainlink hydration task lock")
+            .take();
+        if let Some(task) = dynamic_chainlink_hydration {
+            if let Err(error) = task.await {
+                join_failures.push(error.to_string());
+            }
+        }
         if !join_failures.is_empty() {
             bail!("BTC runtime task join failed: {}", join_failures.join("; "));
         }
@@ -863,6 +921,14 @@ impl Drop for BtcRuntimeHandle {
             .dynamic_binance_one_second_hydration_task
             .lock()
             .expect("dynamic Binance one-second hydration task lock")
+            .as_ref()
+        {
+            task.abort();
+        }
+        if let Some(task) = self
+            .dynamic_chainlink_hydration_task
+            .lock()
+            .expect("dynamic RTDS Chainlink hydration task lock")
             .as_ref()
         {
             task.abort();
@@ -1131,6 +1197,49 @@ mod tests {
     use super::*;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
+
+    #[test]
+    fn late_rtds_consumer_seeds_shared_history_once_in_either_start_order() {
+        let with_rtds = legacy_default_sources();
+        let without_rtds = with_rtds
+            .iter()
+            .filter(|s| s.key != PRODUCT_CHAINLINK)
+            .cloned()
+            .collect::<Vec<_>>();
+        let started = AtomicBool::new(false);
+        assert!(!claim_dynamic_chainlink_hydration(
+            &without_rtds,
+            &without_rtds,
+            &started
+        ));
+        assert!(claim_dynamic_chainlink_hydration(
+            &without_rtds,
+            &with_rtds,
+            &started
+        ));
+        assert!(!claim_dynamic_chainlink_hydration(
+            &without_rtds,
+            &with_rtds,
+            &started
+        ));
+        assert!(!claim_dynamic_chainlink_hydration(
+            &with_rtds, &with_rtds, &started
+        ));
+        // A runtime initially started by an RTDS consumer already seeded or
+        // scheduled recovery; subsequent consumers must not duplicate reads.
+        let seeded_at_start = AtomicBool::new(true);
+        assert!(!claim_dynamic_chainlink_hydration(
+            &without_rtds,
+            &with_rtds,
+            &seeded_at_start
+        ));
+        // A fresh runtime owns a fresh claim after container replacement.
+        assert!(claim_dynamic_chainlink_hydration(
+            &without_rtds,
+            &with_rtds,
+            &AtomicBool::new(false)
+        ));
+    }
 
     fn one_second_candle(open_timestamp: DateTime<Utc>) -> BinanceOneSecondKline {
         BinanceOneSecondKline {
