@@ -600,9 +600,19 @@ struct PreparedBtcStartDefinition {
 fn merge_source_selectors(
     selectors: impl IntoIterator<Item = SourceSelector>,
 ) -> Result<Vec<SourceSelector>, HttpError> {
-    let mut by_key = BTreeMap::new();
+    let mut by_key: BTreeMap<String, SourceSelector> = BTreeMap::new();
     for selector in selectors {
         if let Some(existing) = by_key.get(&selector.key) {
+            // An optional consumer must not change an established required
+            // subscription. Adapter freshness checks remain process-local.
+            if existing.contract_version == selector.contract_version
+                && existing.required != selector.required
+            {
+                if selector.required {
+                    by_key.insert(selector.key.clone(), selector);
+                }
+                continue;
+            }
             if existing != &selector {
                 return Err(HttpError::conflict(format!(
                     "BTC source {} has incompatible selector settings across active processes",
@@ -4258,6 +4268,31 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod lifecycle_tests {
+    #[test]
+    fn optional_model_source_preserves_required_subscription_in_either_order() {
+        let required: super::SourceSelector =
+            serde_json::from_value(serde_json::json!("polygon_chainlink_btcusd_oracle")).unwrap();
+        let optional: super::SourceSelector = serde_json::from_value(serde_json::json!({
+            "key": "polygon_chainlink_btcusd_oracle", "required": false,
+            "maximum_age_ms": 600000, "require_sequence_integrity": false
+        }))
+        .unwrap();
+        for selectors in [
+            vec![required.clone(), optional.clone()],
+            vec![optional.clone(), required.clone()],
+        ] {
+            assert_eq!(
+                super::merge_source_selectors(selectors).unwrap(),
+                vec![required.clone()]
+            );
+        }
+        let mut conflicting = optional.clone();
+        conflicting.contract_version = 2;
+        assert!(super::merge_source_selectors([required.clone(), conflicting]).is_err());
+        let mut conflicting = required.clone();
+        conflicting.maximum_age_ms = Some(1000);
+        assert!(super::merge_source_selectors([required, conflicting]).is_err());
+    }
     use super::*;
     use polymarket_bot::btc::BTC_DIRECTIONAL_MODEL_FEATURE_SCHEMA_VERSION;
 
