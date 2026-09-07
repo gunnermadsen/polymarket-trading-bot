@@ -47,4 +47,6 @@ Numerical export parity, feature parity, deployment readiness and profitable liv
 
 Follow repository branch/integration/image rules. Merge requires explicit authorization naming the feature branch. Record source provenance for the bot image; only rebuild changed components. Observability deployment is provisioned and tagged with its configuration hashes. Do not apply a database migration without its separately authorized narrow specification.
 
+An explicitly authorized feature verification deployment can build and run directly from the existing feature worktree. Integration merging and golden promotion are separate actions and are not prerequisites for this paper verification. Keep the worktree while deployed containers mount its model and monitoring files; retain the exact image identity and rollback reference.
+
 Model rollback selects a previously validated immutable package via process configuration. Service rollback deploys the previous accepted immutable image. Never rebuild an old image as a substitute for the retained rollback image, overwrite artifacts, reset process history, or remove durable trading intent during recovery.

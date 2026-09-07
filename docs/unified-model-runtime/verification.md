@@ -1,10 +1,10 @@
 # UMR implementation verification
 
-Status: implementation verified in the isolated feature worktree; production provisioning, activation and live paper observations have not been performed.
+Status: deployed directly from `feature/unified-model-runtime` on 2026-09-07. All five new paper processes and five existing controls are enabled and running. No integration merge or golden promotion was performed. The first full market window after the causal-history correction produced six successful predictions per new model, zero feature/inference errors, and no admitted trades.
 
 | Check | Result |
 | --- | --- |
-| Rust suite | 387 passed, one existing ignored test |
+| Rust suite | Final deployed-source suite: 389 passed, one existing ignored test |
 | Immutable catalog | All 23 mounted packages loaded and passed registration reference cases |
 | New frozen champions | 320 Python-to-Rust probability, action and admission reference cases |
 | Feature parity | Six candidate seconds; 67 core plus four causal oracle dimensions checked from raw inputs |
@@ -34,7 +34,28 @@ Status: implementation verified in the isolated feature worktree; production pro
 - Canonical Chainlink OHLC and compatible optional L2 inputs are unavailable in the current adapter. Their declared native missing behavior is preserved; historical fully populated economics are not a live performance guarantee.
 - Learned admission started after the first candidate slot waits for the next complete market when prior history is unknown. Enabled intent is preserved.
 - Operational calibration and economic aggregates are session-scoped. Durable existing feature, decision, order and accounting records remain authoritative.
-- Native tests do not establish deployed container latency, feed readiness, fills or settlement outcomes. Those require the actual candidate deployment.
-- Training weights, thresholds, trade size and all five existing model packages/configurations remain unchanged. No training, database migration, process creation or source-data mutation was performed.
+- The initial live inference window establishes functioning feature construction and frozen admission evaluation, not profitable qualification. No new-model fill or settlement was observed in that window; those portions of live behavior remain unverified.
+- Training weights, thresholds, trade size and all five existing model packages/configurations remain unchanged. Five new paper processes were created and started through existing APIs. No training, database migration or source-data mutation was performed.
 
-Detailed local logs are retained under the worktree’s ignored `target/umr-evidence/` directory. Isolated Grafana provisioning is recorded by `provisioned/observability/umr-review/20260907T204438Z`, pointing to dashboard source `f525bc9`. The earlier preview at `e53c3a4` found presentation issues, corrected before the final check. Temporary preview services were removed. Production release provenance remains pending.
+Detailed local logs are retained under the worktree’s ignored `target/umr-evidence/` directory. Isolated Grafana provisioning is recorded by `provisioned/observability/umr-review/20260907T204438Z`, pointing to dashboard source `f525bc9`. Temporary preview services were removed.
+
+## Feature deployment evidence
+
+- Bot source: `d6d48e4b8fe484370d6bd5be93c6891955de32cd`.
+- Immutable deployed image: `sha256:3bbe49ca1f6d5f43443a3b1dd9c399d0487a1a429c589d31755a5c6a76a79fcf`; matching embedded source revision and annotated `image/polymarket-bot/sha256-3bbe49ca1f6d5f43443a3b1dd9c399d0487a1a429c589d31755a5c6a76a79fcf` tag. Built from clean committed feature source.
+- Previous accepted rollback image: `sha256:64268bd4762d03ff4ec812a2a8a9019b12c2b404bbef290ba472dde7dea7730d`. This image predates UMR; new UMR processes require a compatible runtime to infer. Existing process identities and durable records are retained.
+- Runtime model directory is the feature worktree's read-only mounted `packages/btc-directional-model/runtime-models`. All five mounted manifests matched host files; catalog accepts all 23 packages. No database migrations or schema changes.
+- All ten enabled processes resumed automatically after feature container replacement. The five original process configurations compare exactly equal before and after deployment.
+- Live Grafana API verifies 73 dashboard panels and nine provisioned UMR alerts. Prometheus sees ten model identities; the dashboard's process-scoped Loki query returns real runtime logs. No PostgreSQL visual queries are used.
+- Monitoring provisioning events: `provisioned/observability/development/20260907T212053Z` records the initial Grafana/Alloy deployment and missing alert-copy diagnosis; `20260907T212136Z` records corrected alert provisioning; `20260907T212931Z` records the corrected first-inference age display. Each full tag uses the same `provisioned/observability/development/` prefix.
+- Live deployment exposed and corrected optional-versus-required selector matching and dense book-publication eviction. Required subscription settings remain unchanged. A 9,600-publication regression verifies causal whole-second boundaries survive bursts; eight UMR tests and 26 lifecycle tests passed.
+- Final full-suite run passed 389 tests, with one existing ignored test. Local HTTP fixtures required socket access. A single live resource snapshot showed 4.60% CPU and 25.45 MiB resident container memory; this is not a sustained capacity benchmark.
+- In the 21:30 UTC market, candidate seconds 60, 65, 70, 75, 80 and 85 produced 30 successful new-model inferences. All 30 were rejected by frozen model admission; zero new-model feature/inference errors or paper fills in this observed window. Existing controls continue using their existing feature requirements, including their original transient missing-data handling.
+
+| New paper model | Process ID |
+| --- | --- |
+| Extended official | `4669169b-75b5-41e0-a08f-790d049a84da` |
+| Bridge aware | `980a140e-3823-4548-b862-475c205d0e2f` |
+| VWAP admission | `4ec890d3-720e-49fb-9b8c-b579b2925091` |
+| Temporal consensus | `c3d19b13-16dc-4d20-9afb-d67814f84d38` |
+| High-precision loss veto | `96c89496-da28-45fd-b18a-bad865352e9a` |

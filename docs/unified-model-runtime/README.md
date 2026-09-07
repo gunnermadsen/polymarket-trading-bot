@@ -70,7 +70,9 @@ Learned admission uses prior eligible opportunity probabilities. History is isol
 
 Package detection never changes a running process's selection. Artifact hashes pin the process. Partial exports are hidden and published atomically. Unsupported or corrupt packages report a catalog error without changing other registrations.
 
-The runtime caches immutable model components. Inference uses bounded histories and never scans training data or the database. Causal book history uses shared immutable references, retains five seconds and at most 64 snapshots, and forbids epoch crossover.
+The runtime caches immutable model components. Inference uses bounded histories and never scans training data or the database. Causal book history uses shared immutable references, retains five seconds and at most 64 snapshots, and forbids epoch crossover. For these whole-second model candidates, it retains the latest publication per token per second, including publications exactly at the boundary. Dense intra-second bursts cannot evict the preceding causal boundary. This compressed history is not a subsecond-query contract; a future adapter requiring subsecond history must declare and validate that capability.
+
+Shared subscriptions preserve an existing required consumer's selector when an optional consumer uses the same product and contract version. Differing required selectors and differing contract versions still conflict. Optional adapter freshness rules remain process-local; adding an optional consumer cannot tighten or weaken an existing required subscription.
 
 Transient feed, history, persistence and transport failures block only affected actions. They must not permanently disable a process or unrelated processes. Existing reconciliation, order reservation, execution safety, settlement and accounting are authoritative. Telemetry must not become an additional durable trading authorization gate.
 
