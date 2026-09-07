@@ -4,7 +4,7 @@ Status: deployed directly from `feature/unified-model-runtime` on 2026-09-07. Al
 
 | Check | Result |
 | --- | --- |
-| Rust suite | Final deployed-source suite: 389 passed, one existing ignored test |
+| Rust suite | Latest repository-cutover suite: 394 passed, one existing ignored test |
 | Immutable catalog | All 23 mounted packages loaded and passed registration reference cases |
 | New frozen champions | 320 Python-to-Rust probability, action and admission reference cases |
 | Feature parity | Six candidate seconds; 67 core plus four causal oracle dimensions checked from raw inputs |
@@ -40,6 +40,18 @@ Status: deployed directly from `feature/unified-model-runtime` on 2026-09-07. Al
 Detailed local logs are retained under the worktree’s ignored `target/umr-evidence/` directory. Isolated Grafana provisioning is recorded by `provisioned/observability/umr-review/20260907T204438Z`, pointing to dashboard source `f525bc9`. Temporary preview services were removed.
 
 ## Feature deployment evidence
+
+### Single RTDS repository cutover, 2026-09-07 22:39 UTC
+
+Deployed source `802d582ba6043b188f5a0e004fbe749b93c39662`, immutable image `sha256:c7b046d1d9863928e8ac94d6914ba5deb6e4acc8c7c0df289a068685d7358680`, with matching embedded provenance and annotated image tag. Retained preceding image `sha256:71364fd5c8f5e0cdbd21eda79622a6d512abff449ac536b03d34a5885093bba4` as the immediate rollback reference. No integration merge or golden promotion occurred.
+
+One repository now owns RTDS point history and the extracted candle calculation. Startup seeds it unconditionally through the existing bounded database query and retry path; the former dynamic RTDS hydration task/flag is removed. Model readers and existing global candle metrics use that repository. The existing gRPC source remains the only live RTDS source; the default shared selector is optional and explicit consumer selectors remain unchanged. See [the repository contract](rtds-repository.md).
+
+All 394 tests passed, including exact OHLC/availability fixtures, causal gaps, duplicate/out-of-order hydration, immutable snapshot sharing, source uniqueness, model reference vectors and lifecycle tests. All ten process configurations compared exactly equal before/after deployment, all ten resumed enabled/running, all model manifest hashes were unchanged, and the catalog accepted all 23 packages.
+
+Live checks confirmed 61 complete RTDS minutes and readiness 1 both directly and through Grafana's existing Prometheus datasource. By 22:41:42 UTC all ten models had successful inferences with zero inference errors. New-model counts were 6/6/6/5/5 across the first six scheduled opportunities; the two misses were unavailable UP books. Existing models also had orderbook-related feature skips, with no missing RTDS candle errors in the bounded post-deployment log inspection. No threshold or model-input substitution was made to bypass these checks.
+
+The container had zero restarts; a single resource snapshot showed 3.80% CPU and 32.19 MiB memory, not a sustained capacity qualification. Existing monitoring definitions were not changed or reprovisioned, and no database migration or diagnostic database scan was used. Evidence is retained under `target/umr-evidence/` in the feature worktree (`before-rtds-repository.json`, `after-rtds-repository.json`, `rtds-repository-tests-final.log`, `deployed-image-rtds-repository.json`, and live metrics/diagnostics).
 
 ### Shared RTDS hydration correction, 2026-09-07 22:06 UTC
 
