@@ -13,6 +13,9 @@ Status: implementation verified in the isolated feature worktree; production pro
 | Native concurrency | 640 inferences across ten models; observed p95 approximately 0.22 ms; not container capacity qualification |
 | Dashboard queries | 72 Prometheus dashboard/alert expressions evaluated successfully; no PostgreSQL datasource or queries |
 | Dashboard structure | 73 panels including section rows, unique IDs, no grid overlaps |
+| Grafana rendering | Exact committed dashboard provisioned in Grafana 12.4.2; introduction, summary, funnel and diagnostic layouts inspected with empty synthetic responses |
+| Grafana alerts | Nine definitions accepted by the isolated preview; alert execution disabled |
+| Alloy | Configuration validation passes with networking disabled |
 | Formatting | Rust formatting and diff whitespace checks pass |
 | Strict Clippy | Fails on 25 pre-existing diagnostics outside new UMR code; unrelated lint cleanup intentionally excluded |
 
@@ -34,4 +37,4 @@ Status: implementation verified in the isolated feature worktree; production pro
 - Native tests do not establish deployed container latency, feed readiness, fills or settlement outcomes. Those require the actual candidate deployment.
 - Training weights, thresholds, trade size and all five existing model packages/configurations remain unchanged. No training, database migration, process creation or source-data mutation was performed.
 
-Detailed local logs are retained under the worktree’s ignored `target/umr-evidence/` directory. The dashboard rendering check and release provenance are recorded separately when executed.
+Detailed local logs are retained under the worktree’s ignored `target/umr-evidence/` directory. Isolated Grafana provisioning is recorded by `provisioned/observability/umr-review/20260907T204438Z`, pointing to dashboard source `f525bc9`. The earlier preview at `e53c3a4` found presentation issues, corrected before the final check. Temporary preview services were removed. Production release provenance remains pending.
