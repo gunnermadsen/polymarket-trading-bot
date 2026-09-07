@@ -370,14 +370,7 @@ impl ProfileRepository {
                 FROM ingester.data_gaps
                 WHERE strategy_key = $1
                   AND status IN ('open', 'repairing')
-                ) AS has_unresolved_gap,
-                EXISTS (
-                  SELECT 1
-                  FROM ingester.data_gaps
-                  WHERE strategy_key = $1
-                    AND status = 'unrecoverable'
-                    AND detected_at >= now() - INTERVAL '15 minutes'
-                ) AS has_recent_continuity_loss
+                ) AS has_unresolved_gap
             )
             UPDATE ingester.profiles
             SET checkpoint_schema_version = $5,
@@ -404,29 +397,24 @@ impl ProfileRepository {
                   ELSE GREATEST(availability_watermark, $10)
                 END,
                 observed_state = CASE
-                  WHEN gap_health.has_unresolved_gap
-                    OR gap_health.has_recent_continuity_loss THEN 'degraded'
+                  WHEN gap_health.has_unresolved_gap THEN 'degraded'
                   ELSE 'running'
                 END,
                 health_status = CASE
-                  WHEN gap_health.has_unresolved_gap
-                    OR gap_health.has_recent_continuity_loss THEN 'degraded'
+                  WHEN gap_health.has_unresolved_gap THEN 'degraded'
                   ELSE 'healthy'
                 END,
                 consecutive_failures = 0,
                 last_error_code = CASE
-                  WHEN gap_health.has_unresolved_gap
-                    OR gap_health.has_recent_continuity_loss THEN last_error_code
+                  WHEN gap_health.has_unresolved_gap THEN last_error_code
                   ELSE NULL
                 END,
                 last_error_message = CASE
-                  WHEN gap_health.has_unresolved_gap
-                    OR gap_health.has_recent_continuity_loss THEN last_error_message
+                  WHEN gap_health.has_unresolved_gap THEN last_error_message
                   ELSE NULL
                 END,
                 last_error_at = CASE
-                  WHEN gap_health.has_unresolved_gap
-                    OR gap_health.has_recent_continuity_loss THEN last_error_at
+                  WHEN gap_health.has_unresolved_gap THEN last_error_at
                   ELSE NULL
                 END,
                 updated_at = now()

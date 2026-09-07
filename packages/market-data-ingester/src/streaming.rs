@@ -49,6 +49,10 @@ pub struct StreamingMetrics {
     dropped: Mutex<BTreeMap<String, u64>>,
     last_published_micros: Mutex<BTreeMap<String, i64>>,
     source_reconnects: Mutex<BTreeMap<(String, String), u64>>,
+    source_connection_attempts: Mutex<BTreeMap<(String, String), u64>>,
+    source_connection_failures: Mutex<BTreeMap<(String, String, String), u64>>,
+    source_active_endpoint: Mutex<BTreeMap<(String, String), i64>>,
+    source_snapshot_requests: Mutex<BTreeMap<(String, String, String), u64>>,
     source_last_event_micros: Mutex<BTreeMap<String, i64>>,
     source_connection_ready: Mutex<BTreeMap<String, i64>>,
     source_stale_transitions: Mutex<BTreeMap<(String, String), u64>>,
@@ -203,6 +207,69 @@ pub fn observe_source_reconnect(product_key: &str, reason: &str) {
             .expect("metrics lock");
         *reconnects
             .entry((product_key.to_owned(), reason.to_owned()))
+            .or_insert(0) += 1;
+    }
+}
+
+pub fn observe_source_connection_attempt(product_key: &str, endpoint: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut attempts = publisher
+            .metrics
+            .source_connection_attempts
+            .lock()
+            .expect("metrics lock");
+        *attempts
+            .entry((product_key.to_owned(), endpoint.to_owned()))
+            .or_insert(0) += 1;
+    }
+}
+
+pub fn observe_source_connection_failure(product_key: &str, endpoint: &str, reason: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut failures = publisher
+            .metrics
+            .source_connection_failures
+            .lock()
+            .expect("metrics lock");
+        *failures
+            .entry((
+                product_key.to_owned(),
+                endpoint.to_owned(),
+                reason.to_owned(),
+            ))
+            .or_insert(0) += 1;
+    }
+}
+
+pub fn set_source_active_endpoint(product_key: &str, endpoint: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut endpoints = publisher
+            .metrics
+            .source_active_endpoint
+            .lock()
+            .expect("metrics lock");
+        for ((product, _), value) in endpoints.iter_mut() {
+            if product == product_key {
+                *value = 0;
+            }
+        }
+        endpoints.insert((product_key.to_owned(), endpoint.to_owned()), 1);
+    }
+}
+
+pub fn observe_source_snapshot_request(product_key: &str, endpoint: &str, outcome: &str) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut requests = publisher
+            .metrics
+            .source_snapshot_requests
+            .lock()
+            .expect("metrics lock");
+        *requests
+            .entry((
+                product_key.to_owned(),
+                endpoint.to_owned(),
+                outcome.to_owned(),
+            ))
             .or_insert(0) += 1;
     }
 }
@@ -447,6 +514,16 @@ impl StreamingMetrics {
         let dropped = self.dropped.lock().expect("metrics lock");
         let last = self.last_published_micros.lock().expect("metrics lock");
         let reconnects = self.source_reconnects.lock().expect("metrics lock");
+        let connection_attempts = self
+            .source_connection_attempts
+            .lock()
+            .expect("metrics lock");
+        let connection_failures = self
+            .source_connection_failures
+            .lock()
+            .expect("metrics lock");
+        let active_endpoint = self.source_active_endpoint.lock().expect("metrics lock");
+        let snapshot_requests = self.source_snapshot_requests.lock().expect("metrics lock");
         let source_last_event = self.source_last_event_micros.lock().expect("metrics lock");
         let source_ready = self.source_connection_ready.lock().expect("metrics lock");
         let stale_transitions = self.source_stale_transitions.lock().expect("metrics lock");
@@ -497,6 +574,30 @@ impl StreamingMetrics {
         for ((key, reason), value) in reconnects.iter() {
             out.push_str(&format!(
                 "ingester_source_reconnects_total{{product=\"{key}\",reason=\"{reason}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_connection_attempts_total Provider connection attempts by bounded endpoint label.\n# TYPE ingester_source_connection_attempts_total counter\n");
+        for ((key, endpoint), value) in connection_attempts.iter() {
+            out.push_str(&format!(
+                "ingester_source_connection_attempts_total{{product=\"{key}\",endpoint=\"{endpoint}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_connection_failures_total Provider connection failures by bounded endpoint and reason.\n# TYPE ingester_source_connection_failures_total counter\n");
+        for ((key, endpoint, reason), value) in connection_failures.iter() {
+            out.push_str(&format!(
+                "ingester_source_connection_failures_total{{product=\"{key}\",endpoint=\"{endpoint}\",reason=\"{reason}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_active_endpoint Currently connected bounded provider endpoint.\n# TYPE ingester_source_active_endpoint gauge\n");
+        for ((key, endpoint), value) in active_endpoint.iter() {
+            out.push_str(&format!(
+                "ingester_source_active_endpoint{{product=\"{key}\",endpoint=\"{endpoint}\"}} {value}\n"
+            ));
+        }
+        out.push_str("# HELP ingester_source_snapshot_requests_total Provider snapshot requests by bounded endpoint and outcome.\n# TYPE ingester_source_snapshot_requests_total counter\n");
+        for ((key, endpoint, outcome), value) in snapshot_requests.iter() {
+            out.push_str(&format!(
+                "ingester_source_snapshot_requests_total{{product=\"{key}\",endpoint=\"{endpoint}\",outcome=\"{outcome}\"}} {value}\n"
             ));
         }
         out.push_str("# HELP ingester_source_last_event_timestamp_seconds Latest valid event received from the provider.\n# TYPE ingester_source_last_event_timestamp_seconds gauge\n");
@@ -578,6 +679,40 @@ mod tests {
             .expect("metrics lock")
             .insert("product".to_owned(), 1_500_000);
         metrics
+            .source_connection_attempts
+            .lock()
+            .expect("metrics lock")
+            .insert(("product".to_owned(), "primary".to_owned()), 4);
+        metrics
+            .source_connection_failures
+            .lock()
+            .expect("metrics lock")
+            .insert(
+                (
+                    "product".to_owned(),
+                    "primary".to_owned(),
+                    "timeout".to_owned(),
+                ),
+                2,
+            );
+        metrics
+            .source_active_endpoint
+            .lock()
+            .expect("metrics lock")
+            .insert(("product".to_owned(), "alternate".to_owned()), 1);
+        metrics
+            .source_snapshot_requests
+            .lock()
+            .expect("metrics lock")
+            .insert(
+                (
+                    "product".to_owned(),
+                    "alternate".to_owned(),
+                    "success".to_owned(),
+                ),
+                1,
+            );
+        metrics
             .source_connection_ready
             .lock()
             .expect("metrics lock")
@@ -604,6 +739,18 @@ mod tests {
         ));
         assert!(rendered
             .contains("ingester_source_last_event_timestamp_seconds{product=\"product\"} 1.5"));
+        assert!(rendered.contains(
+            "ingester_source_connection_attempts_total{product=\"product\",endpoint=\"primary\"} 4"
+        ));
+        assert!(rendered.contains(
+            "ingester_source_connection_failures_total{product=\"product\",endpoint=\"primary\",reason=\"timeout\"} 2"
+        ));
+        assert!(rendered.contains(
+            "ingester_source_active_endpoint{product=\"product\",endpoint=\"alternate\"} 1"
+        ));
+        assert!(rendered.contains(
+            "ingester_source_snapshot_requests_total{product=\"product\",endpoint=\"alternate\",outcome=\"success\"} 1"
+        ));
         assert!(rendered.contains("ingester_source_connection_ready{product=\"product\"} 1"));
         assert!(rendered.contains(
             "ingester_source_stale_transitions_total{product=\"product\",reason=\"topic_stale\"} 3"

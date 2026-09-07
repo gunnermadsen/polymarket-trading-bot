@@ -63,6 +63,12 @@ struct BinanceIoWorker {
     handle: JoinHandle<()>,
 }
 
+struct SessionRecovery<'a> {
+    websocket_url: &'a str,
+    rest_depth_url: &'a str,
+    started_at: &'a mut Option<Instant>,
+}
+
 impl Drop for BinanceIoWorker {
     fn drop(&mut self) {
         self.shutdown.cancel();
@@ -1537,6 +1543,9 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
         let mut continuity = Continuity::default();
         let mut reconnect_delay = Duration::from_millis(self.config.reconnect_initial_ms);
         let maximum_reconnect_delay = Duration::from_millis(self.config.reconnect_max_ms);
+        let mut websocket_url = self.config.websocket_url.as_str();
+        let mut rest_depth_url = self.config.rest_depth_url.as_str();
+        let mut recovery_started_at = None;
 
         loop {
             if shutdown.is_cancelled() {
@@ -1545,12 +1554,22 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
             }
             let connection_epoch = Uuid::new_v4();
             let session_started_at = Instant::now();
+            crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
+            crate::streaming::observe_source_connection_attempt(
+                STRATEGY_KEY.as_str(),
+                websocket_endpoint_label(websocket_url),
+            );
             let result = self
                 .capture_session(
                     &mut writer,
                     &mut sampling_clock,
                     &mut continuity,
                     connection_epoch,
+                    SessionRecovery {
+                        websocket_url,
+                        rest_depth_url,
+                        started_at: &mut recovery_started_at,
+                    },
                     &shutdown,
                 )
                 .await;
@@ -1581,7 +1600,22 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
                     }
                 }
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
+                    let recovery_started = recovery_started_at.get_or_insert_with(Instant::now);
+                    crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
                     crate::streaming::observe_source_reconnect(STRATEGY_KEY.as_str(), error.code);
+                    if is_websocket_transport_error(error.code) {
+                        if is_websocket_connection_error(error.code) {
+                            crate::streaming::observe_source_connection_failure(
+                                STRATEGY_KEY.as_str(),
+                                websocket_endpoint_label(websocket_url),
+                                error.code,
+                            );
+                        }
+                        websocket_url = alternate_websocket_endpoint(websocket_url);
+                    }
+                    if is_snapshot_transport_error(error.code) {
+                        rest_depth_url = alternate_rest_endpoint(rest_depth_url);
+                    }
                     if !gap_was_recorded(error.code) {
                         if let Some(last_update_id) = continuity.last_update_id {
                             writer
@@ -1600,6 +1634,9 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
                     warn!(
                         strategy = %STRATEGY_KEY,
                         connection_epoch = %connection_epoch,
+                        next_websocket_endpoint = websocket_endpoint_label(websocket_url),
+                        next_rest_endpoint = rest_endpoint_label(rest_depth_url),
+                        recovery_duration_ms = recovery_started.elapsed().as_millis() as u64,
                         error_code = error.code,
                         error = %error,
                         "Binance spot L2 session will reconnect and resnapshot"
@@ -1612,7 +1649,7 @@ impl RealtimeWorkerStrategy for BinanceSpotL2SnapshotStrategy {
                             writer.seal_owned_drain().await?;
                             return Ok(());
                         }
-                        _ = tokio::time::sleep(reconnect_delay) => {}
+                        _ = tokio::time::sleep(jittered_reconnect_delay(reconnect_delay, connection_epoch, maximum_reconnect_delay)) => {}
                     }
                     reconnect_delay = reconnect_delay
                         .checked_mul(2)
@@ -1632,11 +1669,14 @@ impl BinanceSpotL2SnapshotStrategy {
         sampling_clock: &mut SamplingClock,
         continuity: &mut Continuity,
         connection_epoch: Uuid,
+        recovery: SessionRecovery<'_>,
         shutdown: &CancellationToken,
     ) -> Result<(), StrategyError> {
+        let websocket_url = recovery.websocket_url;
+        let rest_depth_url = recovery.rest_depth_url;
         let websocket = tokio::time::timeout(
             Duration::from_millis(self.config.connect_timeout_ms),
-            connect_async(&self.config.websocket_url),
+            connect_async(websocket_url),
         )
         .await
         .map_err(|_| {
@@ -1652,6 +1692,16 @@ impl BinanceSpotL2SnapshotStrategy {
             )
         })?
         .0;
+        crate::streaming::set_source_active_endpoint(
+            STRATEGY_KEY.as_str(),
+            websocket_endpoint_label(websocket_url),
+        );
+        info!(
+            strategy = %STRATEGY_KEY,
+            connection_epoch = %connection_epoch,
+            websocket_endpoint = websocket_endpoint_label(websocket_url),
+            "connected to Binance spot L2 websocket"
+        );
         let (mut sink, mut stream) = websocket.split();
         let read_timeout = Duration::from_millis(self.config.read_timeout_ms);
         let write_timeout = Duration::from_millis(self.config.connect_timeout_ms);
@@ -1702,10 +1752,7 @@ impl BinanceSpotL2SnapshotStrategy {
                                 "Binance spot L2 websocket sent an unsupported binary frame",
                             )),
                             Some(Ok(_)) => continue,
-                            Some(Err(error)) => BinanceIoEvent::Failed(source_error(
-                                "binance_l2_websocket_read_failed",
-                                format!("failed to read Binance spot L2 websocket: {error}"),
-                            )),
+                            Some(Err(error)) => BinanceIoEvent::Failed(classify_websocket_read_error(error)),
                             None => BinanceIoEvent::Failed(source_error(
                                 "binance_l2_websocket_eof",
                                 "Binance spot L2 websocket ended",
@@ -1738,22 +1785,14 @@ impl BinanceSpotL2SnapshotStrategy {
         // The websocket is deliberately open before REST bootstrap begins.
         // Deltas received while REST is in flight are bounded and replayed
         // against lastUpdateId using Binance's U/u bridge protocol.
-        let bootstrap = tokio::time::timeout(
-            Duration::from_millis(self.config.bootstrap_timeout_ms),
-            self.fetch_depth_snapshot(),
-        );
+        let bootstrap = self.fetch_depth_snapshot_with_failover(rest_depth_url);
         tokio::pin!(bootstrap);
         let snapshot = loop {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => return Ok(()),
                 response = &mut bootstrap => {
-                    break response.map_err(|_| {
-                        source_error(
-                            "binance_l2_bootstrap_timeout",
-                            "timed out fetching Binance spot L2 REST snapshot",
-                        )
-                    })??;
+                    break response?;
                 }
                 event = io_receiver.recv() => {
                     match event {
@@ -1817,6 +1856,17 @@ impl BinanceSpotL2SnapshotStrategy {
             )
             .await?;
         }
+        crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), true);
+        if let Some(started_at) = recovery.started_at.take() {
+            info!(
+                strategy = %STRATEGY_KEY,
+                connection_epoch = %connection_epoch,
+                websocket_endpoint = websocket_endpoint_label(websocket_url),
+                rest_endpoint = rest_endpoint_label(rest_depth_url),
+                recovery_duration_ms = started_at.elapsed().as_millis() as u64,
+                "Binance spot L2 recovery established a verified snapshot bridge"
+            );
+        }
 
         loop {
             tokio::select! {
@@ -1845,11 +1895,62 @@ impl BinanceSpotL2SnapshotStrategy {
         }
     }
 
-    async fn fetch_depth_snapshot(&self) -> Result<DepthSnapshot, StrategyError> {
+    async fn fetch_depth_snapshot_with_failover(
+        &self,
+        preferred_url: &str,
+    ) -> Result<DepthSnapshot, StrategyError> {
+        let alternate_url = alternate_rest_endpoint(preferred_url);
+        let mut last_error = None;
+        for url in [preferred_url, alternate_url] {
+            let endpoint = rest_endpoint_label(url);
+            let result = tokio::time::timeout(
+                Duration::from_millis(self.config.bootstrap_timeout_ms),
+                self.fetch_depth_snapshot(url),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(source_error(
+                    "binance_l2_bootstrap_timeout",
+                    format!("timed out fetching Binance spot L2 REST snapshot from {endpoint}"),
+                ))
+            });
+            match result {
+                Ok(snapshot) => {
+                    crate::streaming::observe_source_snapshot_request(
+                        STRATEGY_KEY.as_str(),
+                        endpoint,
+                        "success",
+                    );
+                    return Ok(snapshot);
+                }
+                Err(error) => {
+                    crate::streaming::observe_source_snapshot_request(
+                        STRATEGY_KEY.as_str(),
+                        endpoint,
+                        "failure",
+                    );
+                    warn!(
+                        strategy = %STRATEGY_KEY,
+                        rest_endpoint = endpoint,
+                        error_code = error.code,
+                        error = %error,
+                        "Binance spot L2 REST snapshot attempt failed"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.expect("the bounded endpoint list is non-empty"))
+    }
+
+    async fn fetch_depth_snapshot(
+        &self,
+        rest_depth_url: &str,
+    ) -> Result<DepthSnapshot, StrategyError> {
         let limit = self.config.rest_depth_limit.to_string();
         let response = self
             .client
-            .get(&self.config.rest_depth_url)
+            .get(rest_depth_url)
             .query(&[
                 ("symbol", self.config.symbol.as_str()),
                 ("limit", limit.as_str()),
@@ -1974,6 +2075,7 @@ impl BinanceSpotL2SnapshotStrategy {
         continuity.last_update_id = Some(buffered.update.final_update_id);
         continuity.last_source_timestamp = Some(buffered.update.source_timestamp);
         continuity.last_received_at = Some(buffered.received_at);
+        crate::streaming::observe_source_event(STRATEGY_KEY.as_str(), buffered.received_at);
         if sampling_clock.should_sample(buffered.received_at, self.config.sample_interval_ms) {
             let sample = match book.sample(self.config.top_n) {
                 Ok(sample) => sample,
@@ -2060,6 +2162,74 @@ fn gap_was_recorded(code: &str) -> bool {
             | "binance_l2_book_too_large"
             | "binance_l2_crossed_book"
             | "binance_l2_insufficient_depth"
+    )
+}
+
+fn alternate_websocket_endpoint(url: &str) -> &'static str {
+    if url == DEFAULT_WEBSOCKET_URL {
+        ALTERNATE_WEBSOCKET_URL
+    } else {
+        DEFAULT_WEBSOCKET_URL
+    }
+}
+
+fn alternate_rest_endpoint(url: &str) -> &'static str {
+    if url == DEFAULT_REST_DEPTH_URL {
+        ALTERNATE_REST_DEPTH_URL
+    } else {
+        DEFAULT_REST_DEPTH_URL
+    }
+}
+
+fn websocket_endpoint_label(url: &str) -> &'static str {
+    if url == DEFAULT_WEBSOCKET_URL {
+        "stream_443"
+    } else {
+        "stream_9443"
+    }
+}
+
+fn rest_endpoint_label(url: &str) -> &'static str {
+    if url == DEFAULT_REST_DEPTH_URL {
+        "api"
+    } else {
+        "data_api"
+    }
+}
+
+fn is_websocket_transport_error(code: &str) -> bool {
+    code.starts_with("binance_l2_websocket_") || code == "binance_l2_io_worker_stopped"
+}
+
+fn is_websocket_connection_error(code: &str) -> bool {
+    matches!(
+        code,
+        "binance_l2_websocket_connect_failed" | "binance_l2_websocket_connect_timeout"
+    )
+}
+
+fn is_snapshot_transport_error(code: &str) -> bool {
+    code.starts_with("binance_l2_snapshot_") || code == "binance_l2_bootstrap_timeout"
+}
+
+fn jittered_reconnect_delay(base: Duration, epoch: Uuid, maximum: Duration) -> Duration {
+    let jitter_percent = u32::from(epoch.as_bytes()[0] % 25);
+    base.saturating_add(base.mul_f64(f64::from(jitter_percent) / 100.0))
+        .min(maximum)
+}
+
+fn classify_websocket_read_error(error: tokio_tungstenite::tungstenite::Error) -> StrategyError {
+    let message = error.to_string();
+    let code = if message.contains("close_notify")
+        || message.to_ascii_lowercase().contains("unexpected eof")
+    {
+        "binance_l2_websocket_eof"
+    } else {
+        "binance_l2_websocket_read_failed"
+    };
+    source_error(
+        code,
+        format!("failed to read Binance spot L2 websocket: {message}"),
     )
 }
 
@@ -2171,6 +2341,55 @@ mod tests {
 
         assert_eq!(sink.messages, vec![Message::Pong(payload)]);
         assert_eq!(sink.flushes, 1);
+    }
+
+    #[test]
+    fn approved_endpoints_fail_over_bidirectionally() {
+        assert_eq!(
+            alternate_websocket_endpoint(DEFAULT_WEBSOCKET_URL),
+            ALTERNATE_WEBSOCKET_URL
+        );
+        assert_eq!(
+            alternate_websocket_endpoint(ALTERNATE_WEBSOCKET_URL),
+            DEFAULT_WEBSOCKET_URL
+        );
+        assert_eq!(
+            alternate_rest_endpoint(DEFAULT_REST_DEPTH_URL),
+            ALTERNATE_REST_DEPTH_URL
+        );
+        assert_eq!(
+            alternate_rest_endpoint(ALTERNATE_REST_DEPTH_URL),
+            DEFAULT_REST_DEPTH_URL
+        );
+    }
+
+    #[test]
+    fn reconnect_jitter_is_bounded() {
+        let delay = jittered_reconnect_delay(
+            Duration::from_secs(10),
+            Uuid::from_bytes([24; 16]),
+            Duration::from_secs(30),
+        );
+        assert_eq!(delay, Duration::from_millis(12_400));
+        assert_eq!(
+            jittered_reconnect_delay(
+                Duration::from_secs(30),
+                Uuid::from_bytes([24; 16]),
+                Duration::from_secs(30),
+            ),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn unexpected_tls_eof_is_classified_as_recoverable_eof() {
+        let error = tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "peer closed connection without sending TLS close_notify",
+        ));
+        let classified = classify_websocket_read_error(error);
+        assert_eq!(classified.kind, StrategyErrorKind::TransientSource);
+        assert_eq!(classified.code, "binance_l2_websocket_eof");
     }
 
     #[test]

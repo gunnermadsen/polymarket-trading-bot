@@ -428,6 +428,42 @@ groups:
         dashboardUid: market-data-pipeline
         panelId: 22
         isPaused: false
+      - uid: mdi_binance_l2_persistence_stale
+        title: Binance spot L2 persistence stale
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                ((time() - max by (strategy) (market_data_ingester_strategy_last_persistence_timestamp_seconds{strategy="binance_spot_btcusdt_l2_snapshots"})) > 60) and on (strategy) max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running"})
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: Alerting
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Binance spot L2 persistence is stale'
+          description: 'No durable Binance spot L2 snapshot has been recorded for more than 60 seconds while the strategy is desired running.'
+          strategy: 'binance_spot_btcusdt_l2_snapshots'
+        labels:
+          strategy: binance_spot_btcusdt_l2_snapshots
+          condition: strategy_persistence_stale
+          service: ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: critical
+        dashboardUid: market-data-pipeline
+        panelId: 25
+        isPaused: false
   - orgId: 1
     name: market-data-ingester-critical-20s
     folder: Market Data Ingestion
@@ -527,7 +563,7 @@ groups:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                (sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="binance_spot_btcusdt_l2_snapshots",error_code=~"^(binance_l2_sequence_gap|binance_l2_invalid_sequence|binance_l2_invalid_snapshot_sequence|binance_l2_crossed_book|binance_l2_invalid_level|binance_l2_consumer_backpressure)$"}[5m])) >= 1) or (sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="binance_spot_btcusdt_l2_snapshots",error_code=~"^(binance_l2_websocket_closed|binance_l2_websocket_connect_failed|binance_l2_websocket_connect_timeout|binance_l2_websocket_eof|binance_l2_websocket_read_failed|binance_l2_websocket_read_timeout|binance_l2_websocket_write_failed|binance_l2_websocket_write_timeout|binance_l2_io_worker_stopped)$"}[5m])) >= 3)
+                sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="binance_spot_btcusdt_l2_snapshots",error_code=~"^(binance_l2_sequence_gap|binance_l2_invalid_sequence|binance_l2_invalid_snapshot_sequence|binance_l2_crossed_book|binance_l2_invalid_level|binance_l2_consumer_backpressure)$"}[5m])) >= 1
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -553,6 +589,43 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
+        dashboardUid: market-data-pipeline
+        panelId: 25
+        isPaused: false
+      - uid: mdi_binance_l2_reconnect_storm
+        title: Binance spot L2 reconnecting repeatedly
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: >-
+                sum by (reason) (increase(ingester_source_reconnects_total{product="binance_spot_btcusdt_l2_snapshots",reason=~"^binance_l2_(websocket|snapshot|bootstrap|io_worker).*"}[10m])) >= 3
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Binance spot L2 transport is reconnecting repeatedly'
+          description: 'At least three recoverable Binance spot L2 transport failures occurred within ten minutes. Reason: {{ $labels.reason }}.'
+          strategy: 'binance_spot_btcusdt_l2_snapshots'
+          error_code: '{{ $labels.reason }}'
+        labels:
+          strategy: binance_spot_btcusdt_l2_snapshots
+          condition: source_reconnect_storm
+          service: ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
         dashboardUid: market-data-pipeline
         panelId: 25
         isPaused: false
