@@ -1,6 +1,6 @@
 use chrono::{Duration, Utc};
 
-use crate::domain::{DrainRequest, DrainWorkerStrategy, ExecutionSelector};
+use crate::domain::{DrainMode, DrainRequest, DrainWorkerStrategy, ExecutionSelector};
 
 use super::{PolymarketOrderbooksDrain, KEY, RETENTION_DAYS};
 
@@ -29,6 +29,14 @@ fn accepts_a_cutoff_older_than_the_retained_window() {
     adapter
         .validate_request(&request(Utc::now() - Duration::days(RETENTION_DAYS + 1)))
         .unwrap();
+}
+
+#[test]
+fn accepts_copy_only_reconciliation_inside_the_retained_window() {
+    let adapter = PolymarketOrderbooksDrain::from_environment().unwrap();
+    let mut request = request(Utc::now());
+    request.mode = DrainMode::Reconcile;
+    adapter.validate_request(&request).unwrap();
 }
 
 #[test]
