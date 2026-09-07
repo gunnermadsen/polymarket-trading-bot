@@ -100,6 +100,7 @@ cp "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" "${DST_DIR}/alerti
 cp "${SRC_DIR}/alerting/rules-execution-freshness.yml" "${DST_DIR}/alerting/rules-execution-freshness.yml"
 cp "${SRC_DIR}/alerting/rules-market-data-ingester.yml" "${DST_DIR}/alerting/rules-market-data-ingester.yml"
 cp "${SRC_DIR}/alerting/rules-worker-allocation.yml" "${DST_DIR}/alerting/rules-worker-allocation.yml"
+cp "${SRC_DIR}/alerting/rules-umr.yml" "${DST_DIR}/alerting/rules-umr.yml"
 
 cat > "${DST_DIR}/datasources/postgres.yml" <<EOF
 apiVersion: 1
