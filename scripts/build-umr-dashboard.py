@@ -22,17 +22,17 @@ def panel(title,expr,description,unit='short',kind='timeseries',x=0,w=12,h=8,leg
  if kind=='timeseries':
   d['fieldConfig']['defaults']['custom']=dict(drawStyle='line',lineWidth=2,fillOpacity=8,showPoints='never',spanNulls=False,axisLabel='',axisPlacement='auto',scaleDistribution=dict(type='linear'))
   d['options']=dict(legend=dict(displayMode='table',placement='bottom',calcs=['lastNotNull']),tooltip=dict(mode='multi',sort='desc'))
- elif kind=='stat': d['options']=dict(reduceOptions=dict(calcs=['lastNotNull'],fields='',values=False),orientation='auto',textMode='value_and_name',colorMode='value',graphMode='none',justifyMode='auto',wideLayout=True)
+ elif kind=='stat': d['options']=dict(reduceOptions=dict(calcs=['lastNotNull'],fields='',values=False),orientation='auto',textMode='value_and_name',colorMode='none',graphMode='none',justifyMode='auto',wideLayout=True)
  elif kind=='table':d['options']=dict(showHeader=True,cellHeight='md',footer=dict(show=False))
  PANELS.append(d);return d
 
-PANELS.append(dict(id=1,type='text',title='Unified Model Runtime · Live model operations',gridPos=dict(x=0,y=0,w=24,h=3),options=dict(mode='markdown',content='Follow each model from **data → prediction → admission → fill → settlement**. Select one process to investigate or compare the full collection.\n\n**Scope:** operational rates follow the selected time range. Economic and calibration aggregates cover the current instrumentation session and reset on service/model/run/config changes. They are not lifetime accounting. Missing outcomes remain **Awaiting evidence**, never artificial zeros.')));Y=3
+PANELS.append(dict(id=1,type='text',title='Unified Model Runtime · Live model operations',gridPos=dict(x=0,y=0,w=24,h=5),options=dict(mode='markdown',content='Follow each model from **data → prediction → admission → fill → settlement**. Select one process to investigate or compare the full collection.\n\n**Scope:** operational rates follow the selected time range. Economic and calibration aggregates cover the current instrumentation session and reset on service/model/run/config changes. They are not lifetime accounting. Missing outcomes remain **Awaiting evidence**, never artificial zeros.')));Y=5
 row('At a glance')
 for i,(title,expr,unit,desc) in enumerate([
  ('Ready processes','sum('+metric('runtime_ready')+')','short','Latest process readiness; feed and feature gaps recover automatically.'),
  ('Oldest inference','time() - min('+metric('last_success_timestamp_seconds')+')','s','Elapsed time since successful inference. Entry schedules naturally create quiet periods.'),
- ('Inference throughput','sum('+rate('inferences')+')','ops','Successful and failed inference attempts per second; inspect the error panel below.'),
- ('Selected PnL · session','sum('+metric('realized_pnl_usd')+')','currencyUSD','Net PnL recognized by authoritative settlement during this instrumentation session.'),
+ ('Inference rate','sum('+rate('inferences')+')','ops','Successful and failed inference attempts per second; inspect the error panel below.'),
+ ('Session net PnL','sum('+metric('realized_pnl_usd')+')','currencyUSD','Net PnL recognized by authoritative settlement during this instrumentation session.'),
  ]):panel(title,expr,desc,unit,'stat',i*6,6,5,aggregate=True)
 Y+=5
 row('Runtime health and immutable identity')
@@ -48,8 +48,9 @@ for i,(title,expr,desc) in enumerate([
  ('Inferred markets',count('markets','inferred'),'Distinct markets with at least one prediction in the instrumentation session.'),
  ('Admitted markets',count('markets','admitted'),'Distinct markets admitted by the model; execution can still reject an order.'),
  ('Filled orders',count('execution','filled'),'Orders acknowledged as filled by the existing execution pathway.'),
- ]):panel(title,expr,desc,kind='stat',x=i*6,w=6,h=5)
-Y+=5
+ ]):
+ panel(title,expr,desc,kind='stat',x=(i%2)*12,w=12,h=8)
+ if i%2:Y+=8
 p=panel('Skipped opportunities by reason','sum by(process_id,reason) (rate(polymarket_umr_skipped_total{'+S+'}[$__rate_interval]))','Includes absent history, persistence unavailability, duplicate candidate claims and out-of-schedule callbacks. Repeated callbacks are not distinct market opportunities.',x=0,legend='{{model_key}} · {{reason}}')
 panel('Persisted decision stages','sum by(process_id,reason) (rate(polymarket_umr_decisions_total{'+S+'}[$__rate_interval]))','Stages are lifecycle transitions. Do not sum them as mutually exclusive outcomes.',x=12,legend='{{model_key}} · {{reason}}');Y+=8
 panel('Market inference coverage',count('markets','inferred')+' / '+count('markets','observed'),'Distinct inferred markets / observed markets. Current-session denominator includes observed markets without inference.','percentunit',x=0)
@@ -105,8 +106,9 @@ for i,(title,expr,unit,desc) in enumerate([
  ('Profit factor',metric('gross_profit_usd')+' / '+metric('gross_loss_usd'),'short','Gross positive settled PnL / absolute gross negative settled PnL.'),
  ('Wins to recover one loss','('+metric('gross_loss_usd')+' / '+count('trade_outcomes','loss')+') / ('+metric('gross_profit_usd')+' / '+count('trade_outcomes','win')+')','short','Average absolute losing trade / average winning trade. Undefined until both exist.'),
  ('Maximum drawdown',metric('max_drawdown_usd'),'currencyUSD','Peak-to-trough recognized net PnL within the current instrumentation session.'),
- ]):panel(title,expr,desc,unit,'stat',i*6,6,5)
-Y+=5
+ ]):
+ panel(title,expr,desc,unit,'stat',(i%2)*12,12,8)
+ if i%2:Y+=8
 panel('Realized net PnL',metric('realized_pnl_usd'),'Net PnL from successfully recognized settlements; excludes unresolved positions.','currencyUSD',x=0)
 panel('Settled trade outcomes','sum by(process_id,reason)(polymarket_umr_trade_outcomes_total{'+S+'})','Economic win/loss/push classification by realized net PnL.','short',x=12,legend='{{model_key}} · {{reason}}');Y+=8
 panel('Average entry share price',metric('fill_notional_usd')+' / '+metric('filled_shares'),'Actual fill notional / actual shares filled. Fees are displayed separately.','currencyUSD',x=0)

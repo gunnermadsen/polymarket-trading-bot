@@ -69,7 +69,7 @@
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 3
+        "h": 5
       },
       "options": {
         "mode": "markdown",
@@ -84,7 +84,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 3,
+        "y": 5,
         "w": 24,
         "h": 1
       }
@@ -100,7 +100,7 @@
       "description": "Latest process readiness; feed and feature gaps recover automatically.",
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 6,
         "w": 6,
         "h": 5
       },
@@ -143,7 +143,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -160,7 +160,7 @@
       "description": "Elapsed time since successful inference. Entry schedules naturally create quiet periods.",
       "gridPos": {
         "x": 6,
-        "y": 4,
+        "y": 6,
         "w": 6,
         "h": 5
       },
@@ -203,7 +203,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -211,7 +211,7 @@
     },
     {
       "id": 5,
-      "title": "Inference throughput",
+      "title": "Inference rate",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -220,7 +220,7 @@
       "description": "Successful and failed inference attempts per second; inspect the error panel below.",
       "gridPos": {
         "x": 12,
-        "y": 4,
+        "y": 6,
         "w": 6,
         "h": 5
       },
@@ -228,7 +228,7 @@
         {
           "refId": "A",
           "expr": "sum(sum by (process_id) (rate(polymarket_umr_inferences_total{process_id=~\"$process\"}[$__rate_interval])))",
-          "legendFormat": "Inference throughput",
+          "legendFormat": "Inference rate",
           "range": false,
           "instant": true
         }
@@ -263,7 +263,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -271,7 +271,7 @@
     },
     {
       "id": 6,
-      "title": "Selected PnL \u00b7 session",
+      "title": "Session net PnL",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -280,7 +280,7 @@
       "description": "Net PnL recognized by authoritative settlement during this instrumentation session.",
       "gridPos": {
         "x": 18,
-        "y": 4,
+        "y": 6,
         "w": 6,
         "h": 5
       },
@@ -288,7 +288,7 @@
         {
           "refId": "A",
           "expr": "sum(polymarket_umr_realized_pnl_usd{process_id=~\"$process\"})",
-          "legendFormat": "Selected PnL \u00b7 session",
+          "legendFormat": "Session net PnL",
           "range": false,
           "instant": true
         }
@@ -323,7 +323,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -337,7 +337,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 9,
+        "y": 11,
         "w": 24,
         "h": 1
       }
@@ -353,7 +353,7 @@
       "description": "Model identity is pinned by artifact and feature checksums. Discovery never changes an active selection.",
       "gridPos": {
         "x": 0,
-        "y": 10,
+        "y": 12,
         "w": 24,
         "h": 8
       },
@@ -426,7 +426,7 @@
       "description": "A transient unavailable input must not permanently disable the process.",
       "gridPos": {
         "x": 0,
-        "y": 18,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -496,7 +496,7 @@
       "description": "Low age confirms callbacks are reaching the process even outside model entry windows.",
       "gridPos": {
         "x": 12,
-        "y": 18,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -563,7 +563,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 28,
         "w": 24,
         "h": 1
       }
@@ -579,9 +579,9 @@
       "description": "Claimed opportunities at the configured candidate cadence. Pre-claim skips are displayed separately.",
       "gridPos": {
         "x": 0,
-        "y": 27,
-        "w": 6,
-        "h": 5
+        "y": 29,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -622,7 +622,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -638,10 +638,10 @@
       },
       "description": "Distinct markets with at least one prediction in the instrumentation session.",
       "gridPos": {
-        "x": 6,
-        "y": 27,
-        "w": 6,
-        "h": 5
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -682,7 +682,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -698,10 +698,10 @@
       },
       "description": "Distinct markets admitted by the model; execution can still reject an order.",
       "gridPos": {
-        "x": 12,
-        "y": 27,
-        "w": 6,
-        "h": 5
+        "x": 0,
+        "y": 37,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -742,7 +742,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -758,10 +758,10 @@
       },
       "description": "Orders acknowledged as filled by the existing execution pathway.",
       "gridPos": {
-        "x": 18,
-        "y": 27,
-        "w": 6,
-        "h": 5
+        "x": 12,
+        "y": 37,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -802,7 +802,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -819,7 +819,7 @@
       "description": "Includes absent history, persistence unavailability, duplicate candidate claims and out-of-schedule callbacks. Repeated callbacks are not distinct market opportunities.",
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 45,
         "w": 12,
         "h": 8
       },
@@ -889,7 +889,7 @@
       "description": "Stages are lifecycle transitions. Do not sum them as mutually exclusive outcomes.",
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 45,
         "w": 12,
         "h": 8
       },
@@ -959,7 +959,7 @@
       "description": "Distinct inferred markets / observed markets. Current-session denominator includes observed markets without inference.",
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 53,
         "w": 12,
         "h": 8
       },
@@ -1029,7 +1029,7 @@
       "description": "Distinct admitted markets / observed markets. Coverage across models overlaps and must not be summed.",
       "gridPos": {
         "x": 12,
-        "y": 40,
+        "y": 53,
         "w": 12,
         "h": 8
       },
@@ -1099,7 +1099,7 @@
       "description": "Inferred markets / markets with at least one claimed candidate slot. Feed outages before a candidate can be claimed are visible in observed-market coverage and skips.",
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -1169,7 +1169,7 @@
       "description": "Order states from the existing execution engine, separate from persisted decision stages.",
       "gridPos": {
         "x": 12,
-        "y": 48,
+        "y": 61,
         "w": 12,
         "h": 8
       },
@@ -1236,7 +1236,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 56,
+        "y": 69,
         "w": 24,
         "h": 1
       }
@@ -1252,7 +1252,7 @@
       "description": "Fraction of model inputs using native missing values. Optional absence remains visible; similar source names do not establish equivalence.",
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 70,
         "w": 12,
         "h": 8
       },
@@ -1322,7 +1322,7 @@
       "description": "Age of the immutable feature snapshot at the process observation time.",
       "gridPos": {
         "x": 12,
-        "y": 57,
+        "y": 70,
         "w": 12,
         "h": 8
       },
@@ -1392,7 +1392,7 @@
       "description": "Stages include features, inference, strategy and complete observation. Durations overlap; do not sum percentiles.",
       "gridPos": {
         "x": 0,
-        "y": 65,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -1462,7 +1462,7 @@
       "description": "Failures remain distinct from a model correctly abstaining.",
       "gridPos": {
         "x": 12,
-        "y": 65,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -1532,7 +1532,7 @@
       "description": "Shared infrastructure readiness is filtered for each process\u2019s actual requirements.",
       "gridPos": {
         "x": 0,
-        "y": 73,
+        "y": 86,
         "w": 12,
         "h": 8
       },
@@ -1602,7 +1602,7 @@
       "description": "Dropped unresolved prediction records limit analytical coverage; operational trading continues.",
       "gridPos": {
         "x": 12,
-        "y": 73,
+        "y": 86,
         "w": 12,
         "h": 8
       },
@@ -1672,7 +1672,7 @@
       "description": "Controlled error categories; diagnostic detail is in the process logs.",
       "gridPos": {
         "x": 0,
-        "y": 81,
+        "y": 94,
         "w": 12,
         "h": 8
       },
@@ -1742,7 +1742,7 @@
       "description": "A failed score is distinct from an intentional model abstention.",
       "gridPos": {
         "x": 12,
-        "y": 81,
+        "y": 94,
         "w": 12,
         "h": 8
       },
@@ -1812,7 +1812,7 @@
       "description": "Inference latency percentile. Native host smoke results do not establish deployed container capacity.",
       "gridPos": {
         "x": 0,
-        "y": 89,
+        "y": 102,
         "w": 12,
         "h": 8
       },
@@ -1882,7 +1882,7 @@
       "description": "Inference latency percentile. Native host smoke results do not establish deployed container capacity.",
       "gridPos": {
         "x": 12,
-        "y": 89,
+        "y": 102,
         "w": 12,
         "h": 8
       },
@@ -1952,7 +1952,7 @@
       "description": "Failed inference attempts / all attempts in this instrumentation session.",
       "gridPos": {
         "x": 0,
-        "y": 97,
+        "y": 110,
         "w": 12,
         "h": 8
       },
@@ -2022,7 +2022,7 @@
       "description": "Failed feature attempts / all feature attempts in this instrumentation session.",
       "gridPos": {
         "x": 12,
-        "y": 97,
+        "y": 110,
         "w": 12,
         "h": 8
       },
@@ -2089,7 +2089,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 105,
+        "y": 118,
         "w": 24,
         "h": 1
       }
@@ -2105,7 +2105,7 @@
       "description": "Probability of UP, independent of whether admission or execution allowed a trade.",
       "gridPos": {
         "x": 0,
-        "y": 106,
+        "y": 119,
         "w": 12,
         "h": 8
       },
@@ -2175,7 +2175,7 @@
       "description": "Maximum of UP and DOWN probability. High confidence alone does not establish good entry economics.",
       "gridPos": {
         "x": 12,
-        "y": 106,
+        "y": 119,
         "w": 12,
         "h": 8
       },
@@ -2245,7 +2245,7 @@
       "description": "Accepted/rejected model decisions; independent of strategy, capital and execution gates.",
       "gridPos": {
         "x": 0,
-        "y": 114,
+        "y": 127,
         "w": 12,
         "h": 8
       },
@@ -2315,7 +2315,7 @@
       "description": "Frozen adapter reasons distinguish cost, confidence, expected edge, learned loss and temporal disagreement.",
       "gridPos": {
         "x": 12,
-        "y": 114,
+        "y": 127,
         "w": 12,
         "h": 8
       },
@@ -2385,7 +2385,7 @@
       "description": "Only defined for models with learned admission. Empty for programmatic models.",
       "gridPos": {
         "x": 0,
-        "y": 122,
+        "y": 135,
         "w": 12,
         "h": 8
       },
@@ -2455,7 +2455,7 @@
       "description": "Frozen learned output, clipped at zero exactly as training. This is not realized loss.",
       "gridPos": {
         "x": 12,
-        "y": 122,
+        "y": 135,
         "w": 12,
         "h": 8
       },
@@ -2525,7 +2525,7 @@
       "description": "Population standard deviation across the frozen predictor and temporal snapshots. Only defined for consensus models.",
       "gridPos": {
         "x": 0,
-        "y": 130,
+        "y": 143,
         "w": 12,
         "h": 8
       },
@@ -2595,7 +2595,7 @@
       "description": "Fraction of frozen components agreeing with the official predictor.",
       "gridPos": {
         "x": 12,
-        "y": 130,
+        "y": 143,
         "w": 12,
         "h": 8
       },
@@ -2665,7 +2665,7 @@
       "description": "Model actions over the selected range. Raw directional probabilities remain available for abstained candidates.",
       "gridPos": {
         "x": 0,
-        "y": 138,
+        "y": 151,
         "w": 12,
         "h": 8
       },
@@ -2735,7 +2735,7 @@
       "description": "Frozen learned stress-edge output per share; an estimate, not realized stress PnL.",
       "gridPos": {
         "x": 12,
-        "y": 138,
+        "y": 151,
         "w": 12,
         "h": 8
       },
@@ -2805,7 +2805,7 @@
       "description": "Counts per decile: bin 0 is [0,0.1), bin 9 is [0.9,1]. These are inference opportunities, not independent markets.",
       "gridPos": {
         "x": 0,
-        "y": 146,
+        "y": 159,
         "w": 12,
         "h": 8
       },
@@ -2858,7 +2858,7 @@
       "description": "Counts per decile: bin 0 is [0,0.1), bin 9 is [0.9,1]. These are inference opportunities, not independent markets.",
       "gridPos": {
         "x": 12,
-        "y": 146,
+        "y": 159,
         "w": 12,
         "h": 8
       },
@@ -2911,7 +2911,7 @@
       "description": "Existing strategy guards may reject an admitted model prediction.",
       "gridPos": {
         "x": 0,
-        "y": 154,
+        "y": 167,
         "w": 12,
         "h": 8
       },
@@ -2981,7 +2981,7 @@
       "description": "Unhandled observation errors, including persistence and execution failures, retain existing recovery behavior.",
       "gridPos": {
         "x": 12,
-        "y": 154,
+        "y": 167,
         "w": 12,
         "h": 8
       },
@@ -3048,7 +3048,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 162,
+        "y": 175,
         "w": 24,
         "h": 1
       }
@@ -3064,7 +3064,7 @@
       "description": "Mean squared probability error over resolved inference opportunities, including rejected trades. Multiple predictions per market are correlated.",
       "gridPos": {
         "x": 0,
-        "y": 163,
+        "y": 176,
         "w": 12,
         "h": 8
       },
@@ -3134,7 +3134,7 @@
       "description": "Correct resolved predictions / all resolved predictions. Not the executed-trade win rate.",
       "gridPos": {
         "x": 12,
-        "y": 163,
+        "y": 176,
         "w": 12,
         "h": 8
       },
@@ -3204,7 +3204,7 @@
       "description": "Observed UP frequency for each decile. Compare with mean predicted probability; bins with no outcomes remain undefined.",
       "gridPos": {
         "x": 0,
-        "y": 171,
+        "y": 184,
         "w": 12,
         "h": 8
       },
@@ -3257,7 +3257,7 @@
       "description": "Pending official outcomes retained in bounded memory. Restarts reset this operational buffer; durable feature/decision records remain.",
       "gridPos": {
         "x": 12,
-        "y": 171,
+        "y": 184,
         "w": 12,
         "h": 8
       },
@@ -3327,7 +3327,7 @@
       "description": "Mean forecast probability in each resolved decile; compare with observed UP frequency.",
       "gridPos": {
         "x": 0,
-        "y": 179,
+        "y": 192,
         "w": 12,
         "h": 8
       },
@@ -3380,7 +3380,7 @@
       "description": "Number of resolved inference opportunities in each decile. A sparse bin cannot support a calibration conclusion.",
       "gridPos": {
         "x": 12,
-        "y": 179,
+        "y": 192,
         "w": 12,
         "h": 8
       },
@@ -3433,7 +3433,7 @@
       "description": "Evaluation-weighted denominator for Brier and correctness.",
       "gridPos": {
         "x": 0,
-        "y": 187,
+        "y": 200,
         "w": 12,
         "h": 8
       },
@@ -3503,7 +3503,7 @@
       "description": "Winning settlements / win-or-loss settlements; sample counts are displayed below.",
       "gridPos": {
         "x": 12,
-        "y": 187,
+        "y": 200,
         "w": 12,
         "h": 8
       },
@@ -3570,7 +3570,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 195,
+        "y": 208,
         "w": 24,
         "h": 1
       }
@@ -3586,9 +3586,9 @@
       "description": "Recognized net PnL / settled trades.",
       "gridPos": {
         "x": 0,
-        "y": 196,
-        "w": 6,
-        "h": 5
+        "y": 209,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -3629,7 +3629,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -3645,10 +3645,10 @@
       },
       "description": "Gross positive settled PnL / absolute gross negative settled PnL.",
       "gridPos": {
-        "x": 6,
-        "y": 196,
-        "w": 6,
-        "h": 5
+        "x": 12,
+        "y": 209,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -3689,7 +3689,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -3705,10 +3705,10 @@
       },
       "description": "Average absolute losing trade / average winning trade. Undefined until both exist.",
       "gridPos": {
-        "x": 12,
-        "y": 196,
-        "w": 6,
-        "h": 5
+        "x": 0,
+        "y": 217,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -3749,7 +3749,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -3765,10 +3765,10 @@
       },
       "description": "Peak-to-trough recognized net PnL within the current instrumentation session.",
       "gridPos": {
-        "x": 18,
-        "y": 196,
-        "w": 6,
-        "h": 5
+        "x": 12,
+        "y": 217,
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -3809,7 +3809,7 @@
         },
         "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "justifyMode": "auto",
         "wideLayout": true
@@ -3826,7 +3826,7 @@
       "description": "Net PnL from successfully recognized settlements; excludes unresolved positions.",
       "gridPos": {
         "x": 0,
-        "y": 201,
+        "y": 225,
         "w": 12,
         "h": 8
       },
@@ -3896,7 +3896,7 @@
       "description": "Economic win/loss/push classification by realized net PnL.",
       "gridPos": {
         "x": 12,
-        "y": 201,
+        "y": 225,
         "w": 12,
         "h": 8
       },
@@ -3966,7 +3966,7 @@
       "description": "Actual fill notional / actual shares filled. Fees are displayed separately.",
       "gridPos": {
         "x": 0,
-        "y": 209,
+        "y": 233,
         "w": 12,
         "h": 8
       },
@@ -4036,7 +4036,7 @@
       "description": "Average market age of filled entry decisions. Fill-event weighted.",
       "gridPos": {
         "x": 12,
-        "y": 209,
+        "y": 233,
         "w": 12,
         "h": 8
       },
@@ -4106,7 +4106,7 @@
       "description": "Actual fill minus executable quote at decision time, weighted by shares. Positive is adverse.",
       "gridPos": {
         "x": 0,
-        "y": 217,
+        "y": 241,
         "w": 12,
         "h": 8
       },
@@ -4176,7 +4176,7 @@
       "description": "Fees reported by fills in the current session.",
       "gridPos": {
         "x": 12,
-        "y": 217,
+        "y": 241,
         "w": 12,
         "h": 8
       },
@@ -4246,7 +4246,7 @@
       "description": "Entry fees associated with settlements recognized during this session; differs from fees on still-open fills.",
       "gridPos": {
         "x": 0,
-        "y": 225,
+        "y": 249,
         "w": 12,
         "h": 8
       },
@@ -4316,7 +4316,7 @@
       "description": "Global registration capacity losses, repeated per selected process for visibility. Capacity losses never authorize or block orders.",
       "gridPos": {
         "x": 12,
-        "y": 225,
+        "y": 249,
         "w": 12,
         "h": 8
       },
@@ -4383,7 +4383,7 @@
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 233,
+        "y": 257,
         "w": 24,
         "h": 1
       }
@@ -4398,7 +4398,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 234,
+        "y": 258,
         "w": 24,
         "h": 12
       },
