@@ -41,6 +41,14 @@ Detailed local logs are retained under the worktree’s ignored `target/umr-evid
 
 ## Feature deployment evidence
 
+### Shared RTDS hydration correction, 2026-09-07 22:06 UTC
+
+The first monitoring baseline exposed startup-order-dependent RTDS seeding: a new model could start the shared runtime without RTDS, and adding an existing RTDS consumer later subscribed to live ticks without restoring history. The dynamic source lifecycle now invokes the existing bounded RTDS hydration/recovery path exactly once, matching the established Binance/open-interest approach. No per-model history or new feed was introduced.
+
+Deployed source `7c6c81e97670c8908dee9295eace29a2b930339f`, image `sha256:71364fd5c8f5e0cdbd21eda79622a6d512abff449ac536b03d34a5885093bba4`, with matching embedded provenance and annotated image tag. The full suite passed 390 tests, one existing ignored. At 22:06:32 UTC the live hydration log recorded 3,558 restored ticks and 61 complete minutes. The global candle-ready metric returned to 1; regime calibrated, full combined, stratified payoff and distilled fair value all resumed successful inference. All ten enabled processes resumed and their configurations compared exactly equal before/after deployment. Model artifacts and thresholds were unchanged; no integration merge, migration, or monitoring configuration deployment occurred.
+
+The image and evidence below describe the preceding deployment, retained for history.
+
 - Bot source: `d6d48e4b8fe484370d6bd5be93c6891955de32cd`.
 - Immutable deployed image: `sha256:3bbe49ca1f6d5f43443a3b1dd9c399d0487a1a429c589d31755a5c6a76a79fcf`; matching embedded source revision and annotated `image/polymarket-bot/sha256-3bbe49ca1f6d5f43443a3b1dd9c399d0487a1a429c589d31755a5c6a76a79fcf` tag. Built from clean committed feature source.
 - Previous accepted rollback image: `sha256:64268bd4762d03ff4ec812a2a8a9019b12c2b404bbef290ba472dde7dea7730d`. This image predates UMR; new UMR processes require a compatible runtime to infer. Existing process identities and durable records are retained.
