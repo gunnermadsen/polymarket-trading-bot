@@ -2383,6 +2383,106 @@
       ],
       "title": "Recent Assignment Events",
       "type": "logs"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 75},
+      "id": 31,
+      "panels": [],
+      "title": "Polymarket Websocket Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Provider frames and bytes drained by the dedicated socket reader.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 76},
+      "id": 32,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum(rate(market_data_ingester_websocket_frames_total{product=\"polymarket_btc_five_minute_orderbooks\"}[1m]))", "legendFormat": "frames/s", "refId": "A"},
+        {"expr": "sum(rate(market_data_ingester_websocket_bytes_total{product=\"polymarket_btc_five_minute_orderbooks\"}[1m]))", "legendFormat": "bytes/s", "refId": "B"}
+      ],
+      "title": "Websocket Input Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Occupancy of the bounded socket-to-book and book-to-publication handoffs.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "max": 1, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 0.8}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 76},
+      "id": 33,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "max(market_data_ingester_websocket_queue_utilization_ratio{product=\"polymarket_btc_five_minute_orderbooks\"})", "legendFormat": "raw frames", "refId": "A"},
+        {"expr": "max(market_data_ingester_publication_queue_utilization_ratio{product=\"polymarket_btc_five_minute_orderbooks\"})", "legendFormat": "publication", "refId": "B"}
+      ],
+      "title": "Bounded Queue Utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Five-minute p99 timings that separate host scheduling and provider cadence from local queue delay.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "min": 0, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 76},
+      "id": 34,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_websocket_io_scheduling_delay_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "runtime scheduling", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_websocket_interframe_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "provider inter-frame", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_websocket_queue_delay_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "raw queue", "refId": "C"}
+      ],
+      "title": "Socket Pipeline p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Five-minute p99 for each local frame-processing stage and the asynchronous direct-stream publisher.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "min": 0, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 84},
+      "id": 35,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_frame_parse_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "parse", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_book_apply_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "book apply", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_sample_build_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "sample build", "refId": "C"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_publication_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "publish", "refId": "D"},
+        {"expr": "histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_publication_queue_delay_seconds_bucket{product=\"polymarket_btc_five_minute_orderbooks\"}[5m])))", "legendFormat": "publication queue", "refId": "E"}
+      ],
+      "title": "Frame Processing and Publication p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Explicit loss and recovery signals. Publication overflow does not reset the authoritative source; websocket overflow does.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 35, "lineWidth": 1, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 84},
+      "id": 36,
+      "options": {"legend": {"calcs": ["lastNotNull", "sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "sum(increase(market_data_ingester_websocket_queue_overflow_total{product=\"polymarket_btc_five_minute_orderbooks\"}[5m]))", "legendFormat": "raw queue overflow", "refId": "A"},
+        {"expr": "sum(increase(market_data_ingester_publication_queue_overflow_total{product=\"polymarket_btc_five_minute_orderbooks\"}[5m]))", "legendFormat": "publication overflow", "refId": "B"},
+        {"expr": "sum by (reason) (increase(ingester_source_reconnects_total{product=\"polymarket_btc_five_minute_orderbooks\"}[5m]))", "legendFormat": "reconnect {{reason}}", "refId": "C"},
+        {"expr": "sum(increase(market_data_ingester_cached_contract_reconnect_total{product=\"polymarket_btc_five_minute_orderbooks\"}[5m]))", "legendFormat": "cached-contract reconnect", "refId": "D"}
+      ],
+      "title": "Backpressure and Reconnect Events",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Authoritative-book readiness and Gamma contract refresh outcomes across window rotation and reconnects.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2, "showPoints": "never", "stacking": {"group": "A", "mode": "none"}}, "min": 0}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 92},
+      "id": 37,
+      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"expr": "max by (scope) (market_data_ingester_clob_bootstrap_ready{product=\"polymarket_btc_five_minute_orderbooks\"})", "legendFormat": "ready {{scope}}", "refId": "A"},
+        {"expr": "sum by (result) (increase(market_data_ingester_gamma_refresh_total{product=\"polymarket_btc_five_minute_orderbooks\"}[15m]))", "legendFormat": "Gamma {{result}}", "refId": "B"},
+        {"expr": "sum(rate(market_data_ingester_clob_messages_total{product=\"polymarket_btc_five_minute_orderbooks\"}[1m]))", "legendFormat": "messages/s", "refId": "C"},
+        {"expr": "sum(rate(market_data_ingester_clob_changes_total{product=\"polymarket_btc_five_minute_orderbooks\"}[1m]))", "legendFormat": "changes/s", "refId": "D"}
+      ],
+      "title": "Bootstrap, Discovery, and Message Activity",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -2429,6 +2529,6 @@
   "timezone": "browser",
   "title": "Market Data Pipeline",
   "uid": "market-data-pipeline",
-  "version": 16,
+  "version": 17,
   "weekStart": ""
 }

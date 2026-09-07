@@ -992,3 +992,180 @@ groups:
         dashboardUid: market-data-pipeline
         panelId: 20
         isPaused: false
+      - uid: mdi_polymarket_ws_queue_pressure
+        title: Polymarket orderbook websocket queue pressure
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'max(market_data_ingester_websocket_queue_utilization_ratio{product="polymarket_btc_five_minute_orderbooks"})'
+              instant: true
+              refId: A
+          - *reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0.8], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 30s
+        annotations:
+          summary: 'Polymarket orderbook websocket reader is approaching saturation'
+          description: 'The raw frame queue remained above 80% capacity for 30 seconds. Inspect queue delay, event-loop scheduling delay, and frame-processing latency.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: websocket_queue_pressure, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: warning}
+        dashboardUid: market-data-pipeline
+        panelId: 33
+        isPaused: false
+      - uid: mdi_polymarket_ws_overflow
+        title: Polymarket orderbook websocket queue overflow
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(market_data_ingester_websocket_queue_overflow_total{product="polymarket_btc_five_minute_orderbooks"}[5m]))'
+              instant: true
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket orderbook websocket frame queue overflowed'
+          description: 'At least one source frame could not enter the bounded reader queue in five minutes. The connection is reset explicitly to recover authoritative state.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: websocket_queue_overflow, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: critical}
+        dashboardUid: market-data-pipeline
+        panelId: 35
+        isPaused: false
+      - uid: mdi_polymarket_publication_overflow
+        title: Polymarket orderbook publication queue overflow
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'sum(increase(market_data_ingester_publication_queue_overflow_total{product="polymarket_btc_five_minute_orderbooks"}[5m]))'
+              instant: true
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket direct-stream publication fell behind book processing'
+          description: 'The bounded publication handoff rejected at least one sample in five minutes. Persistence continues independently; inspect publication latency and subscribers.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: publication_queue_overflow, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: critical}
+        dashboardUid: market-data-pipeline
+        panelId: 35
+        isPaused: false
+      - uid: mdi_polymarket_event_loop_delay
+        title: Polymarket orderbook event-loop scheduling delay
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_websocket_io_scheduling_delay_seconds_bucket{product="polymarket_btc_five_minute_orderbooks"}[5m])))'
+              instant: true
+              refId: A
+          - *reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0.1], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket orderbook socket task is receiving delayed runtime scheduling'
+          description: 'The five-minute p99 scheduling delay exceeded 100ms for two minutes. This distinguishes host/runtime contention from provider inter-frame behavior.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: event_loop_delay, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: warning}
+        dashboardUid: market-data-pipeline
+        panelId: 34
+        isPaused: false
+      - uid: mdi_polymarket_processing_latency
+        title: Polymarket orderbook frame processing latency
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              datasource: {type: prometheus, uid: prometheus}
+              editorMode: code
+              expr: 'histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_frame_parse_seconds_bucket{product="polymarket_btc_five_minute_orderbooks"}[5m]))) + histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_book_apply_seconds_bucket{product="polymarket_btc_five_minute_orderbooks"}[5m]))) + histogram_quantile(0.99, sum by (le) (rate(market_data_ingester_clob_sample_build_seconds_bucket{product="polymarket_btc_five_minute_orderbooks"}[5m])))'
+              instant: true
+              refId: A
+          - *reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              datasource: {type: __expr__, uid: __expr__}
+              expression: B
+              type: threshold
+              conditions: [{evaluator: {params: [0.025], type: gt}, operator: {type: and}, query: {params: [C]}, reducer: {params: [], type: last}}]
+              refId: C
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Polymarket orderbook frame processing is persistently slow'
+          description: 'At least one parse, book-apply, or sample-build stage has a five-minute p99 above 25ms for two minutes.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: frame_processing_latency, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: warning}
+        dashboardUid: market-data-pipeline
+        panelId: 34
+        isPaused: false
+      - uid: mdi_polymarket_slow_consumer_disconnect
+        title: Polymarket orderbook upstream slow-consumer disconnect
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: 'sum(count_over_time({service_name="ingester",strategy="polymarket_btc_five_minute_orderbooks"} |= "slow consumer: send buffer full"[10m]))'
+              instant: true
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+        annotations:
+          summary: 'Polymarket disconnected the orderbook consumer for falling behind'
+          description: 'The provider reported slow consumer: send buffer full within ten minutes. Correlate socket queue, local processing, publication, runtime scheduling, and host network metrics.'
+        labels: {strategy: polymarket_btc_five_minute_orderbooks, condition: upstream_slow_consumer_disconnect, service: ingester, family: market_data_ingestion, environment: $GRAFANA_ALERT_ENVIRONMENT, severity: critical}
+        dashboardUid: market-data-pipeline
+        panelId: 36
+        isPaused: false
