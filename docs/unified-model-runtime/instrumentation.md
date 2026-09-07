@@ -6,6 +6,8 @@
 
 `polymarket_umr_*` metrics are exposed by the existing bot `/prometheus/metrics` endpoint. Scrapes read bounded memory only. The dedicated provisioned **Unified Model Runtime** dashboard uses Prometheus and Loki; it performs no PostgreSQL queries. Existing dashboards are retained.
 
+RTDS candle coverage/readiness metrics and existing hydration logs are supplied through the [shared repository contract](rtds-repository.md). Their names and definitions remain unchanged; this extraction introduces no new monitoring datasource or dashboard queries.
+
 ## Measurements
 
 | Family | Meaning |
