@@ -341,6 +341,7 @@ fn resolve_btc_strategy(
         .as_object_mut()
         .ok_or_else(|| HttpError::internal("default BTC strategy did not serialize as object"))?;
     strategy_object.insert("decision_strategy".to_string(), serde_json::Value::Null);
+    strategy_object.insert("unified_model".to_string(), serde_json::Value::Null);
     strategy_object.insert(
         "max_directional_feature_age_ms".to_string(),
         serde_json::Value::Null,
@@ -831,6 +832,16 @@ fn prepare_btc_start_definition_for_execution(
     } = resolved;
     let directional_model_entry_policy = control.paper.directional_model_entry_policy;
     let sources = control.sources.clone();
+    if let Some(binding) = &strategy.unified_model {
+        for input in &binding.sources {
+            if !sources.iter().any(|source| source.key == input.product) {
+                return Err(HttpError::bad_request(format!(
+                    "UMR binding {} requires process stream {}",
+                    input.slot, input.product
+                )));
+            }
+        }
+    }
     let (pipeline_version, process_schema_version) = match control.schema_version.as_str() {
         BTC_PROCESS_SCHEMA_VERSION => (BTC_PIPELINE_VERSION, BTC_PROCESS_SCHEMA_VERSION),
         SELECTABLE_BTC_PROCESS_SCHEMA_VERSION => (
@@ -3359,6 +3370,8 @@ impl ControlApi for RuntimeControl {
         }
         output.push_str(&polymarket_bot::market_data_stream::prometheus_metrics());
         output.push_str(&polymarket_bot::btc::execution_freshness::prometheus_metrics(&runtime));
+        output
+            .push_str(&polymarket_bot::btc::unified_model_runtime::telemetry::prometheus_metrics());
         Ok(output)
     }
 
@@ -5106,5 +5119,54 @@ mod lifecycle_tests {
             last_error: None,
         };
         validate_btc_start_eligibility(&process).unwrap();
+    }
+    #[test]
+    fn umr_paper_templates_use_existing_process_resolution_and_start_contract() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("infra/processes");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if !path.to_string_lossy().ends_with("-umr-20260902.json") {
+                continue;
+            }
+            let process: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let control = parse_btc_process_control(
+                process["config"]["raw"]["btc_realtime_paper"].clone(),
+                BtcDefinitionUse::InactiveDefinition,
+            )
+            .unwrap();
+            let strategy = resolve_btc_strategy(&control).unwrap();
+            strategy.validate().unwrap();
+            validate_btc_entry_timing(&strategy).unwrap();
+            validate_directional_model_entry_policy(
+                &strategy,
+                control.paper.directional_model_entry_policy,
+            )
+            .unwrap();
+            assert!(validate_btc_live_model_authorization(&strategy).is_err());
+            let resolved = ResolvedBtcProcessDefinition {
+                control,
+                strategy,
+                entry_admission: None,
+                runtime: BtcRuntimeConfig {
+                    enabled: true,
+                    ..BtcRuntimeConfig::default()
+                },
+                paper_venue: PaperVenueConfig::default(),
+                paper_stress_previews: Vec::new(),
+            };
+            let first = prepare_btc_start_definition(resolved.clone()).unwrap();
+            let resumed = prepare_btc_start_definition(resolved).unwrap();
+            assert_eq!(first.run_id, resumed.run_id);
+            assert_eq!(first.config_hash, resumed.config_hash);
+            checked += 1;
+        }
+        assert_eq!(checked, 5);
     }
 }

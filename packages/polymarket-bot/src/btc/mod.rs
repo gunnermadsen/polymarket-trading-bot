@@ -17,6 +17,7 @@ pub mod repository;
 pub mod runtime;
 pub mod strategy;
 pub mod types;
+pub mod unified_model_runtime;
 
 pub use admission::{
     AdmissionDisposition, BtcEntryAdmissionConfig, DailyRealizedPnlCredit,

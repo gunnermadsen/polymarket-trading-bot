@@ -1,0 +1,940 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "unified-model-runtime",
+      "folder": "Unified Model Runtime",
+      "interval": "30s",
+      "rules": [
+        {
+          "uid": "umr_bot_scrape_missing",
+          "title": "UMR bot telemetry unavailable",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "absent(up{job=\"polymarket-bot\"}) or (up{job=\"polymarket-bot\"} == bool 0)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR bot telemetry unavailable",
+            "description": "The bot scrape is missing or failing. Check service and monitoring availability; do not infer that process inactivity is healthy.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_runtime_unready",
+          "title": "UMR enabled process input readiness unavailable",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(polymarket_umr_runtime_ready == bool 0) and on(process_id) (polymarket_umr_enabled == 1)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "5m",
+          "annotations": {
+            "summary": "UMR enabled process input readiness unavailable",
+            "description": "The selected model has remained unavailable across a full market window. Inspect required inputs and native missing coverage. Recovery remains automatic.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_callback_stalled",
+          "title": "UMR enabled process callbacks stalled",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(time() - polymarket_umr_last_observation_timestamp_seconds > bool 60) and on(process_id) (polymarket_umr_enabled == 1)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR enabled process callbacks stalled",
+            "description": "An enabled runtime registration has no observation callback for over one minute. This alert does not disable trading.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_inference_stalled",
+          "title": "UMR scheduled opportunities without inference",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(sum by(process_id)(increase(polymarket_umr_opportunities_total[10m])) > bool 0) * on(process_id) (sum by(process_id)(increase(polymarket_umr_inferences_total{reason=\"success\"}[10m])) == bool 0)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR scheduled opportunities without inference",
+            "description": "Opportunities were claimed during the last ten minutes, but no prediction completed. Inspect feature and history availability.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_feature_errors",
+          "title": "UMR feature construction repeatedly unavailable",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by(process_id)(increase(polymarket_umr_feature_builds_total{reason=\"error\"}[10m])) > bool 5",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR feature construction repeatedly unavailable",
+            "description": "At least six recent feature attempts failed. Inspect missing inputs, book causality and history; optional native missing values are not feature errors.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_inference_errors",
+          "title": "UMR repeated inference failures",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by(process_id)(increase(polymarket_umr_inferences_total{reason=\"error\"}[10m])) > bool 2",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR repeated inference failures",
+            "description": "Inference returned errors on multiple opportunities. An intentional admission rejection does not count as failure.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_telemetry_dropped",
+          "title": "UMR analytical evidence dropped",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "sum by(process_id)(increase(polymarket_umr_telemetry_dropped_total[10m])) > bool 0",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "2m",
+          "annotations": {
+            "summary": "UMR analytical evidence dropped",
+            "description": "Bounded telemetry capacity was exceeded. Quality metrics have incomplete coverage; durable records and trading controls remain authoritative.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_quality_review",
+          "title": "UMR prediction quality needs review",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "((polymarket_umr_brier_sum / polymarket_umr_brier_count) > bool 0.25) and on(process_id) (polymarket_umr_brier_count >= 100)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "UMR prediction quality needs review",
+            "description": "Session Brier exceeds 0.25 after at least 100 resolved evaluations. Evaluations within a market are correlated; investigate source coverage and calibration before interpreting significance.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        },
+        {
+          "uid": "umr_expectancy_review",
+          "title": "UMR realized expectancy needs review",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "prometheus",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "prometheus"
+                },
+                "editorMode": "code",
+                "expr": "(polymarket_umr_realized_pnl_usd < bool 0) and on(process_id) (sum by(process_id)(polymarket_umr_trade_outcomes_total) >= 50)",
+                "instant": true,
+                "range": false,
+                "refId": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce",
+                "refId": "B"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "type": "threshold",
+                "refId": "C",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "10m",
+          "annotations": {
+            "summary": "UMR realized expectancy needs review",
+            "description": "Session realized net PnL is negative after at least fifty settled trades. This is a review notification, not an automated trading kill switch.",
+            "dashboardUid": "unified-model-runtime"
+          },
+          "labels": {
+            "family": "umr",
+            "service": "polymarket-bot",
+            "severity": "warning"
+          },
+          "isPaused": false
+        }
+      ]
+    }
+  ]
+}
