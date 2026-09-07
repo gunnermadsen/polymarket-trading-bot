@@ -31,6 +31,61 @@ use proto::{
 pub const CONTRACT_VERSION: u32 = 1;
 const CHANNEL_CAPACITY: usize = 4096;
 const CLIENT_CAPACITY: usize = 1024;
+const LATENCY_BUCKET_MICROS: [u64; 13] = [
+    100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
+    1_000_000,
+];
+
+#[derive(Debug, Default)]
+struct LatencyHistogram {
+    buckets: [u64; LATENCY_BUCKET_MICROS.len()],
+    count: u64,
+    sum_micros: u128,
+}
+
+impl LatencyHistogram {
+    fn observe(&mut self, duration: Duration) {
+        let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        for (index, upper_bound) in LATENCY_BUCKET_MICROS.iter().enumerate() {
+            if micros <= *upper_bound {
+                self.buckets[index] = self.buckets[index].saturating_add(1);
+            }
+        }
+        self.count = self.count.saturating_add(1);
+        self.sum_micros = self.sum_micros.saturating_add(u128::from(micros));
+    }
+}
+
+#[derive(Debug, Default)]
+struct RealtimePipelineMetrics {
+    websocket_frames: u64,
+    websocket_bytes: u64,
+    websocket_queue_depth: usize,
+    websocket_queue_capacity: usize,
+    websocket_queue_high_watermark: usize,
+    websocket_queue_overflows: u64,
+    publication_queue_depth: usize,
+    publication_queue_capacity: usize,
+    publication_queue_high_watermark: usize,
+    publication_queue_overflows: u64,
+    websocket_queue_delay: LatencyHistogram,
+    websocket_interframe: LatencyHistogram,
+    websocket_io_scheduling_delay: LatencyHistogram,
+    clob_frame_parse: LatencyHistogram,
+    clob_book_apply: LatencyHistogram,
+    clob_sample_build: LatencyHistogram,
+    publication_queue_delay: LatencyHistogram,
+    publication: LatencyHistogram,
+    clob_messages: u64,
+    clob_changes: u64,
+    clob_bid_levels: usize,
+    clob_ask_levels: usize,
+    clob_current_market_ready: bool,
+    clob_successor_market_ready: bool,
+    gamma_refresh_successes: u64,
+    gamma_refresh_failures: u64,
+    cached_contract_reconnects: u64,
+}
 
 #[derive(Clone)]
 pub struct Publisher {
@@ -62,6 +117,7 @@ pub struct StreamingMetrics {
     persistence_latency_micros: Mutex<BTreeMap<String, u64>>,
     persistence_queue_depth: Mutex<BTreeMap<String, usize>>,
     persistence_queue_overflows: Mutex<BTreeMap<String, u64>>,
+    realtime_pipeline: Mutex<BTreeMap<String, RealtimePipelineMetrics>>,
 }
 
 static PUBLISHER: OnceLock<Publisher> = OnceLock::new();
@@ -376,6 +432,125 @@ pub fn observe_persistence_queue_overflow(product_key: &str) {
     }
 }
 
+fn with_pipeline_metrics(product_key: &str, observe: impl FnOnce(&mut RealtimePipelineMetrics)) {
+    if let Some(publisher) = PUBLISHER.get() {
+        let mut metrics = publisher
+            .metrics
+            .realtime_pipeline
+            .lock()
+            .expect("metrics lock");
+        observe(metrics.entry(product_key.to_owned()).or_default());
+    }
+}
+
+pub fn observe_websocket_frame(product_key: &str, bytes: usize, interframe: Option<Duration>) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.websocket_frames = metrics.websocket_frames.saturating_add(1);
+        metrics.websocket_bytes = metrics
+            .websocket_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        if let Some(interframe) = interframe {
+            metrics.websocket_interframe.observe(interframe);
+        }
+    });
+}
+
+pub fn set_websocket_queue_depth(product_key: &str, depth: usize, capacity: usize) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.websocket_queue_depth = depth;
+        metrics.websocket_queue_capacity = capacity;
+        metrics.websocket_queue_high_watermark = metrics.websocket_queue_high_watermark.max(depth);
+    });
+}
+
+pub fn observe_websocket_queue_overflow(product_key: &str) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.websocket_queue_overflows = metrics.websocket_queue_overflows.saturating_add(1);
+    });
+}
+
+pub fn observe_websocket_queue_delay(product_key: &str, duration: Duration) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.websocket_queue_delay.observe(duration);
+    });
+}
+
+pub fn observe_websocket_io_scheduling_delay(product_key: &str, duration: Duration) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.websocket_io_scheduling_delay.observe(duration);
+    });
+}
+
+pub fn observe_clob_frame_processing(
+    product_key: &str,
+    parse: Duration,
+    apply: Duration,
+    sample_build: Duration,
+    messages: usize,
+    changes: usize,
+    bid_levels: usize,
+    ask_levels: usize,
+) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.clob_frame_parse.observe(parse);
+        metrics.clob_book_apply.observe(apply);
+        metrics.clob_sample_build.observe(sample_build);
+        metrics.clob_messages = metrics
+            .clob_messages
+            .saturating_add(u64::try_from(messages).unwrap_or(u64::MAX));
+        metrics.clob_changes = metrics
+            .clob_changes
+            .saturating_add(u64::try_from(changes).unwrap_or(u64::MAX));
+        metrics.clob_bid_levels = bid_levels;
+        metrics.clob_ask_levels = ask_levels;
+    });
+}
+
+pub fn set_clob_bootstrap_readiness(product_key: &str, current: bool, successor: bool) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.clob_current_market_ready = current;
+        metrics.clob_successor_market_ready = successor;
+    });
+}
+
+pub fn observe_gamma_refresh(product_key: &str, success: bool) {
+    with_pipeline_metrics(product_key, |metrics| {
+        if success {
+            metrics.gamma_refresh_successes = metrics.gamma_refresh_successes.saturating_add(1);
+        } else {
+            metrics.gamma_refresh_failures = metrics.gamma_refresh_failures.saturating_add(1);
+        }
+    });
+}
+
+pub fn observe_cached_contract_reconnect(product_key: &str) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.cached_contract_reconnects = metrics.cached_contract_reconnects.saturating_add(1);
+    });
+}
+
+pub fn set_publication_queue_depth(product_key: &str, depth: usize, capacity: usize) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.publication_queue_depth = depth;
+        metrics.publication_queue_capacity = capacity;
+        metrics.publication_queue_high_watermark =
+            metrics.publication_queue_high_watermark.max(depth);
+    });
+}
+
+pub fn observe_publication_queue_overflow(product_key: &str) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.publication_queue_overflows = metrics.publication_queue_overflows.saturating_add(1);
+    });
+}
+
+pub fn observe_publication(product_key: &str, queue_delay: Duration, duration: Duration) {
+    with_pipeline_metrics(product_key, |metrics| {
+        metrics.publication_queue_delay.observe(queue_delay);
+        metrics.publication.observe(duration);
+    });
+}
+
 #[derive(Clone)]
 struct StreamService {
     publisher: Publisher,
@@ -542,6 +717,7 @@ impl StreamingMetrics {
             .persistence_queue_overflows
             .lock()
             .expect("metrics lock");
+        let realtime_pipeline = self.realtime_pipeline.lock().expect("metrics lock");
         let mut out = String::from(
             "# HELP ingester_stream_published_total Canonical events published to the worker stream.\n# TYPE ingester_stream_published_total counter\n",
         );
@@ -657,8 +833,149 @@ impl StreamingMetrics {
                 "ingester_source_persistence_queue_overflows_total{{product=\"{key}\"}} {value}\n"
             ));
         }
+        out.push_str("# HELP market_data_ingester_websocket_frames_total Websocket data frames received.\n# TYPE market_data_ingester_websocket_frames_total counter\n");
+        out.push_str("# HELP market_data_ingester_websocket_bytes_total Websocket data-frame bytes received.\n# TYPE market_data_ingester_websocket_bytes_total counter\n");
+        out.push_str("# HELP market_data_ingester_websocket_queue_depth Raw websocket frames awaiting processing.\n# TYPE market_data_ingester_websocket_queue_depth gauge\n");
+        out.push_str("# HELP market_data_ingester_websocket_queue_capacity Raw websocket frame queue capacity.\n# TYPE market_data_ingester_websocket_queue_capacity gauge\n");
+        out.push_str("# HELP market_data_ingester_websocket_queue_utilization_ratio Raw websocket queue utilization.\n# TYPE market_data_ingester_websocket_queue_utilization_ratio gauge\n");
+        out.push_str("# HELP market_data_ingester_websocket_queue_high_watermark Highest raw websocket queue depth since worker start.\n# TYPE market_data_ingester_websocket_queue_high_watermark gauge\n");
+        out.push_str("# HELP market_data_ingester_websocket_queue_overflow_total Raw websocket frame handoff overflows.\n# TYPE market_data_ingester_websocket_queue_overflow_total counter\n");
+        out.push_str("# HELP market_data_ingester_publication_queue_depth Canonical samples awaiting direct-stream publication.\n# TYPE market_data_ingester_publication_queue_depth gauge\n");
+        out.push_str("# HELP market_data_ingester_publication_queue_capacity Direct-stream publication queue capacity.\n# TYPE market_data_ingester_publication_queue_capacity gauge\n");
+        out.push_str("# HELP market_data_ingester_publication_queue_utilization_ratio Direct-stream publication queue utilization.\n# TYPE market_data_ingester_publication_queue_utilization_ratio gauge\n");
+        out.push_str("# HELP market_data_ingester_publication_queue_high_watermark Highest publication queue depth since worker start.\n# TYPE market_data_ingester_publication_queue_high_watermark gauge\n");
+        out.push_str("# HELP market_data_ingester_publication_queue_overflow_total Direct-stream publication handoff overflows.\n# TYPE market_data_ingester_publication_queue_overflow_total counter\n");
+        out.push_str("# HELP market_data_ingester_clob_messages_total Parsed CLOB messages.\n# TYPE market_data_ingester_clob_messages_total counter\n");
+        out.push_str("# HELP market_data_ingester_clob_changes_total Parsed CLOB price changes.\n# TYPE market_data_ingester_clob_changes_total counter\n");
+        out.push_str("# HELP market_data_ingester_clob_levels Current reconstructed CLOB levels by side.\n# TYPE market_data_ingester_clob_levels gauge\n");
+        out.push_str("# HELP market_data_ingester_clob_bootstrap_ready Whether authoritative CLOB books are ready by bounded scope.\n# TYPE market_data_ingester_clob_bootstrap_ready gauge\n");
+        out.push_str("# HELP market_data_ingester_gamma_refresh_total Gamma contract refresh attempts by result.\n# TYPE market_data_ingester_gamma_refresh_total counter\n");
+        out.push_str("# HELP market_data_ingester_cached_contract_reconnect_total Websocket reconnects that reused the last verified contract set.\n# TYPE market_data_ingester_cached_contract_reconnect_total counter\n");
+        for name in [
+            "market_data_ingester_websocket_queue_delay_seconds",
+            "market_data_ingester_websocket_interframe_seconds",
+            "market_data_ingester_websocket_io_scheduling_delay_seconds",
+            "market_data_ingester_clob_frame_parse_seconds",
+            "market_data_ingester_clob_book_apply_seconds",
+            "market_data_ingester_clob_sample_build_seconds",
+            "market_data_ingester_publication_queue_delay_seconds",
+            "market_data_ingester_publication_seconds",
+        ] {
+            out.push_str(&format!(
+                "# HELP {name} Observed realtime pipeline latency.\n# TYPE {name} histogram\n"
+            ));
+        }
+        for (key, metrics) in realtime_pipeline.iter() {
+            let websocket_utilization = ratio(
+                metrics.websocket_queue_depth,
+                metrics.websocket_queue_capacity,
+            );
+            let publication_utilization = ratio(
+                metrics.publication_queue_depth,
+                metrics.publication_queue_capacity,
+            );
+            out.push_str(&format!(
+                "market_data_ingester_websocket_frames_total{{product=\"{key}\"}} {}\nmarket_data_ingester_websocket_bytes_total{{product=\"{key}\"}} {}\nmarket_data_ingester_websocket_queue_depth{{product=\"{key}\"}} {}\nmarket_data_ingester_websocket_queue_capacity{{product=\"{key}\"}} {}\nmarket_data_ingester_websocket_queue_utilization_ratio{{product=\"{key}\"}} {websocket_utilization}\nmarket_data_ingester_websocket_queue_high_watermark{{product=\"{key}\"}} {}\nmarket_data_ingester_websocket_queue_overflow_total{{product=\"{key}\"}} {}\nmarket_data_ingester_publication_queue_depth{{product=\"{key}\"}} {}\nmarket_data_ingester_publication_queue_capacity{{product=\"{key}\"}} {}\nmarket_data_ingester_publication_queue_utilization_ratio{{product=\"{key}\"}} {publication_utilization}\nmarket_data_ingester_publication_queue_high_watermark{{product=\"{key}\"}} {}\nmarket_data_ingester_publication_queue_overflow_total{{product=\"{key}\"}} {}\nmarket_data_ingester_clob_messages_total{{product=\"{key}\"}} {}\nmarket_data_ingester_clob_changes_total{{product=\"{key}\"}} {}\nmarket_data_ingester_clob_levels{{product=\"{key}\",side=\"bid\"}} {}\nmarket_data_ingester_clob_levels{{product=\"{key}\",side=\"ask\"}} {}\n",
+                metrics.websocket_frames,
+                metrics.websocket_bytes,
+                metrics.websocket_queue_depth,
+                metrics.websocket_queue_capacity,
+                metrics.websocket_queue_high_watermark,
+                metrics.websocket_queue_overflows,
+                metrics.publication_queue_depth,
+                metrics.publication_queue_capacity,
+                metrics.publication_queue_high_watermark,
+                metrics.publication_queue_overflows,
+                metrics.clob_messages,
+                metrics.clob_changes,
+                metrics.clob_bid_levels,
+                metrics.clob_ask_levels,
+            ));
+            out.push_str(&format!(
+                "market_data_ingester_clob_bootstrap_ready{{product=\"{key}\",scope=\"current\"}} {}\nmarket_data_ingester_clob_bootstrap_ready{{product=\"{key}\",scope=\"successor\"}} {}\n",
+                i32::from(metrics.clob_current_market_ready),
+                i32::from(metrics.clob_successor_market_ready),
+            ));
+            out.push_str(&format!(
+                "market_data_ingester_gamma_refresh_total{{product=\"{key}\",result=\"success\"}} {}\nmarket_data_ingester_gamma_refresh_total{{product=\"{key}\",result=\"failure\"}} {}\nmarket_data_ingester_cached_contract_reconnect_total{{product=\"{key}\"}} {}\n",
+                metrics.gamma_refresh_successes,
+                metrics.gamma_refresh_failures,
+                metrics.cached_contract_reconnects,
+            ));
+            render_histogram(
+                &mut out,
+                "market_data_ingester_websocket_queue_delay_seconds",
+                key,
+                &metrics.websocket_queue_delay,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_websocket_interframe_seconds",
+                key,
+                &metrics.websocket_interframe,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_websocket_io_scheduling_delay_seconds",
+                key,
+                &metrics.websocket_io_scheduling_delay,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_clob_frame_parse_seconds",
+                key,
+                &metrics.clob_frame_parse,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_clob_book_apply_seconds",
+                key,
+                &metrics.clob_book_apply,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_clob_sample_build_seconds",
+                key,
+                &metrics.clob_sample_build,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_publication_queue_delay_seconds",
+                key,
+                &metrics.publication_queue_delay,
+            );
+            render_histogram(
+                &mut out,
+                "market_data_ingester_publication_seconds",
+                key,
+                &metrics.publication,
+            );
+        }
         out
     }
+}
+
+fn ratio(depth: usize, capacity: usize) -> f64 {
+    if capacity == 0 {
+        0.0
+    } else {
+        depth as f64 / capacity as f64
+    }
+}
+
+fn render_histogram(out: &mut String, name: &str, product: &str, histogram: &LatencyHistogram) {
+    for (upper_bound, count) in LATENCY_BUCKET_MICROS.iter().zip(histogram.buckets.iter()) {
+        out.push_str(&format!(
+            "{name}_bucket{{product=\"{product}\",le=\"{}\"}} {count}\n",
+            *upper_bound as f64 / 1_000_000.0
+        ));
+    }
+    out.push_str(&format!(
+        "{name}_bucket{{product=\"{product}\",le=\"+Inf\"}} {}\n{name}_sum{{product=\"{product}\"}} {}\n{name}_count{{product=\"{product}\"}} {}\n",
+        histogram.count,
+        histogram.sum_micros as f64 / 1_000_000.0,
+        histogram.count,
+    ));
 }
 
 #[cfg(test)]
@@ -732,6 +1049,24 @@ mod tests {
             .lock()
             .expect("metrics lock")
             .insert("product".to_owned(), 7);
+        let mut pipeline = RealtimePipelineMetrics {
+            websocket_frames: 12,
+            websocket_bytes: 4_096,
+            websocket_queue_depth: 2,
+            websocket_queue_capacity: 8,
+            publication_queue_depth: 1,
+            publication_queue_capacity: 4,
+            clob_current_market_ready: true,
+            ..Default::default()
+        };
+        pipeline
+            .clob_frame_parse
+            .observe(Duration::from_micros(500));
+        metrics
+            .realtime_pipeline
+            .lock()
+            .expect("metrics lock")
+            .insert("product".to_owned(), pipeline);
 
         let rendered = metrics.render();
         assert!(rendered.contains(
@@ -759,5 +1094,16 @@ mod tests {
             "ingester_source_websocket_pong_latency_seconds{product=\"product\"} 0.0015"
         ));
         assert!(rendered.contains("ingester_source_persistence_queue_depth{product=\"product\"} 7"));
+        assert!(rendered
+            .contains("market_data_ingester_websocket_frames_total{product=\"product\"} 12"));
+        assert!(rendered.contains(
+            "market_data_ingester_websocket_queue_utilization_ratio{product=\"product\"} 0.25"
+        ));
+        assert!(rendered.contains(
+            "market_data_ingester_clob_frame_parse_seconds_count{product=\"product\"} 1"
+        ));
+        assert!(rendered.contains(
+            "market_data_ingester_clob_bootstrap_ready{product=\"product\",scope=\"current\"} 1"
+        ));
     }
 }

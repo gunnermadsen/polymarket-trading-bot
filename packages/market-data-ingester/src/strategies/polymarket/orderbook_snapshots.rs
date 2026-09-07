@@ -72,6 +72,9 @@ const MAX_NUMERIC_BYTES: usize = 64;
 const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 1_000;
 const WEBSOCKET_EVENT_BUFFER: usize = 4_096;
 const PERSISTENCE_COMMAND_BUFFER: usize = 32;
+const PUBLICATION_COMMAND_BUFFER: usize = 1_024;
+const IO_SCHEDULING_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+const SLOW_FRAME_PROCESSING_THRESHOLD: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -1624,6 +1627,7 @@ impl BookRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     fn all_bootstrapped(&self) -> bool {
         !self.books.is_empty() && self.books.values().all(|book| book.bootstrapped)
     }
@@ -1638,6 +1642,15 @@ impl BookRegistry {
         first.is_some_and(|book| book.bootstrapped)
             && second.is_some_and(|book| book.bootstrapped)
             && matching.next().is_none()
+    }
+
+    fn level_counts(&self) -> (usize, usize) {
+        self.books.values().fold((0, 0), |(bids, asks), book| {
+            (
+                bids.saturating_add(book.bids.len()),
+                asks.saturating_add(book.asks.len()),
+            )
+        })
     }
 
     fn apply(
@@ -2013,25 +2026,183 @@ fn sampled_book_stream_metadata(
     })
 }
 
-async fn publish_sampled_books(
-    samples: &[BookSample],
-    sampled_at: DateTime<Utc>,
-) -> Result<(), StrategyError> {
-    for sample in samples {
-        let metadata = sampled_book_stream_metadata(sample, sampled_at)?;
-        crate::streaming::publish(
+struct PublicationCommand {
+    sample: BookSample,
+    mode: PublicationMode,
+    queued_at: Instant,
+}
+
+enum PublicationMode {
+    SourceUpdate,
+    AlignedSample(DateTime<Utc>),
+}
+
+struct PublicationWorker {
+    sender: Option<mpsc::Sender<PublicationCommand>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl PublicationWorker {
+    fn start() -> Self {
+        let (sender, mut receiver) =
+            mpsc::channel::<PublicationCommand>(PUBLICATION_COMMAND_BUFFER);
+        crate::streaming::set_publication_queue_depth(
             STRATEGY_KEY.as_str(),
-            metadata.source_event_id,
-            metadata.observed_at,
-            metadata.observed_at,
-            metadata.observed_at,
-            metadata.payload_sha256,
-            true,
-            sample,
-        )
-        .await;
+            0,
+            PUBLICATION_COMMAND_BUFFER,
+        );
+        let handle = tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                crate::streaming::set_publication_queue_depth(
+                    STRATEGY_KEY.as_str(),
+                    receiver.len(),
+                    PUBLICATION_COMMAND_BUFFER,
+                );
+                let started_at = Instant::now();
+                let queue_delay = started_at.saturating_duration_since(command.queued_at);
+                let publication = match command.mode {
+                    PublicationMode::AlignedSample(sampled_at) => {
+                        sampled_book_stream_metadata(&command.sample, sampled_at).map(|metadata| {
+                            (
+                                metadata.source_event_id,
+                                metadata.observed_at,
+                                metadata.observed_at,
+                                metadata.observed_at,
+                                metadata.payload_sha256,
+                            )
+                        })
+                    }
+                    PublicationMode::SourceUpdate => Ok((
+                        format!(
+                            "{}:{}",
+                            command.sample.token_id, command.sample.ingest_sequence
+                        ),
+                        command.sample.source_timestamp,
+                        command.sample.source_timestamp,
+                        command.sample.received_at,
+                        command.sample.source_hash.clone().unwrap_or_default(),
+                    )),
+                };
+                match publication {
+                    Ok((
+                        source_event_id,
+                        source_timestamp,
+                        provider_available_at,
+                        received_at,
+                        payload_sha256,
+                    )) => {
+                        crate::streaming::publish(
+                            STRATEGY_KEY.as_str(),
+                            source_event_id,
+                            source_timestamp,
+                            provider_available_at,
+                            received_at,
+                            payload_sha256,
+                            true,
+                            &command.sample,
+                        )
+                        .await;
+                    }
+                    Err(error) => warn!(
+                        strategy = %STRATEGY_KEY,
+                        error_code = error.code,
+                        error = %error,
+                        "failed to encode queued Polymarket orderbook publication"
+                    ),
+                }
+                crate::streaming::observe_publication(
+                    STRATEGY_KEY.as_str(),
+                    queue_delay,
+                    started_at.elapsed(),
+                );
+            }
+            crate::streaming::set_publication_queue_depth(
+                STRATEGY_KEY.as_str(),
+                0,
+                PUBLICATION_COMMAND_BUFFER,
+            );
+        });
+        Self {
+            sender: Some(sender),
+            handle: Some(handle),
+        }
     }
-    Ok(())
+
+    fn sender(&self) -> mpsc::Sender<PublicationCommand> {
+        self.sender
+            .as_ref()
+            .expect("publication sender present")
+            .clone()
+    }
+
+    async fn drain(&mut self) -> Result<(), StrategyError> {
+        self.sender.take();
+        if let Some(handle) = self.handle.take() {
+            handle.await.map_err(|error| {
+                integrity_error(
+                    "polymarket_publication_worker_join_failed",
+                    format!("Polymarket publication worker failed to join: {error}"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PublicationWorker {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            let discarded = PUBLICATION_COMMAND_BUFFER.saturating_sub(sender.capacity());
+            if discarded > 0 {
+                warn!(
+                    strategy = %STRATEGY_KEY,
+                    discarded,
+                    error_code = "polymarket_publication_shutdown_discard",
+                    "discarding queued direct-stream publications during abnormal shutdown"
+                );
+            }
+        }
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+fn enqueue_publications(
+    sender: &mpsc::Sender<PublicationCommand>,
+    samples: impl IntoIterator<Item = BookSample>,
+    mode: impl Fn() -> PublicationMode,
+) {
+    let capacity = sender.max_capacity();
+    for sample in samples {
+        let command = PublicationCommand {
+            sample,
+            mode: mode(),
+            queued_at: Instant::now(),
+        };
+        match sender.try_send(command) {
+            Ok(()) => crate::streaming::set_publication_queue_depth(
+                STRATEGY_KEY.as_str(),
+                capacity.saturating_sub(sender.capacity()),
+                capacity,
+            ),
+            Err(mpsc::error::TrySendError::Closed(_)) => warn!(
+                strategy = %STRATEGY_KEY,
+                error_code = "polymarket_publication_worker_stopped",
+                "direct-stream publication worker stopped"
+            ),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                crate::streaming::observe_publication_queue_overflow(STRATEGY_KEY.as_str());
+                warn!(
+                    strategy = %STRATEGY_KEY,
+                    queue_depth = capacity,
+                    queue_capacity = capacity,
+                    error_code = "polymarket_publication_backpressure",
+                    "dropping direct-stream sample because publication queue is full"
+                );
+            }
+        }
+    }
 }
 
 fn decimal_string(value: Decimal) -> String {
@@ -3503,6 +3674,7 @@ enum ClobIoEvent {
     Frame {
         bytes: Vec<u8>,
         received_at: DateTime<Utc>,
+        queued_at: Instant,
     },
     Failed(StrategyError),
 }
@@ -3567,27 +3739,34 @@ impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
         let mut writer = CaptureWriter::new(self)?;
         writer.initialize().await?;
         let mut persistence = PersistenceWorker::start(writer);
+        let mut publication = PublicationWorker::start();
         let mut sampling_clock = SamplingClock::default();
         let mut continuity = Continuity::default();
+        let mut verified_markets = None;
         let mut reconnect_delay = Duration::from_millis(self.config.reconnect_initial_ms);
         let maximum_reconnect_delay = Duration::from_millis(self.config.reconnect_max_ms);
 
         loop {
             if shutdown.is_cancelled() {
                 persistence.drain().await?;
+                publication.drain().await?;
                 return Ok(());
             }
             let connection_epoch = Uuid::new_v4();
             let session_started_at = Instant::now();
+            let publication_sender = publication.sender();
             let result = self
                 .capture_session(
                     &mut persistence,
+                    &publication_sender,
                     &mut sampling_clock,
                     &mut continuity,
+                    &mut verified_markets,
                     connection_epoch,
                     &shutdown,
                 )
                 .await;
+            drop(publication_sender);
             match result {
                 Ok(()) => {
                     persistence.drain().await?;
@@ -3596,6 +3775,7 @@ impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                 Err(error) if is_current_profile_lease_loss(&error) => {
                     match persistence.drain().await {
                         Ok(()) => {
+                            publication.drain().await?;
                             info!(
                                 error_code = error.code,
                                 "Polymarket strict write observed a requested profile drain"
@@ -3610,6 +3790,8 @@ impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                     }
                 }
                 Err(error) if error.kind == StrategyErrorKind::TransientSource => {
+                    crate::streaming::observe_source_reconnect(STRATEGY_KEY.as_str(), error.code);
+                    crate::streaming::set_source_connection_ready(STRATEGY_KEY.as_str(), false);
                     if !gap_was_recorded(error.code) {
                         if let Some(last_sampled_at) = continuity.last_sampled_at {
                             persistence
@@ -3643,6 +3825,7 @@ impl RealtimeWorkerStrategy for PolymarketBtcFiveMinuteOrderbooksStrategy {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
                             persistence.drain().await?;
+                            publication.drain().await?;
                             return Ok(());
                         }
                         _ = tokio::time::sleep(reconnect_delay) => {}
@@ -3662,15 +3845,42 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
     async fn capture_session(
         &self,
         persistence: &mut PersistenceWorker,
+        publication_sender: &mpsc::Sender<PublicationCommand>,
         sampling_clock: &mut SamplingClock,
         continuity: &mut Continuity,
+        verified_markets: &mut Option<Vec<MarketContract>>,
         connection_epoch: Uuid,
         shutdown: &CancellationToken,
     ) -> Result<(), StrategyError> {
         let persistence_sender = persistence.sender.clone();
         let persistence_events = &mut persistence.events;
         let pending_missed_buckets = &mut persistence.pending_missed_buckets;
-        let discovered = discover_markets(&self.client, &self.config, Utc::now()).await?;
+        let now = Utc::now();
+        let discovered = if let Some(cached) = verified_markets.as_ref().filter(|cached| {
+            cached
+                .iter()
+                .any(|market| market.window_start == aligned_market_window(now))
+        }) {
+            crate::streaming::observe_cached_contract_reconnect(STRATEGY_KEY.as_str());
+            info!(
+                strategy = %STRATEGY_KEY,
+                market_count = cached.len(),
+                "reusing last verified Polymarket contracts for websocket reconnect"
+            );
+            cached.clone()
+        } else {
+            match discover_markets(&self.client, &self.config, now).await {
+                Ok(discovered) => {
+                    crate::streaming::observe_gamma_refresh(STRATEGY_KEY.as_str(), true);
+                    *verified_markets = Some(discovered.clone());
+                    discovered
+                }
+                Err(error) => {
+                    crate::streaming::observe_gamma_refresh(STRATEGY_KEY.as_str(), false);
+                    return Err(error);
+                }
+            }
+        };
         let mut active_markets = subscription_markets(&discovered, Utc::now(), &self.config);
         let websocket_config = WebSocketConfig::default()
             .read_buffer_size(64 * 1024)
@@ -3715,8 +3925,14 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
         let io_handle = tokio::spawn(async move {
             let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
             ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut scheduling_probe = tokio::time::interval_at(
+                Instant::now() + IO_SCHEDULING_PROBE_INTERVAL,
+                IO_SCHEDULING_PROBE_INTERVAL,
+            );
+            scheduling_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut read_deadline = Instant::now() + read_timeout;
             let mut pong_deadline = None;
+            let mut last_data_frame_at = None;
             loop {
                 let disabled_deadline = Instant::now() + Duration::from_secs(86_400);
                 let pong_sleep =
@@ -3758,6 +3974,12 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             return;
                         }
                     }
+                    scheduled_at = scheduling_probe.tick() => {
+                        crate::streaming::observe_websocket_io_scheduling_delay(
+                            STRATEGY_KEY.as_str(),
+                            Instant::now().saturating_duration_since(scheduled_at),
+                        );
+                    }
                     frame = stream.next() => {
                         read_deadline = Instant::now() + read_timeout;
                         let received_at = canonical_timestamp(Utc::now());
@@ -3784,11 +4006,12 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                     continue;
                                 }
                                 if value.is_empty() { continue; }
-                                ClobIoEvent::Frame { bytes: text.as_bytes().to_vec(), received_at }
+                                ClobIoEvent::Frame { bytes: text.as_bytes().to_vec(), received_at, queued_at: Instant::now() }
                             }
                             Some(Ok(Message::Binary(bytes))) => ClobIoEvent::Frame {
                                 bytes: bytes.to_vec(),
                                 received_at,
+                                queued_at: Instant::now(),
                             },
                             Some(Ok(Message::Ping(payload))) => {
                                 if let Err(error) = send_websocket_message(
@@ -3816,10 +4039,39 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 "Polymarket CLOB websocket ended",
                             )),
                         };
+                        if let ClobIoEvent::Frame { bytes, .. } = &event {
+                            let now = Instant::now();
+                            let interframe = last_data_frame_at
+                                .replace(now)
+                                .map(|previous| now.saturating_duration_since(previous));
+                            crate::streaming::observe_websocket_frame(
+                                STRATEGY_KEY.as_str(),
+                                bytes.len(),
+                                interframe,
+                            );
+                            crate::streaming::observe_source_event(
+                                STRATEGY_KEY.as_str(),
+                                received_at,
+                            );
+                        }
                         match io_sender.try_send(event) {
-                            Ok(()) => {}
+                            Ok(()) => crate::streaming::set_websocket_queue_depth(
+                                STRATEGY_KEY.as_str(),
+                                WEBSOCKET_EVENT_BUFFER.saturating_sub(io_sender.capacity()),
+                                WEBSOCKET_EVENT_BUFFER,
+                            ),
                             Err(mpsc::error::TrySendError::Closed(_)) => return,
                             Err(mpsc::error::TrySendError::Full(_)) => {
+                                crate::streaming::observe_websocket_queue_overflow(
+                                    STRATEGY_KEY.as_str(),
+                                );
+                                warn!(
+                                    strategy = %STRATEGY_KEY,
+                                    queue_depth = WEBSOCKET_EVENT_BUFFER,
+                                    queue_capacity = WEBSOCKET_EVENT_BUFFER,
+                                    error_code = "polymarket_clob_consumer_backpressure",
+                                    "raw Polymarket websocket frame queue is full"
+                                );
                                 let _ = io_sender.send(ClobIoEvent::Failed(source_error(
                                     "polymarket_clob_consumer_backpressure",
                                     "Polymarket CLOB processing fell behind the bounded websocket buffer",
@@ -3858,7 +4110,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
             tokio::select! {
                 _ = shutdown.cancelled() => return Ok(()),
                 _ = &mut bootstrap_sleep, if bootstrap_deadline.is_some() => {
-                    let message = "Polymarket CLOB did not deliver every subscribed token's authoritative full book within the snapshot bound";
+                    let message = "Polymarket CLOB did not deliver the current market's authoritative full books within the snapshot bound";
                     send_gap(&persistence_sender, GapObservation {
                         kind: "snapshot_bootstrap",
                         code: "polymarket_clob_bootstrap_timeout",
@@ -3866,7 +4118,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                         source_start: None,
                         source_end: None,
                         start_cursor: continuity.last_cursor.clone().or_else(|| Some(format!("connection_epoch:{connection_epoch}"))),
-                        end_cursor: Some("awaiting_initial_full_books".to_owned()),
+                            end_cursor: Some("awaiting_current_market_full_books".to_owned()),
                     }).await?;
                     return Err(source_error("polymarket_clob_bootstrap_timeout", message));
                 }
@@ -3965,7 +4217,11 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     // snapshot. Publish each accepted sample immediately after
                     // handing it to the asynchronous persistence worker so a
                     // quiet venue does not make the direct gRPC stream stale.
-                    publish_sampled_books(&samples, sampled_at).await?;
+                    enqueue_publications(
+                        publication_sender,
+                        samples.iter().cloned(),
+                        || PublicationMode::AlignedSample(sampled_at),
+                    );
                 }
                 event = persistence_events.recv() => match event {
                     Some(PersistenceEvent::Persisted(persisted)) => {
@@ -3986,6 +4242,8 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                     };
                     match update {
                         Ok(discovered_markets) => {
+                            crate::streaming::observe_gamma_refresh(STRATEGY_KEY.as_str(), true);
+                            *verified_markets = Some(discovered_markets.clone());
                             let desired_markets =
                                 subscription_markets(&discovered_markets, Utc::now(), &self.config);
                             let delta = subscription_delta(&active_markets, &desired_markets);
@@ -4016,6 +4274,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             active_markets = desired_markets;
                         }
                         Err(error) => {
+                            crate::streaming::observe_gamma_refresh(STRATEGY_KEY.as_str(), false);
                             warn!(
                                 error_code = error.code,
                                 error = %error,
@@ -4026,9 +4285,19 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 }
                 event = io_receiver.recv() => {
                     match event {
-                        Some(ClobIoEvent::Frame { bytes, received_at }) => {
+                        Some(ClobIoEvent::Frame { bytes, received_at, queued_at }) => {
+                            crate::streaming::observe_websocket_queue_delay(
+                                STRATEGY_KEY.as_str(),
+                                queued_at.elapsed(),
+                            );
+                            crate::streaming::set_websocket_queue_depth(
+                                STRATEGY_KEY.as_str(),
+                                io_receiver.len(),
+                                WEBSOCKET_EVENT_BUFFER,
+                            );
                             self.apply_frame(
                                 &persistence_sender,
+                                publication_sender,
                                 continuity,
                                 &mut registry,
                                 connection_epoch,
@@ -4042,7 +4311,21 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                             "Polymarket CLOB socket worker stopped unexpectedly",
                         )),
                     }
-                    if registry.all_bootstrapped() {
+                    let current_window = aligned_market_window(Utc::now());
+                    let current_ready = registry.market_bootstrapped(current_window);
+                    let successor_ready = registry.market_bootstrapped(
+                        current_window + TimeDelta::seconds(MARKET_INTERVAL_SECONDS),
+                    );
+                    crate::streaming::set_clob_bootstrap_readiness(
+                        STRATEGY_KEY.as_str(),
+                        current_ready,
+                        successor_ready,
+                    );
+                    crate::streaming::set_source_connection_ready(
+                        STRATEGY_KEY.as_str(),
+                        current_ready,
+                    );
+                    if current_ready {
                         bootstrap_deadline = None;
                     }
                 }
@@ -4055,12 +4338,14 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
     async fn apply_frame(
         &self,
         persistence_sender: &mpsc::Sender<PersistenceCommand>,
+        publication_sender: &mpsc::Sender<PublicationCommand>,
         continuity: &Continuity,
         registry: &mut BookRegistry,
         connection_epoch: Uuid,
         bytes: &[u8],
         received_at: DateTime<Utc>,
     ) -> Result<(), StrategyError> {
+        let parse_started_at = Instant::now();
         let messages = match parse_clob_frame(bytes, self.config.max_levels_per_side) {
             Ok(messages) => messages,
             Err(error) => {
@@ -4076,6 +4361,16 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 return Err(error);
             }
         };
+        let parse_duration = parse_started_at.elapsed();
+        let message_count = messages.len();
+        let change_count = messages
+            .iter()
+            .map(|message| match message {
+                ClobMessage::PriceChange { changes, .. } => changes.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        let apply_started_at = Instant::now();
         let mut frame_tokens = BTreeSet::new();
         for message in messages {
             let source_timestamp = message_source_timestamp(&message);
@@ -4114,23 +4409,48 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 }
             }
         }
-        for sample in registry
+        let apply_duration = apply_started_at.elapsed();
+        let sample_started_at = Instant::now();
+        let samples = registry
             .samples(self.config.top_n)
             .into_iter()
             .filter(|sample| frame_tokens.contains(&sample.token_id))
-        {
-            crate::streaming::publish(
-                STRATEGY_KEY.as_str(),
-                format!("{}:{}", sample.token_id, sample.ingest_sequence),
-                sample.source_timestamp,
-                sample.source_timestamp,
-                sample.received_at,
-                sample.source_hash.clone().unwrap_or_default(),
-                true,
-                &sample,
-            )
-            .await;
+            .collect::<Vec<_>>();
+        let sample_duration = sample_started_at.elapsed();
+        let (bid_levels, ask_levels) = registry.level_counts();
+        crate::streaming::observe_clob_frame_processing(
+            STRATEGY_KEY.as_str(),
+            parse_duration,
+            apply_duration,
+            sample_duration,
+            message_count,
+            change_count,
+            bid_levels,
+            ask_levels,
+        );
+        let total_duration = parse_duration
+            .saturating_add(apply_duration)
+            .saturating_add(sample_duration);
+        if total_duration >= SLOW_FRAME_PROCESSING_THRESHOLD {
+            let frame_sha256 = hex::encode(Sha256::digest(bytes));
+            warn!(
+                strategy = %STRATEGY_KEY,
+                connection_epoch = %connection_epoch,
+                frame_sha256,
+                frame_bytes = bytes.len(),
+                message_count,
+                change_count,
+                parse_ms = parse_duration.as_secs_f64() * 1_000.0,
+                apply_ms = apply_duration.as_secs_f64() * 1_000.0,
+                sample_ms = sample_duration.as_secs_f64() * 1_000.0,
+                publication_queue_depth = PUBLICATION_COMMAND_BUFFER.saturating_sub(publication_sender.capacity()),
+                error_code = "polymarket_clob_slow_frame_processing",
+                "Polymarket CLOB frame processing exceeded the latency threshold"
+            );
         }
+        enqueue_publications(publication_sender, samples, || {
+            PublicationMode::SourceUpdate
+        });
         Ok(())
     }
 
@@ -4938,6 +5258,47 @@ mod tests {
         assert_ne!(first.source_event_id, second.source_event_id);
         assert_eq!(first.payload_sha256, second.payload_sha256);
         assert!(first.source_event_id.contains(&sample.token_id));
+    }
+
+    #[test]
+    fn publication_handoff_is_nonblocking_and_fifo() {
+        let mut first = bootstrapped_registry()
+            .samples(1)
+            .into_iter()
+            .find(|sample| sample.outcome == Outcome::Up)
+            .expect("Up sample");
+        first.ingest_sequence = 10;
+        let mut second = first.clone();
+        second.ingest_sequence = 11;
+        let (sender, mut receiver) = mpsc::channel(2);
+
+        enqueue_publications(&sender, [first, second], || PublicationMode::SourceUpdate);
+
+        assert_eq!(
+            receiver.try_recv().expect("first").sample.ingest_sequence,
+            10
+        );
+        assert_eq!(
+            receiver.try_recv().expect("second").sample.ingest_sequence,
+            11
+        );
+    }
+
+    #[test]
+    fn publication_handoff_does_not_block_when_full() {
+        let sample = bootstrapped_registry()
+            .samples(1)
+            .into_iter()
+            .find(|sample| sample.outcome == Outcome::Up)
+            .expect("Up sample");
+        let (sender, mut receiver) = mpsc::channel(1);
+
+        enqueue_publications(&sender, [sample.clone(), sample], || {
+            PublicationMode::SourceUpdate
+        });
+
+        assert!(receiver.try_recv().is_ok());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
