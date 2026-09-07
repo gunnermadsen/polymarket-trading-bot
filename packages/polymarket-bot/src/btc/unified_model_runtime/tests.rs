@@ -206,7 +206,7 @@ fn frozen_admission_outputs_match_python_and_bindings_fail_closed() {
 }
 #[test]
 fn causal_books_do_not_cross_epochs_or_use_future_inputs() {
-    let at = Utc::now();
+    let at = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
     let mut h = adapters::data::BookHistory::default();
     let old = book(at - Duration::milliseconds(500));
     h.observe(old.clone());
@@ -225,6 +225,23 @@ fn causal_books_do_not_cross_epochs_or_use_future_inputs() {
     assert!(h
         .at("umr-fixture", "up", Uuid::nil(), at + Duration::seconds(4))
         .is_none());
+}
+#[test]
+fn causal_book_boundary_survives_a_dense_live_publication_burst() {
+    let at = DateTime::from_timestamp(1788816360, 0).unwrap();
+    let mut history = adapters::data::BookHistory::default();
+    for milliseconds in -4000..800 {
+        for token in ["up", "down"] {
+            let mut checkpoint = book(at + Duration::milliseconds(milliseconds));
+            checkpoint.token_id = token.into();
+            checkpoint.ingest_sequence = (milliseconds + 4001) as u64;
+            history.observe(checkpoint);
+        }
+    }
+    for token in ["up", "down"] {
+        let selected = history.at("umr-fixture", token, Uuid::nil(), at).unwrap();
+        assert_eq!(selected.received_at, at);
+    }
 }
 #[test]
 fn learned_history_recovers_automatically_without_cross_process_state() {

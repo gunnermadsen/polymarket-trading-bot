@@ -36,6 +36,16 @@ impl BookHistory {
             v.received_at >= oldest
                 && (v.token_id != book.token_id || v.connection_id == book.connection_id)
         });
+        // Frozen candidate timestamps are whole seconds. Preserve the latest
+        // observation in each completed second instead of allowing a burst of
+        // intra-second publications to evict the previous causal boundary.
+        self.snapshots.retain(|v| {
+            !(v.token_id == book.token_id
+                && v.connection_id == book.connection_id
+                && (v.received_at.timestamp_micros() - 1).div_euclid(1_000_000)
+                    == (book.received_at.timestamp_micros() - 1).div_euclid(1_000_000)
+                && v.received_at <= book.received_at)
+        });
         self.snapshots.push_back(Arc::new(book));
         while self.snapshots.len() > 64 {
             self.snapshots.pop_front();

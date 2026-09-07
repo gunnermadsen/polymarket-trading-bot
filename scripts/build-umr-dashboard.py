@@ -30,7 +30,7 @@ PANELS.append(dict(id=1,type='text',title='Unified Model Runtime · Live model o
 row('At a glance')
 for i,(title,expr,unit,desc) in enumerate([
  ('Ready processes','sum('+metric('runtime_ready')+')','short','Latest process readiness; feed and feature gaps recover automatically.'),
- ('Oldest inference','time() - min('+metric('last_success_timestamp_seconds')+')','s','Elapsed time since successful inference. Entry schedules naturally create quiet periods.'),
+ ('Oldest inference','time() - min('+metric('last_success_timestamp_seconds')+' > 0)','s','Elapsed time since successful inference among processes with inference evidence. Processes awaiting their first inference are excluded. Entry schedules naturally create quiet periods.'),
  ('Inference rate','sum('+rate('inferences')+')','ops','Successful and failed inference attempts per second; inspect the error panel below.'),
  ('Session net PnL','sum('+metric('realized_pnl_usd')+')','currencyUSD','Net PnL recognized by authoritative settlement during this instrumentation session.'),
  ]):panel(title,expr,desc,unit,'stat',i*6,6,5,aggregate=True)

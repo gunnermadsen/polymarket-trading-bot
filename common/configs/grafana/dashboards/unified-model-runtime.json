@@ -157,7 +157,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Elapsed time since successful inference. Entry schedules naturally create quiet periods.",
+      "description": "Elapsed time since successful inference among processes with inference evidence. Processes awaiting their first inference are excluded. Entry schedules naturally create quiet periods.",
       "gridPos": {
         "x": 6,
         "y": 6,
@@ -167,7 +167,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - min(polymarket_umr_last_success_timestamp_seconds{process_id=~\"$process\"})",
+          "expr": "time() - min(polymarket_umr_last_success_timestamp_seconds{process_id=~\"$process\"} > 0)",
           "legendFormat": "Oldest inference",
           "range": false,
           "instant": true
