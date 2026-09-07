@@ -56,7 +56,10 @@ pub fn validate(
         .execution
         .validate()
         .map_err(|error| invalid("drain_execution_selector_invalid", error.to_string()))?;
-    if let Some(days) = spec.retention_days {
+    if request.mode.removes_source_data() {
+        let Some(days) = spec.retention_days else {
+            return Ok(());
+        };
         if request.cutoff > Utc::now() - Duration::days(days) {
             return Err(invalid(
                 "drain_retention_violation",
