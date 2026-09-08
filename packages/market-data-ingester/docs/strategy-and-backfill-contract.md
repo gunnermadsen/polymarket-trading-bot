@@ -69,3 +69,9 @@ Internal worker endpoints are under `/internal/workers/...` and are not strategy
 ## Adding a strategy
 
 Add collection logic and its tests inside this package, register it in the single registry, use existing dataset tables or a migration limited to the dataset itself, and rebuild the two ingester images. Scheduling happens only by calling `POST /backfills`. A strategy change must never add a backfill migration, queue, planner binary, image, or Compose file.
+
+### RTDS envelope compatibility and continuity intervals
+
+The shared Chainlink RTDS decoder permits additive top-level envelope metadata while retaining required envelope fields and strict reference/TWAP payload validation. A body-only or malformed provider response is not a successful observation; decode failures report bounded envelope key names without logging payload values.
+
+`polymarket_twap_transport_gap` retains its existing continuity-alert meaning. Its interval starts at the earliest available persisted 30/60-second TWAP source frontier and ends at failure detection, rather than spanning the connection lifetime. The structured `interval_basis=last_persisted_source_to_detection` field identifies this conservative uncertainty interval. It is neither measured outage duration nor proof that every observation in the interval was lost; it also does not measure subsequent reconnect downtime. Empty checkpoints and nonpositive intervals do not create a gap. Existing historical records are unchanged.

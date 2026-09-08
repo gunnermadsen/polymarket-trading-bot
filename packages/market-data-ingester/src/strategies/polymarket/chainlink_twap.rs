@@ -151,8 +151,8 @@ struct TwapCheckpoint {
     sixty_source_timestamp_ms: Option<i64>,
 }
 
+// Envelope metadata is extensible; required fields and price payloads remain strict.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RtdsEnvelope {
     connection_id: Option<String>,
     topic: String,
@@ -331,7 +331,6 @@ impl RealtimeWorkerStrategy for PolymarketChainlinkBtcusdTwapStrategy {
                 self.seal_open_artifact().await?;
                 return Ok(());
             }
-            let session_started = Utc::now();
             match self.capture_session(&mut checkpoint, &shutdown).await {
                 Ok(()) => {
                     crate::streaming::set_source_connection_ready(PRODUCT_REFERENCE, false);
@@ -363,10 +362,9 @@ impl RealtimeWorkerStrategy for PolymarketChainlinkBtcusdTwapStrategy {
                         error = %error,
                         "Polymarket RTDS session will reconnect"
                     );
-                    if checkpoint.thirty_source_timestamp_ms.is_some()
-                        || checkpoint.sixty_source_timestamp_ms.is_some()
-                    {
-                        self.record_transport_gap(&checkpoint, session_started, Utc::now(), &error)
+                    let detected_at = Utc::now();
+                    if let Some(started) = transport_gap_start(&checkpoint, detected_at) {
+                        self.record_transport_gap(&checkpoint, started, detected_at, &error)
                             .await?;
                     }
                     let delay = tokio::time::sleep(Duration::from_millis(backoff_ms));
@@ -1018,7 +1016,7 @@ impl PolymarketChainlinkBtcusdTwapStrategy {
             .await
             .map_err(db("polymarket_twap_gap_commit"))?;
         if detection.inserted {
-            warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_twap_transport_gap", gap_id = %detection.gap.gap_id, source_time_start = %started, source_time_end = %ended, "new unrecoverable Polymarket RTDS transport gap detected");
+            warn!(strategy = %STRATEGY_KEY, error_code = "polymarket_twap_transport_gap", gap_id = %detection.gap.gap_id, source_time_start = %started, source_time_end = %ended, interval_basis = "last_persisted_source_to_detection", "Polymarket RTDS continuity uncertainty recorded; interval is not measured outage duration");
         }
         Ok(())
     }
@@ -1194,8 +1192,23 @@ fn decode_observation(
     {
         return Ok(None);
     }
-    let envelope: RtdsEnvelope = serde_json::from_value(source_payload.clone())
-        .map_err(integrity_err("polymarket_twap_decode"))?;
+    let envelope: RtdsEnvelope =
+        serde_json::from_value(source_payload.clone()).map_err(|error| {
+            let keys = source_payload
+                .as_object()
+                .map(|object| {
+                    object
+                        .keys()
+                        .take(12)
+                        .map(|key| key.chars().take(48).collect::<String>())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            integrity(
+                "polymarket_twap_decode",
+                format!("{error}; envelope keys: {keys:?}"),
+            )
+        })?;
     let expected_window = match envelope.topic.as_str() {
         TOPIC_THIRTY => 30,
         TOPIC_SIXTY => 60,
@@ -1347,6 +1360,23 @@ fn cursor(observation: &TwapObservation) -> String {
         observation.source_timestamp.timestamp_millis()
     )
 }
+// Bound uncertainty from the earliest persisted TWAP frontier, never session start.
+// This is a source-time uncertainty interval, not measured transport downtime.
+fn transport_gap_start(
+    checkpoint: &TwapCheckpoint,
+    detected_at: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    [
+        checkpoint.thirty_source_timestamp_ms,
+        checkpoint.sixty_source_timestamp_ms,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    .and_then(DateTime::<Utc>::from_timestamp_millis)
+    .filter(|started| *started < detected_at)
+}
+
 fn checkpoint_cursor(checkpoint: &TwapCheckpoint) -> Option<String> {
     match (
         checkpoint.thirty_source_timestamp_ms,
@@ -1480,6 +1510,55 @@ mod tests {
             ),
             ReferenceRecoveryAction::Healthy
         );
+    }
+
+    #[test]
+    fn additive_envelope_metadata_preserves_price_validation() {
+        let received = Utc.timestamp_millis_opt(1_785_178_800_500).unwrap();
+        let mut message = json!({
+            "body": {"request_id": "metadata"},
+            "topic": TOPIC_THIRTY, "type": "update", "timestamp": 1_785_178_800_123_i64,
+            "payload": {"symbol": "btc/usd", "value": 65000.5,
+                "full_accuracy_value": "65000500000000000000000",
+                "timestamp": 1_785_178_800_000_i64, "window_s": 30}
+        });
+        let with_metadata = decode_observation(&serde_json::to_vec(&message).unwrap(), received)
+            .unwrap()
+            .unwrap();
+        message.as_object_mut().unwrap().remove("body");
+        let original = decode_observation(&serde_json::to_vec(&message).unwrap(), received)
+            .unwrap()
+            .unwrap();
+        assert_eq!(with_metadata.price, original.price);
+        assert_eq!(with_metadata.source_timestamp, original.source_timestamp);
+        message["payload"]["body"] = json!("unexpected payload field");
+        assert!(decode_observation(&serde_json::to_vec(&message).unwrap(), received).is_err());
+        let control = br#"{"body":"provider failure","statusCode":500}"#;
+        let error = decode_observation(control, received).unwrap_err();
+        assert_eq!(error.code, "polymarket_twap_decode");
+        assert!(error.message.contains("envelope keys"));
+        assert!(!error.message.contains("provider failure"));
+    }
+
+    #[test]
+    fn transport_gap_uses_persisted_frontier_not_connection_lifetime() {
+        let detected = Utc.timestamp_millis_opt(10_000).unwrap();
+        assert!(transport_gap_start(&TwapCheckpoint::default(), detected).is_none());
+        let checkpoint = TwapCheckpoint {
+            thirty_source_timestamp_ms: Some(9_000),
+            sixty_source_timestamp_ms: Some(8_000),
+        };
+        assert_eq!(
+            transport_gap_start(&checkpoint, detected)
+                .unwrap()
+                .timestamp_millis(),
+            8_000
+        );
+        let checkpoint = TwapCheckpoint {
+            thirty_source_timestamp_ms: Some(10_000),
+            sixty_source_timestamp_ms: None,
+        };
+        assert!(transport_gap_start(&checkpoint, detected).is_none());
     }
 
     #[test]
