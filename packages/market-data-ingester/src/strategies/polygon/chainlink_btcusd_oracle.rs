@@ -48,6 +48,7 @@ const BLOCK_HEADER_BATCH_PAUSE_MILLISECONDS: u64 = 500;
 const MAX_INSERT_ROWS: usize = 500;
 const MAX_DATABASE_RANGE_ROWS: i64 = 20_001;
 const GAP_REPAIRS_PER_POLL: i64 = 4;
+const HEAD_REGRESSION_RECONCILIATIONS_PER_POLL: i64 = 4;
 const MAX_GAP_REPAIR_ATTEMPTS: i32 = 3;
 const MAX_GAP_REPAIR_ROUNDS: u64 = 4_096;
 const MAX_GAP_REPAIR_BLOCKS: u64 = 1_000_000;
@@ -425,13 +426,19 @@ struct UnresolvedRoundGap {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct UnresolvedHeadRegressionGap {
+    gap_id: Uuid,
+    start_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct RoundGapNeighbor {
     aggregator_round_id: i64,
     block_number: i64,
     block_hash: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockHeader {
     number: u64,
     hash: String,
@@ -520,11 +527,23 @@ struct RoundGapRepair {
     to_block: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckpointCursor {
+    block_number: u64,
+    hash: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoundGapOutcome {
     Repaired,
     Retry,
     Unrecoverable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CheckpointConsensus {
+    Canonical,
+    Reorganized(BlockHeader),
 }
 
 #[async_trait]
@@ -600,18 +619,42 @@ impl PolygonChainlinkBtcusdOracleStrategy {
             state.checkpoint.last_finalized_block_hash.as_deref(),
         ) {
             if finalized_head < checkpoint_block {
-                let signal = GapSignal {
-                    gap_kind: "chain_reorganization",
-                    reason_code: "polygon_finalized_head_regressed",
-                    reason_message: format!(
-                        "finalized Polygon head regressed from {checkpoint_block} to {finalized_head}"
-                    ),
-                    source_time_start: None,
-                    source_time_end: None,
-                    start_cursor: format!("block:{checkpoint_block}:{checkpoint_hash}"),
-                    end_cursor: format!("block:{finalized_head}:{}", finalized_header.hash),
-                };
-                return self.record_fatal_gap(signal).await;
+                match self
+                    .confirm_checkpoint(checkpoint_block, checkpoint_hash)
+                    .await
+                {
+                    Ok(CheckpointConsensus::Canonical) => {
+                        warn!(
+                            strategy = %STRATEGY_KEY,
+                            error_code = "polygon_finalized_head_temporarily_regressed",
+                            checkpoint_block,
+                            finalized_head,
+                            "Polygon finalized head regressed while the durable checkpoint remained canonical; retrying on the next poll"
+                        );
+                        return Ok(());
+                    }
+                    Ok(CheckpointConsensus::Reorganized(canonical)) => {
+                        return self
+                            .record_confirmed_checkpoint_reorg(
+                                checkpoint_block,
+                                checkpoint_hash,
+                                &canonical,
+                            )
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(
+                            strategy = %STRATEGY_KEY,
+                            error_code = "polygon_checkpoint_confirmation_unavailable",
+                            checkpoint_block,
+                            finalized_head,
+                            confirmation_error_code = error.code,
+                            error = %error,
+                            "Polygon finalized head regressed but independent checkpoint confirmation was unavailable; retrying on the next poll"
+                        );
+                        return Ok(());
+                    }
+                }
             }
             let canonical = if checkpoint_block == finalized_head {
                 finalized_header.clone()
@@ -619,21 +662,46 @@ impl PolygonChainlinkBtcusdOracleStrategy {
                 self.block_by_number(checkpoint_block).await?
             };
             if canonical.hash != checkpoint_hash {
-                let signal = GapSignal {
-                    gap_kind: "chain_reorganization",
-                    reason_code: "polygon_finalized_checkpoint_reorg",
-                    reason_message: format!(
-                        "finalized block {checkpoint_block} changed from {checkpoint_hash} to {}",
-                        canonical.hash
-                    ),
-                    source_time_start: Some(canonical.timestamp),
-                    source_time_end: Some(canonical.timestamp),
-                    start_cursor: format!("block:{checkpoint_block}:{checkpoint_hash}"),
-                    end_cursor: format!("block:{checkpoint_block}:{}", canonical.hash),
-                };
-                return self.record_fatal_gap(signal).await;
+                match self
+                    .confirm_checkpoint(checkpoint_block, checkpoint_hash)
+                    .await
+                {
+                    Ok(CheckpointConsensus::Canonical) => {
+                        warn!(
+                            strategy = %STRATEGY_KEY,
+                            error_code = "polygon_checkpoint_hash_transient_mismatch",
+                            checkpoint_block,
+                            observed_hash = %canonical.hash,
+                            "Polygon RPC returned a transient checkpoint hash mismatch; retrying on the next poll"
+                        );
+                        return Ok(());
+                    }
+                    Ok(CheckpointConsensus::Reorganized(confirmed)) => {
+                        return self
+                            .record_confirmed_checkpoint_reorg(
+                                checkpoint_block,
+                                checkpoint_hash,
+                                &confirmed,
+                            )
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(
+                            strategy = %STRATEGY_KEY,
+                            error_code = "polygon_checkpoint_confirmation_unavailable",
+                            checkpoint_block,
+                            observed_hash = %canonical.hash,
+                            confirmation_error_code = error.code,
+                            error = %error,
+                            "Polygon checkpoint hash changed but independent confirmation was unavailable; retrying on the next poll"
+                        );
+                        return Ok(());
+                    }
+                }
             }
         }
+
+        self.reconcile_head_regression_gaps(finalized_head).await?;
 
         let feed = self.load_feed_metadata(state.feed.as_ref()).await?;
         state.feed = Some(feed.clone());
@@ -710,6 +778,172 @@ impl PolygonChainlinkBtcusdOracleStrategy {
                 "entire initial Polygon oracle scan was empty; retrying without checkpoint advancement",
             ));
         }
+        Ok(())
+    }
+
+    async fn confirm_checkpoint(
+        &self,
+        checkpoint_block: u64,
+        checkpoint_hash: &str,
+    ) -> Result<CheckpointConsensus, StrategyError> {
+        let (primary, archive) = tokio::try_join!(
+            self.block_by_number_at_with_receipt(&self.config.rpc_url, checkpoint_block),
+            self.block_by_number_at_with_receipt(
+                &self.config.archive_log_rpc_url,
+                checkpoint_block,
+            )
+        )?;
+        classify_checkpoint_consensus(checkpoint_block, checkpoint_hash, &primary.0, &archive.0)
+    }
+
+    async fn record_confirmed_checkpoint_reorg<T>(
+        &self,
+        checkpoint_block: u64,
+        checkpoint_hash: &str,
+        canonical: &BlockHeader,
+    ) -> Result<T, StrategyError> {
+        let signal = GapSignal {
+            gap_kind: "chain_reorganization",
+            reason_code: "polygon_finalized_checkpoint_reorg",
+            reason_message: format!(
+                "finalized block {checkpoint_block} changed from {checkpoint_hash} to {}",
+                canonical.hash
+            ),
+            source_time_start: Some(canonical.timestamp),
+            source_time_end: Some(canonical.timestamp),
+            start_cursor: format!("block:{checkpoint_block}:{checkpoint_hash}"),
+            end_cursor: format!("block:{checkpoint_block}:{}", canonical.hash),
+        };
+        self.record_fatal_gap(signal).await
+    }
+
+    async fn reconcile_head_regression_gaps(
+        &self,
+        finalized_head: u64,
+    ) -> Result<(), StrategyError> {
+        let gaps = sqlx::query_as::<_, UnresolvedHeadRegressionGap>(
+            r#"
+            SELECT gap_id, start_cursor
+            FROM ingester.data_gaps
+            WHERE strategy_key = $1
+              AND reason_code = 'polygon_finalized_head_regressed'
+              AND status IN ('open', 'repairing')
+            ORDER BY detected_at, gap_id
+            LIMIT $2
+            "#,
+        )
+        .bind(STRATEGY_KEY.as_str())
+        .bind(HEAD_REGRESSION_RECONCILIATIONS_PER_POLL)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| database_error("polygon_oracle_head_regression_gap_list_failed", error))?;
+
+        for gap in gaps {
+            let checkpoint = match parse_checkpoint_cursor(gap.start_cursor.as_deref()) {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    warn!(
+                        strategy = %STRATEGY_KEY,
+                        gap_id = %gap.gap_id,
+                        error_code = error.code,
+                        error = %error,
+                        "Polygon head-regression gap has an invalid checkpoint cursor and remains unresolved"
+                    );
+                    continue;
+                }
+            };
+            if checkpoint.block_number > finalized_head {
+                continue;
+            }
+
+            let consensus = match self
+                .confirm_checkpoint(checkpoint.block_number, &checkpoint.hash)
+                .await
+            {
+                Ok(consensus) => consensus,
+                Err(error) => {
+                    warn!(
+                        strategy = %STRATEGY_KEY,
+                        gap_id = %gap.gap_id,
+                        checkpoint_block = checkpoint.block_number,
+                        error_code = "polygon_head_regression_reconciliation_unavailable",
+                        confirmation_error_code = error.code,
+                        error = %error,
+                        "Polygon head-regression gap confirmation is unavailable; leaving the gap unresolved and continuing ingestion"
+                    );
+                    continue;
+                }
+            };
+
+            match consensus {
+                CheckpointConsensus::Canonical => {
+                    self.resolve_transient_head_regression_gap(
+                        gap.gap_id,
+                        checkpoint.block_number,
+                        &checkpoint.hash,
+                    )
+                    .await?;
+                }
+                CheckpointConsensus::Reorganized(canonical) => {
+                    return Err(integrity_error(
+                        "polygon_oracle_head_regression_reorg_confirmed",
+                        format!(
+                            "both Polygon RPC providers confirmed that block {} changed from {} to {}",
+                            checkpoint.block_number, checkpoint.hash, canonical.hash
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn resolve_transient_head_regression_gap(
+        &self,
+        gap_id: Uuid,
+        checkpoint_block: u64,
+        checkpoint_hash: &str,
+    ) -> Result<(), StrategyError> {
+        let mut transaction = self.pool.begin().await.map_err(|error| {
+            database_error(
+                "polygon_oracle_head_regression_resolution_transaction_failed",
+                error,
+            )
+        })?;
+        self.assert_lease_in(&mut transaction, false).await?;
+        let resolution_message = format!(
+            "both Polygon RPC providers confirmed canonical block {checkpoint_block} hash {checkpoint_hash}; no factual repair was required"
+        );
+        GapRepository::new(self.pool.clone())
+            .mark_unrecoverable_in(
+                &mut transaction,
+                gap_id,
+                "provider_head_regression_without_canonical_change",
+                Some(&resolution_message),
+            )
+            .await
+            .map_err(|error| {
+                database_error("polygon_oracle_head_regression_resolution_failed", error)
+            })?
+            .ok_or_else(|| {
+                integrity_error(
+                    "polygon_oracle_head_regression_resolution_race",
+                    format!("head-regression gap {gap_id} was no longer unresolved"),
+                )
+            })?;
+        self.refresh_profile_gap_health_in(&mut transaction).await?;
+        transaction.commit().await.map_err(|error| {
+            database_error(
+                "polygon_oracle_head_regression_resolution_commit_failed",
+                error,
+            )
+        })?;
+        info!(
+            strategy = %STRATEGY_KEY,
+            gap_id = %gap_id,
+            checkpoint_block,
+            "resolved transient Polygon finalized-head regression after independent canonical confirmation"
+        );
         Ok(())
     }
 
@@ -3741,6 +3975,63 @@ fn cross_checked_startup_batch(
     Ok(canonical)
 }
 
+fn classify_checkpoint_consensus(
+    checkpoint_block: u64,
+    checkpoint_hash: &str,
+    primary: &BlockHeader,
+    archive: &BlockHeader,
+) -> Result<CheckpointConsensus, StrategyError> {
+    if primary.number != checkpoint_block || archive.number != checkpoint_block {
+        return Err(source_error_value(
+            "polygon_oracle_checkpoint_provider_block_mismatch",
+            format!(
+                "checkpoint confirmation requested block {checkpoint_block}, but providers returned {} and {}",
+                primary.number, archive.number
+            ),
+        ));
+    }
+    if primary.hash != archive.hash || primary.timestamp != archive.timestamp {
+        return Err(source_error_value(
+            "polygon_oracle_checkpoint_provider_mismatch",
+            format!("Polygon RPC providers disagreed on checkpoint block {checkpoint_block}"),
+        ));
+    }
+    if primary.hash == checkpoint_hash {
+        Ok(CheckpointConsensus::Canonical)
+    } else {
+        Ok(CheckpointConsensus::Reorganized(primary.clone()))
+    }
+}
+
+fn parse_checkpoint_cursor(value: Option<&str>) -> Result<CheckpointCursor, StrategyError> {
+    let value = value.ok_or_else(|| {
+        integrity_error(
+            "polygon_oracle_checkpoint_cursor_missing",
+            "head-regression gap omitted its checkpoint cursor",
+        )
+    })?;
+    let fields = value.split(':').collect::<Vec<_>>();
+    if fields.len() != 3 || fields[0] != "block" {
+        return Err(integrity_error(
+            "polygon_oracle_checkpoint_cursor_invalid",
+            format!("head-regression checkpoint cursor has an invalid shape: {value}"),
+        ));
+    }
+    let block_number = fields[1].parse::<u64>().map_err(|error| {
+        integrity_error(
+            "polygon_oracle_checkpoint_cursor_invalid",
+            format!("head-regression checkpoint block is invalid: {error}"),
+        )
+    })?;
+    let hash = normalized_hash(fields[2]).map_err(|error| {
+        integrity_error(
+            "polygon_oracle_checkpoint_cursor_invalid",
+            format!("head-regression checkpoint hash is invalid: {error}"),
+        )
+    })?;
+    Ok(CheckpointCursor { block_number, hash })
+}
+
 fn classify_round_gap_outcome(complete: bool, repair_attempts: i32) -> RoundGapOutcome {
     if complete {
         RoundGapOutcome::Repaired
@@ -3813,6 +4104,14 @@ mod tests {
         .unwrap()
     }
 
+    fn checkpoint_header(number: u64, hash_byte: char) -> BlockHeader {
+        BlockHeader {
+            number,
+            hash: format!("0x{}", hash_byte.to_string().repeat(64)),
+            timestamp: Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 0).unwrap(),
+        }
+    }
+
     #[test]
     fn default_config_is_the_seed_contract() {
         let config = PolygonChainlinkBtcusdOracleConfig::default();
@@ -3871,6 +4170,50 @@ mod tests {
         }
         .validate()
         .is_ok());
+    }
+
+    #[test]
+    fn checkpoint_regression_requires_independent_provider_consensus() {
+        let expected_hash = format!("0x{}", "a".repeat(64));
+        let expected = checkpoint_header(100, 'a');
+        let changed = checkpoint_header(100, 'b');
+
+        assert_eq!(
+            classify_checkpoint_consensus(100, &expected_hash, &expected, &expected).unwrap(),
+            CheckpointConsensus::Canonical
+        );
+        assert_eq!(
+            classify_checkpoint_consensus(100, &expected_hash, &changed, &changed).unwrap(),
+            CheckpointConsensus::Reorganized(changed.clone())
+        );
+
+        let mismatch =
+            classify_checkpoint_consensus(100, &expected_hash, &expected, &changed).unwrap_err();
+        assert_eq!(mismatch.code, "polygon_oracle_checkpoint_provider_mismatch");
+        assert_eq!(mismatch.kind, StrategyErrorKind::TransientSource);
+
+        let wrong_block = checkpoint_header(99, 'a');
+        let mismatch = classify_checkpoint_consensus(100, &expected_hash, &wrong_block, &expected)
+            .unwrap_err();
+        assert_eq!(
+            mismatch.code,
+            "polygon_oracle_checkpoint_provider_block_mismatch"
+        );
+    }
+
+    #[test]
+    fn head_regression_checkpoint_cursor_is_strict() {
+        let hash = format!("0x{}", "a".repeat(64));
+        assert_eq!(
+            parse_checkpoint_cursor(Some(&format!("block:100:{hash}"))).unwrap(),
+            CheckpointCursor {
+                block_number: 100,
+                hash,
+            }
+        );
+        assert!(parse_checkpoint_cursor(None).is_err());
+        assert!(parse_checkpoint_cursor(Some("block:not-a-number:0x00")).is_err());
+        assert!(parse_checkpoint_cursor(Some("round:100:0x00")).is_err());
     }
 
     #[test]
