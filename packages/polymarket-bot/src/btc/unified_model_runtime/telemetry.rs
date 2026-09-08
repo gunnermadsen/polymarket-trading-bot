@@ -117,6 +117,18 @@ pub fn register(
         p.enabled = true;
         for (metric, reasons) in [
             ("opportunities", &["scheduled"][..]),
+            (
+                "book_input_failures",
+                &[
+                    "missing_snapshot",
+                    "identity_mismatch",
+                    "epoch_mismatch",
+                    "invalid_integrity",
+                    "future_timestamp",
+                    "stale_source_timestamp",
+                    "stale_received_timestamp",
+                ][..],
+            ),
             ("inferences", &["success", "error"][..]),
             ("feature_builds", &["success", "error"][..]),
             ("model_admission", &["accepted", "rejected"][..]),

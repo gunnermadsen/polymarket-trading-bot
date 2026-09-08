@@ -54,3 +54,9 @@ The new dashboard separates overview, runtime health, opportunity funnel, inputs
 Provision alerts for missing runtime activity on enabled registrations, scheduled opportunities without inference, persistent feature/inference failures and telemetry drops. Performance/quality alerts require a declared minimum sample count. Alerts notify; they do not persistently disable trading. Monitor bot scrape availability separately so process-series disappearance does not masquerade as healthy inactivity.
 
 All Grafana, Prometheus, Loki and Alloy changes are provisioned through existing configuration paths and receive the repository's observability deployment provenance record when deployed.
+
+## Observation book diagnostics
+
+`polymarket_umr_book_input_failures_total{process_id,reason}` supplements the existing aggregate feature failure metric without renaming or redefining it. Its bounded reasons are `missing_snapshot`, `identity_mismatch`, `epoch_mismatch`, `invalid_integrity`, `future_timestamp`, `stale_source_timestamp`, and `stale_received_timestamp`. Counts are per rejected book side at the observation-input lookup, not a count of trades or a partition of model failures. Zero-valued series are registered for enabled models.
+
+The `umr_book_input_unavailable` structured event includes process, market, token, expected epoch, observation and model feature timestamps, and the failed book's source/receipt timestamps when available. Identifiers and timestamps remain log fields, not metric labels. The existing UMR dashboard includes observation-book failure causes and these events in its process diagnostics panel. Queries use Prometheus and Loki only.

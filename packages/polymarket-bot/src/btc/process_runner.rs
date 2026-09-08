@@ -1079,12 +1079,12 @@ impl BtcProcessRunner {
                 (observed_at, None, None)
             };
         let mut inputs = if directional_selection.is_some() {
-            let books = self.book_registry.read().await;
             directional_model_execution_inputs_from_runtime(
                 &observation.state,
-                &books,
+                self.config.process_id,
                 market,
                 observed_at,
+                snapshot_identity_at,
                 chrono::Duration::milliseconds(self.config.strategy.max_reference_age_ms),
                 chrono::Duration::milliseconds(self.config.strategy.max_book_age_ms),
             )?
@@ -2302,9 +2302,10 @@ fn build_snapshot(
 
 fn directional_model_execution_inputs_from_runtime(
     state: &RealtimeState,
-    books: &BookRegistry,
+    process_id: Uuid,
     market: &BtcIntervalMarket,
     as_of: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
     max_reference_age: chrono::Duration,
     max_book_age: chrono::Duration,
 ) -> Result<BtcPointInTimeInputs> {
@@ -2315,9 +2316,6 @@ fn directional_model_execution_inputs_from_runtime(
     let reference_fresh_since = as_of
         .checked_sub_signed(max_reference_age)
         .context("directional-model reference freshness bound is outside the timestamp range")?;
-    let book_fresh_since = as_of
-        .checked_sub_signed(max_book_age)
-        .context("directional-model book freshness bound is outside the timestamp range")?;
 
     let binance = state
         .reference_prices
@@ -2329,15 +2327,28 @@ fn directional_model_execution_inputs_from_runtime(
                 && tick.received_at <= as_of
         })
         .cloned();
+    // Use the immutable observation, never a registry advanced by concurrent feeds.
     let fresh_book = |token_id: &str| {
-        books.checkpoint(token_id).filter(|checkpoint| {
-            checkpoint.market_id == market.market_id
-                && checkpoint.integrity_status == FeedIntegrityStatus::Ok
-                && checkpoint.source_timestamp >= book_fresh_since
-                && checkpoint.source_timestamp <= as_of
-                && checkpoint.received_at >= book_fresh_since
-                && checkpoint.received_at <= as_of
-        })
+        let selected = state.unified_book_history.observation_book(
+            &market.market_id,
+            token_id,
+            state.books.get(token_id),
+            as_of,
+            max_book_age,
+        );
+        match selected {
+            Ok(book) => Some(book.clone()),
+            Err(error) => {
+                umr_telemetry::event(process_id, "book_input_failures", error.reason);
+                tracing::warn!(event="umr_book_input_unavailable", %process_id,
+                    market_id=%market.market_id, token_id, observation_at=%as_of, %feature_as_of,
+                    expected_epoch=?state.books.get(token_id).map(|v| v.connection_id),
+                    reason=error.reason, source_timestamp=?error.source_timestamp,
+                    received_at=?error.received_at,
+                    "Observation book unavailable");
+                None
+            }
+        }
     };
     let fee_rate = market
         .fees_enabled
@@ -3210,7 +3221,7 @@ mod tests {
     }
 
     #[test]
-    fn directional_execution_inputs_use_causal_grpc_runtime_state() {
+    fn directional_execution_inputs_preserve_observation_during_registry_advance() {
         let window_start = Utc.with_ymd_and_hms(2026, 9, 3, 12, 0, 0).unwrap();
         let as_of = window_start + chrono::Duration::seconds(30);
         let market = BtcIntervalMarket {
@@ -3269,11 +3280,32 @@ mod tests {
         };
         let mut state = RealtimeState::default();
         state.update_reference_price(binance.clone());
+        state.update_books(&registry);
+        for token in ["up", "down"] {
+            Arc::make_mut(&mut state.unified_book_history)
+                .observe(registry.checkpoint(token).unwrap());
+        }
+        // The observation is immutable while incoming publications advance the registry.
+        registry
+            .apply_canonical_snapshot(
+                epoch,
+                &market,
+                "up",
+                BtcOutcome::Up,
+                as_of + chrono::Duration::milliseconds(1),
+                as_of + chrono::Duration::milliseconds(2),
+                4,
+                None,
+                vec![(dec!(0.59), dec!(10))],
+                vec![(dec!(0.60), dec!(10))],
+            )
+            .unwrap();
 
         let inputs = directional_model_execution_inputs_from_runtime(
             &state,
-            &registry,
+            Uuid::nil(),
             &market,
+            as_of,
             as_of,
             chrono::Duration::seconds(2),
             chrono::Duration::seconds(2),
@@ -3284,14 +3316,20 @@ mod tests {
         assert_eq!(inputs.up_book.as_ref().unwrap().token_id, "up");
         assert_eq!(inputs.down_book.as_ref().unwrap().token_id, "down");
         assert_eq!(inputs.up_book.as_ref().unwrap().connection_id, epoch);
+        assert_eq!(inputs.up_book.as_ref().unwrap().best_ask, Some(dec!(0.50)));
+        assert_eq!(
+            registry.checkpoint("up").unwrap().best_ask,
+            Some(dec!(0.60))
+        );
         assert_eq!(inputs.fee_rate, Some(dec!(0.25)));
         assert_eq!(inputs.fee_observed_at, Some(window_start));
 
         let future_as_of = as_of - chrono::Duration::milliseconds(15);
         let filtered = directional_model_execution_inputs_from_runtime(
             &state,
-            &registry,
+            Uuid::nil(),
             &market,
+            future_as_of,
             future_as_of,
             chrono::Duration::seconds(2),
             chrono::Duration::seconds(2),
