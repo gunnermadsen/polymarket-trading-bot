@@ -29,7 +29,8 @@ use crate::{
     },
     persistence::{
         BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob,
-        DrainJobRecord, DrainRepository, ProfileRepository, WorkerRecord, WorkerRegistration,
+        DrainJobRecord, DrainRepository, ProfileRepository, WorkerAllocationSummary, WorkerRecord,
+        WorkerRegistration,
     },
     runtime::StrategyRegistry,
 };
@@ -463,10 +464,12 @@ async fn get_backfill_events(
         .map_err(ApiError::internal)
 }
 
-async fn list_workers(State(state): State<ApiState>) -> Result<Json<Vec<WorkerRecord>>, ApiError> {
+async fn list_workers(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<WorkerAllocationSummary>>, ApiError> {
     state
         .backfills
-        .list_workers()
+        .list_worker_allocation_summaries()
         .await
         .map(Json)
         .map_err(ApiError::internal)
@@ -1075,6 +1078,8 @@ struct LifecycleResponse {
 #[cfg(test)]
 mod tests {
     use axum::http::{header::AUTHORIZATION, HeaderValue, Method};
+    use chrono::TimeZone;
+    use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
@@ -1096,6 +1101,80 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("if-match", HeaderValue::from_static("\"42\""));
         assert_eq!(expected_generation(&headers).expect("generation"), 42);
+    }
+
+    #[test]
+    fn worker_allocation_summary_preserves_existing_fields_and_adds_live_allocation() {
+        let timestamp = Utc.timestamp_opt(1_788_000_000, 0).single().unwrap();
+        let summary = WorkerAllocationSummary {
+            worker_id: "worker-1".to_owned(),
+            hostname: "ingester-worker-1".to_owned(),
+            worker_contract_version: 1,
+            supported_strategies: json!({"strategy": 1}),
+            maximum_backfills: 2,
+            active_backfills: 0,
+            capacity_units: 4,
+            realtime_slot_limit: 1,
+            allocation_contract_version: 1,
+            realtime_strategies: json!(["binance_spot_btcusdt_l2_snapshots"]),
+            image_digest: "sha256:image".to_owned(),
+            source_revision: "revision".to_owned(),
+            deployment_id: "deployment".to_owned(),
+            lifecycle_state: "active".to_owned(),
+            started_at: timestamp,
+            heartbeat_at: timestamp,
+            updated_at: timestamp,
+            allocated_units: 2,
+            available_units: 2,
+            realtime_leases: 1,
+            backfill_leases: 0,
+            heartbeat_fresh: true,
+            assigned_realtime_strategies: json!([{
+                "strategy_key": "binance_spot_btcusdt_l2_snapshots",
+                "desired_generation": 9,
+                "applied_generation": 9,
+                "observed_state": "running",
+                "health_status": "healthy",
+                "lease_expires_at": timestamp
+            }]),
+            assigned_backfills: json!([]),
+        };
+
+        let value = serde_json::to_value(summary).unwrap();
+        for existing in [
+            "worker_id",
+            "hostname",
+            "worker_contract_version",
+            "supported_strategies",
+            "maximum_backfills",
+            "active_backfills",
+            "capacity_units",
+            "realtime_slot_limit",
+            "allocation_contract_version",
+            "realtime_strategies",
+            "image_digest",
+            "source_revision",
+            "deployment_id",
+            "lifecycle_state",
+            "started_at",
+            "heartbeat_at",
+            "updated_at",
+        ] {
+            assert!(
+                value.get(existing).is_some(),
+                "missing existing field {existing}"
+            );
+        }
+        assert_eq!(value["allocated_units"], 2);
+        assert_eq!(value["available_units"], 2);
+        assert_eq!(value["realtime_leases"], 1);
+        assert_eq!(value["backfill_leases"], 0);
+        assert_eq!(value["heartbeat_fresh"], true);
+        assert_eq!(
+            value["assigned_realtime_strategies"][0]["desired_generation"],
+            9
+        );
+        assert_eq!(value["assigned_backfills"], json!([]));
     }
 
     #[tokio::test]

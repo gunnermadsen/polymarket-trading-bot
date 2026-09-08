@@ -163,6 +163,14 @@ impl BtcExecutionLifecycle for PaperExecutionLifecycle {
                     &evidence,
                 )
                 .await?;
+            if marked {
+                use rust_decimal::prelude::ToPrimitive;
+                super::unified_model_runtime::telemetry::settlement(
+                    process_id,
+                    settlement.net_pnl.to_f64().unwrap_or(0.0),
+                    settlement.entry_fees.to_f64().unwrap_or(0.0),
+                );
+            }
             if !marked {
                 warn!(
                     settlement_id = %settlement.settlement_id,

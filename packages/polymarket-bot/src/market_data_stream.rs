@@ -754,7 +754,11 @@ impl MarketDataStreamRuntime {
                     bids,
                     asks,
                 )?;
-                self.state.write().await.update_books(&books);
+                let mut state = self.state.write().await;
+                if let Some(checkpoint) = books.checkpoint(&payload.token_id) {
+                    std::sync::Arc::make_mut(&mut state.unified_book_history).observe(checkpoint);
+                }
+                state.update_books(&books);
             }
             PRODUCT_CHAINLINK => {
                 let payload: ReferencePayload = serde_json::from_slice(&event.payload_json)?;
@@ -860,6 +864,15 @@ impl MarketDataStreamRuntime {
                     .write()
                     .await
                     .apply_market_resolution(&payload.market_id, &payload.winning_token_id);
+                if matches!(
+                    payload.winning_outcome.as_str(),
+                    "up" | "down" | "Up" | "Down"
+                ) {
+                    crate::btc::unified_model_runtime::telemetry::resolve(
+                        &payload.market_id,
+                        payload.winning_outcome.eq_ignore_ascii_case("up"),
+                    );
+                }
             }
             other => bail!("unhandled market-data product {other}"),
         }

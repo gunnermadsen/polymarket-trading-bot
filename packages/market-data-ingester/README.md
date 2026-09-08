@@ -79,6 +79,7 @@ Administrative routes require `Authorization: Bearer <token>`:
 - `POST /backfills/{job_id}/cancel`
 - `POST /backfills/{job_id}/retry`
 - `GET /workers`
+- `POST /stream/routes`
 
 - `GET /ingesters`
 - `GET /ingesters/{strategy_key}`
@@ -92,6 +93,12 @@ Mutations require `If-Match` set to the row's current
 strategy's typed schema before the database generation advances. A changed
 generation causes the supervisor to cancel the old instance, release its lease,
 and construct the strategy again without restarting the container.
+
+`GET /ingesters` is the strategy-centric health view. `GET /workers` is the
+operator-facing allocation view: advertised capabilities remain in
+`realtime_strategies`, while current, unexpired assignments are reported in
+`assigned_realtime_strategies` and `assigned_backfills`. `POST /stream/routes`
+remains the consumer routing endpoint and does not expose allocation summaries.
 
 ## Database ownership
 

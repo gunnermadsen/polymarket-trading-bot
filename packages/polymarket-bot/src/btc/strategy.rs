@@ -68,6 +68,8 @@ pub struct BtcStrategyConfig {
     /// this empty and retain their established runtime data path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_model_feeds: Vec<BtcModelFeedRequirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unified_model: Option<super::unified_model_runtime::contract::ProcessBinding>,
     pub target_size: Decimal,
     pub min_seconds_after_open: i64,
     pub min_seconds_before_close: i64,
@@ -107,6 +109,7 @@ impl Default for BtcStrategyConfig {
             feature_schema_version: String::new(),
             decision_strategy: None,
             required_model_feeds: Vec::new(),
+            unified_model: None,
             target_size: dec!(5),
             min_seconds_after_open: 15,
             min_seconds_before_close: 20,
@@ -807,6 +810,9 @@ impl DeterministicBtcStrategy {
                 );
             }
             if estimate.payoff_aware
+                && !(config.unified_model.is_some()
+                    && estimate.score.action == RuntimeModelAction::Up
+                    && estimate.fair_value.up_probability == estimate.fair_value.down_probability)
                 && !matches!(
                     (
                         estimate.score.action,
@@ -890,39 +896,42 @@ fn build_directional_prediction_decision(
     fair_value: FairValueEstimate,
     entry_policy: BtcDirectionalModelEntryPolicy,
 ) -> BtcDecision {
-    let (outcome, probability, conservative_probability, book) =
-        if fair_value.up_probability > fair_value.down_probability {
-            (
-                BtcOutcome::Up,
-                fair_value.up_probability,
-                fair_value.up_lower_bound,
-                &snapshot.up_book,
-            )
-        } else if fair_value.down_probability > fair_value.up_probability {
-            (
-                BtcOutcome::Down,
-                fair_value.down_probability,
-                fair_value.down_lower_bound,
-                &snapshot.down_book,
-            )
-        } else {
-            return rejected_with_prediction(
-                decision_id,
-                snapshot,
-                BtcRejectReason::PredictionConfidenceBelowThreshold,
-                Some(fair_value.clone()),
-                None,
-                None,
-                BtcStrategyPrediction::NoPrediction {
-                    reason: BtcRejectReason::PredictionConfidenceBelowThreshold,
-                    minimum_conservative_probability: minimum,
-                    up_probability: fair_value.up_probability,
-                    down_probability: fair_value.down_probability,
-                    up_conservative_probability: fair_value.up_lower_bound,
-                    down_conservative_probability: fair_value.down_lower_bound,
-                },
-            );
-        };
+    let (outcome, probability, conservative_probability, book) = if fair_value.up_probability
+        > fair_value.down_probability
+        || (config.unified_model.is_some()
+            && fair_value.up_probability == fair_value.down_probability)
+    {
+        (
+            BtcOutcome::Up,
+            fair_value.up_probability,
+            fair_value.up_lower_bound,
+            &snapshot.up_book,
+        )
+    } else if fair_value.down_probability > fair_value.up_probability {
+        (
+            BtcOutcome::Down,
+            fair_value.down_probability,
+            fair_value.down_lower_bound,
+            &snapshot.down_book,
+        )
+    } else {
+        return rejected_with_prediction(
+            decision_id,
+            snapshot,
+            BtcRejectReason::PredictionConfidenceBelowThreshold,
+            Some(fair_value.clone()),
+            None,
+            None,
+            BtcStrategyPrediction::NoPrediction {
+                reason: BtcRejectReason::PredictionConfidenceBelowThreshold,
+                minimum_conservative_probability: minimum,
+                up_probability: fair_value.up_probability,
+                down_probability: fair_value.down_probability,
+                up_conservative_probability: fair_value.up_lower_bound,
+                down_conservative_probability: fair_value.down_lower_bound,
+            },
+        );
+    };
 
     if conservative_probability < minimum {
         return rejected_with_prediction(
@@ -1208,9 +1217,58 @@ fn score_btc_directional_model(
         .directional_model
         .as_ref()
         .ok_or(BtcRejectReason::MissingBinanceReturns)?;
-    let score = model
-        .score_snapshot(features)
-        .map_err(|_| BtcRejectReason::InvalidFeatureValue)?;
+    let started = std::time::Instant::now();
+    let inference = (|| -> Result<_, BtcRejectReason> {
+        Ok(if let Some(adapter) = model.unified_adapter() {
+            model
+                .validate_snapshot_identity(features)
+                .map_err(|error| {
+                    super::unified_model_runtime::telemetry::failure(
+                        snapshot.process_id,
+                        "inference",
+                        &error.to_string(),
+                    );
+                    BtcRejectReason::InvalidFeatureValue
+                })?;
+            let result = adapter
+                .evaluate(&features.feature_values, features.seconds_elapsed)
+                .map_err(|error| {
+                    super::unified_model_runtime::telemetry::failure(
+                        snapshot.process_id,
+                        "inference",
+                        &error.to_string(),
+                    );
+                    BtcRejectReason::InvalidFeatureValue
+                })?;
+            (result.score, serde_json::to_value(result).ok())
+        } else {
+            (
+                model.score_snapshot(features).map_err(|error| {
+                    super::unified_model_runtime::telemetry::failure(
+                        snapshot.process_id,
+                        "inference",
+                        &error.to_string(),
+                    );
+                    BtcRejectReason::InvalidFeatureValue
+                })?,
+                None,
+            )
+        })
+    })();
+    let (score, admission) = inference.inspect_err(|_| {
+        super::unified_model_runtime::telemetry::event(snapshot.process_id, "inferences", "error");
+    })?;
+    super::unified_model_runtime::telemetry::prediction(
+        snapshot.process_id,
+        snapshot.snapshot_id,
+        &snapshot.market_id,
+        &selection,
+        features.feature_as_of,
+        &features.input_sha256,
+        score,
+        started.elapsed().as_secs_f64(),
+        admission,
+    );
     let up_probability = decimal_from_f64(score.probability_up)?;
     let down_probability = Decimal::ONE - up_probability;
     let raw_logit = decimal_from_f64(score.raw_logit)?;
@@ -1340,7 +1398,14 @@ fn validate_config(config: &BtcStrategyConfig) -> Result<(), BtcRejectReason> {
                 btc_directional_model_selection(model_key, artifact_sha256, feature_schema_sha256);
             runtime_model(&selection).is_ok_and(|model| {
                 let policy = model.prediction_policy();
-                model.feature_schema_version() == config.feature_schema_version
+                (match (model.unified_adapter(), config.unified_model.as_ref()) {
+                    (Some(adapter), Some(binding)) => config
+                        .target_size
+                        .to_f64()
+                        .is_some_and(|size| binding.validate(adapter, size).is_ok()),
+                    (None, None) => true,
+                    _ => false,
+                }) && model.feature_schema_version() == config.feature_schema_version
                     && policy.minimum_seconds_after_open == config.min_seconds_after_open
                     && 300 - policy.maximum_seconds_after_open == config.min_seconds_before_close
                     && policy.cadence_seconds > 0

@@ -447,7 +447,7 @@ groups:
               refId: A
           - *reduce
           - *threshold
-        noDataState: Alerting
+        noDataState: OK
         execErrState: Error
         for: 0s
         annotations:
