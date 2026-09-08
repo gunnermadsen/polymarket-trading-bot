@@ -246,6 +246,7 @@ pub fn router(control: SharedControlApi, admin_bearer_token: impl Into<String>) 
         .route("/live/entries/enable", post(live_entries_enable))
         .route("/live/entries/disable", post(live_entries_disable))
         .route("/trading-processes", get(list_trading_processes))
+        .route("/models", get(list_runtime_models))
         .route(
             "/trading-processes/by-key/:process_key",
             put(upsert_trading_process_by_key),
@@ -755,4 +756,14 @@ impl IntoResponse for HttpError {
         };
         (self.status, Json(body)).into_response()
     }
+}
+
+async fn list_runtime_models() -> Result<Json<serde_json::Value>, HttpError> {
+    let result = tokio::task::spawn_blocking(crate::btc::unified_model_runtime::catalog::discover)
+        .await
+        .map_err(|error| HttpError::internal(error.to_string()))?
+        .map_err(|error| HttpError::internal(error.to_string()))?;
+    Ok(Json(
+        serde_json::json!({"contract_version": crate::btc::unified_model_runtime::contract::CONTRACT_VERSION, "models":result}),
+    ))
 }

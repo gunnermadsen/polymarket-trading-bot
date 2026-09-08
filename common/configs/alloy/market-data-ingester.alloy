@@ -140,6 +140,10 @@ loki.process "polymarket_bot" {
 			level      = "level",
 			target     = "target",
 			error_code = "fields.error_code",
+			// UMR identifiers remain JSON fields; never promote them to stream labels.
+			event      = "fields.event",
+			process_id = "fields.process_id",
+			run_id     = "fields.run_id",
 		}
 	}
 

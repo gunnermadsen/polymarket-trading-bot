@@ -107,7 +107,8 @@ fn runtime_metrics_snapshot(
 ) -> BtcRuntimeMetrics {
     let complete_minutes = state
         .directional_external
-        .chainlink_candle_complete_minutes(checked_at);
+        .rtds()
+        .complete_minutes(checked_at);
     metrics.rtds_chainlink_candle_complete_minutes =
         u64::try_from(complete_minutes).unwrap_or(u64::MAX);
     metrics.rtds_chainlink_candle_window_ready = complete_minutes == 61;
@@ -179,7 +180,8 @@ async fn apply_directional_chainlink_history(
     }
     realtime
         .directional_external
-        .chainlink_candle_complete_minutes(Utc::now())
+        .rtds()
+        .complete_minutes(Utc::now())
 }
 
 async fn run_directional_chainlink_hydration_recovery(
@@ -421,7 +423,8 @@ impl BtcRuntime {
         self
     }
 
-    pub async fn start(self) -> Result<BtcRuntimeHandle> {
+    pub async fn start(mut self) -> Result<BtcRuntimeHandle> {
+        include_shared_rtds(&mut self.sources);
         self.config.validate()?;
         self.repository.healthcheck().await?;
         let state = self
@@ -470,10 +473,6 @@ impl BtcRuntime {
             }
         }
         let mut directional_chainlink_hydration_failed = false;
-        if self
-            .sources
-            .iter()
-            .any(|source| source.key == PRODUCT_CHAINLINK)
         {
             let bootstrap_end = Utc::now();
             let bootstrap_start = bootstrap_end - chrono::Duration::minutes(62);
@@ -665,6 +664,20 @@ fn includes_open_interest(sources: &[SourceSelector]) -> bool {
         .any(|source| source.key == PRODUCT_BINANCE_OPEN_INTEREST)
 }
 
+// The shared repository stays current even when no active model requires RTDS.
+// Preserve any explicit consumer selector; the default must not gate other models.
+fn include_shared_rtds(sources: &mut Vec<SourceSelector>) {
+    if !sources.iter().any(|source| source.key == PRODUCT_CHAINLINK) {
+        sources.push(SourceSelector {
+            key: PRODUCT_CHAINLINK.to_owned(),
+            contract_version: 1,
+            required: false,
+            maximum_age_ms: None,
+            require_sequence_integrity: true,
+        });
+    }
+}
+
 fn includes_binance_one_second(sources: &[SourceSelector]) -> bool {
     sources
         .iter()
@@ -724,7 +737,8 @@ impl BtcRuntimeHandle {
         self.running.load(Ordering::Relaxed)
     }
 
-    pub fn update_sources(&self, sources: Vec<SourceSelector>) {
+    pub fn update_sources(&self, mut sources: Vec<SourceSelector>) {
+        include_shared_rtds(&mut sources);
         let hydrate_open_interest = {
             let previous = self.sources.borrow();
             claim_dynamic_open_interest_hydration(
@@ -1131,6 +1145,76 @@ mod tests {
     use super::*;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
+
+    #[test]
+    fn shared_rtds_subscription_is_unique_and_preserves_explicit_consumers() {
+        let mut sources = Vec::new();
+        include_shared_rtds(&mut sources);
+        include_shared_rtds(&mut sources);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].key, PRODUCT_CHAINLINK);
+        assert!(!sources[0].required);
+        let mut explicit = legacy_default_sources();
+        let before = explicit.clone();
+        include_shared_rtds(&mut explicit);
+        assert_eq!(explicit, before);
+    }
+
+    #[tokio::test]
+    async fn shared_rtds_seed_restores_consumer_reads_and_existing_readiness_metrics() {
+        let at = DateTime::from_timestamp(Utc::now().timestamp().div_euclid(60) * 60, 0).unwrap();
+        let state = Arc::new(RwLock::new(RealtimeState::default()));
+        let ticks = (1..=62)
+            .map(|minute| {
+                let timestamp = at - chrono::Duration::minutes(minute);
+                ReferencePriceTick {
+                    tick_id: Uuid::new_v4(),
+                    dedup_key: minute.to_string(),
+                    source: super::super::types::ReferencePriceSource::RtdsChainlink,
+                    symbol: "BTCUSD".into(),
+                    price: dec!(100),
+                    source_timestamp: timestamp,
+                    envelope_timestamp: Some(timestamp),
+                    received_at: timestamp,
+                    connection_id: Uuid::nil(),
+                    ingest_sequence: minute as u64,
+                    source_event_id: None,
+                    raw_payload: serde_json::Value::Null,
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            apply_directional_chainlink_history(&state, ticks.clone()).await,
+            61
+        );
+        assert_eq!(apply_directional_chainlink_history(&state, ticks).await, 61);
+        let first_consumer = state.read().await.clone();
+        let second_consumer = state.read().await.clone();
+        assert!(Arc::ptr_eq(
+            &first_consumer.directional_external.rtds,
+            &second_consumer.directional_external.rtds
+        ));
+        assert_eq!(
+            first_consumer
+                .directional_external
+                .rtds()
+                .closed_candles(at)
+                .unwrap()
+                .len(),
+            61
+        );
+        let metrics = runtime_metrics_snapshot(BtcRuntimeMetrics::default(), &second_consumer, at);
+        assert_eq!(metrics.rtds_chainlink_candle_complete_minutes, 61);
+        assert!(metrics.rtds_chainlink_candle_window_ready);
+        assert_eq!(
+            first_consumer
+                .directional_external
+                .rtds()
+                .points_as_of(at)
+                .count(),
+            62
+        );
+    }
 
     fn one_second_candle(open_timestamp: DateTime<Utc>) -> BinanceOneSecondKline {
         BinanceOneSecondKline {

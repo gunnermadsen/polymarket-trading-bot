@@ -290,6 +290,15 @@ impl RuntimeDirectionalModel {
         self.asymmetric_value_calibration.is_some()
     }
 
+    pub fn unified_adapter(
+        &self,
+    ) -> Option<&dyn super::unified_model_runtime::adapters::ModelAdapter> {
+        match self.payoff_model.as_ref() {
+            Some(RuntimePayoffModel::Unified(adapter)) => Some(adapter.as_ref()),
+            _ => None,
+        }
+    }
+
     pub fn is_payoff_aware(&self) -> bool {
         self.payoff_model.is_some()
     }
@@ -314,10 +323,10 @@ impl RuntimeDirectionalModel {
             .confidence_threshold)
     }
 
-    pub fn score_snapshot(
+    pub(crate) fn validate_snapshot_identity(
         &self,
         snapshot: &BtcDirectionalModelFeatureSnapshot,
-    ) -> Result<RuntimeModelScore> {
+    ) -> Result<()> {
         if snapshot.model_key != self.model_key
             || snapshot.model_artifact_sha256 != self.artifact_sha256
             || snapshot.feature_schema_version != self.feature_schema_version
@@ -329,6 +338,14 @@ impl RuntimeDirectionalModel {
         if !self.prediction_policy.accepts(snapshot.seconds_elapsed) {
             bail!("BTC directional model feature snapshot is outside its prediction policy");
         }
+        Ok(())
+    }
+
+    pub fn score_snapshot(
+        &self,
+        snapshot: &BtcDirectionalModelFeatureSnapshot,
+    ) -> Result<RuntimeModelScore> {
+        self.validate_snapshot_identity(snapshot)?;
         if let Some(payoff) = &self.payoff_model {
             let window_key = (snapshot.feature_as_of
                 - chrono::Duration::seconds(snapshot.seconds_elapsed))
@@ -504,10 +521,11 @@ pub struct RuntimeModelRegistry {
 
 static RUNTIME_MODEL_REGISTRY: OnceLock<RuntimeModelRegistry> = OnceLock::new();
 
+pub fn runtime_model_registry() -> &'static RuntimeModelRegistry {
+    RUNTIME_MODEL_REGISTRY.get_or_init(RuntimeModelRegistry::from_environment)
+}
 pub fn runtime_model(selection: &RuntimeModelSelection) -> Result<Arc<RuntimeDirectionalModel>> {
-    RUNTIME_MODEL_REGISTRY
-        .get_or_init(RuntimeModelRegistry::from_environment)
-        .load(selection)
+    runtime_model_registry().load(selection)
 }
 
 impl RuntimeModelRegistry {
@@ -654,7 +672,7 @@ enum RuntimeTreeNode {
 }
 
 #[derive(Debug)]
-struct RuntimeSubmodel {
+pub(crate) struct RuntimeSubmodel {
     feature_indices: Vec<usize>,
     baseline: f64,
     probability_output: bool,
@@ -662,7 +680,7 @@ struct RuntimeSubmodel {
 }
 
 impl RuntimeSubmodel {
-    fn score(&self, source: &[f64]) -> Result<f64> {
+    pub(crate) fn score(&self, source: &[f64]) -> Result<f64> {
         let values = self
             .feature_indices
             .iter()
@@ -750,6 +768,7 @@ struct RuntimeFairValueThreshold {
 
 #[derive(Debug)]
 enum RuntimePayoffModel {
+    Unified(Box<dyn super::unified_model_runtime::adapters::ModelAdapter>),
     Q5 {
         feature_names: Vec<String>,
         price_edges: Vec<f64>,
@@ -821,6 +840,7 @@ struct RuntimeDerivedSubmodel {
 impl RuntimePayoffModel {
     fn score(&self, features: &[f64], seconds: i64) -> Result<RuntimeModelScore> {
         match self {
+            Self::Unified(adapter) => Ok(adapter.evaluate(features, seconds)?.score),
             Self::Q5 { .. } => self.score_q5(features, seconds, None),
             Self::Middle { .. } => self.score_middle(features, seconds),
             Self::FairValue { .. } => self.score_fair_value(features, seconds),
@@ -834,6 +854,7 @@ impl RuntimePayoffModel {
         window_key: i64,
     ) -> Result<RuntimeModelScore> {
         match self {
+            Self::Unified(adapter) => Ok(adapter.evaluate(features, seconds)?.score),
             Self::Q5 { .. } => self.score_q5(features, seconds, Some(window_key)),
             Self::Middle { .. } => self.score_middle(features, seconds),
             Self::FairValue { .. } => self.score_fair_value(features, seconds),
@@ -1663,6 +1684,9 @@ struct RuntimePredictionPolicyFile {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum RuntimePayoffModelFile {
+    Unified {
+        definition: serde_json::Value,
+    },
     Q5 {
         execution_reserve_per_share: f64,
         stress_slippage_per_share: f64,
@@ -1698,7 +1722,7 @@ enum RuntimePayoffModelFile {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RuntimeSubmodelFile {
+pub(crate) struct RuntimeSubmodelFile {
     feature_indices: Vec<usize>,
     baseline: f64,
     output: String,
@@ -1859,7 +1883,9 @@ fn load_runtime_model(
 
     let file: RuntimeModelFile = serde_json::from_slice(&model_bytes)
         .context("failed to decode BTC directional runtime model")?;
-    compile_runtime_model(file, manifest, selection, artifact_sha256)
+    let model = compile_runtime_model(file, manifest, selection, artifact_sha256)?;
+    super::unified_model_runtime::adapters::validation::verify(&model, &golden_bytes)?;
+    Ok(model)
 }
 
 fn validate_manifest(
@@ -2245,7 +2271,10 @@ fn compile_logistic(file: RuntimeLogisticFile) -> Result<RuntimeLogistic> {
     })
 }
 
-fn compile_submodel(file: RuntimeSubmodelFile, source_width: usize) -> Result<RuntimeSubmodel> {
+pub(crate) fn compile_submodel(
+    file: RuntimeSubmodelFile,
+    source_width: usize,
+) -> Result<RuntimeSubmodel> {
     if file.feature_indices.is_empty()
         || file
             .feature_indices
@@ -2300,6 +2329,9 @@ fn compile_payoff_model(
 ) -> Result<RuntimePayoffModel> {
     let feature_count = feature_names.len();
     match file {
+        RuntimePayoffModelFile::Unified { definition } => Ok(RuntimePayoffModel::Unified(
+            super::unified_model_runtime::adapters::compile(definition, feature_names)?,
+        )),
         RuntimePayoffModelFile::Q5 {
             execution_reserve_per_share,
             stress_slippage_per_share,
