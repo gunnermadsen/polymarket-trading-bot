@@ -130,7 +130,7 @@ fn binance_l2_persistence_alert_returns_a_healthy_zero() {
         .expect("Binance L2 persistence alert is provisioned");
 
     assert!(rule.contains(") > bool 60)"));
-    assert!(rule.contains("noDataState: Alerting"));
+    assert!(rule.contains("noDataState: OK"));
 }
 
 #[test]
