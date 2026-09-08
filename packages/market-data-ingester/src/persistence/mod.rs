@@ -14,7 +14,7 @@ pub use artifacts::{
 };
 pub use backfills::{
     BackfillJobEvent, BackfillJobRecord, BackfillRepository, ClaimedBackfillJob,
-    WorkerAllocationRecord, WorkerRecord, WorkerRegistration,
+    WorkerAllocationRecord, WorkerAllocationSummary, WorkerRecord, WorkerRegistration,
 };
 pub use chainlink_reference_prices::{
     insert_chainlink_reference_prices, insert_pmdata_chainlink_reference_prices,

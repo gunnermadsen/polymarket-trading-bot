@@ -165,6 +165,34 @@ pub struct WorkerAllocationRecord {
     pub backfill_leases: i64,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct WorkerAllocationSummary {
+    pub worker_id: String,
+    pub hostname: String,
+    pub worker_contract_version: i32,
+    pub supported_strategies: Value,
+    pub maximum_backfills: i32,
+    pub active_backfills: i32,
+    pub capacity_units: i32,
+    pub realtime_slot_limit: i32,
+    pub allocation_contract_version: i32,
+    pub realtime_strategies: Value,
+    pub image_digest: String,
+    pub source_revision: String,
+    pub deployment_id: String,
+    pub lifecycle_state: String,
+    pub started_at: DateTime<Utc>,
+    pub heartbeat_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub allocated_units: i64,
+    pub available_units: i64,
+    pub realtime_leases: i64,
+    pub backfill_leases: i64,
+    pub heartbeat_fresh: bool,
+    pub assigned_realtime_strategies: Value,
+    pub assigned_backfills: Value,
+}
+
 #[derive(Clone)]
 pub struct BackfillRepository {
     pool: PgPool,
@@ -467,6 +495,59 @@ impl BackfillRepository {
                 .fetch_all(&self.pool)
                 .await?,
         )
+    }
+
+    pub async fn list_worker_allocation_summaries(&self) -> Result<Vec<WorkerAllocationSummary>> {
+        Ok(sqlx::query_as(
+            r#"
+            WITH realtime AS (
+              SELECT profile.lease_owner AS worker_id,
+                count(*)::bigint AS leases,
+                count(*)::bigint * 2 AS units,
+                jsonb_agg(jsonb_build_object(
+                  'strategy_key', profile.strategy_key,
+                  'desired_generation', profile.desired_generation,
+                  'applied_generation', profile.applied_generation,
+                  'observed_state', profile.observed_state,
+                  'health_status', profile.health_status,
+                  'lease_expires_at', profile.lease_expires_at
+                ) ORDER BY profile.strategy_key) AS assignments
+              FROM ingester.profiles profile
+              WHERE profile.lease_owner IS NOT NULL AND profile.lease_expires_at > now()
+              GROUP BY profile.lease_owner
+            ), backfill AS (
+              SELECT job.assigned_worker_id AS worker_id,
+                count(*)::bigint AS leases,
+                COALESCE(sum(job.allocation_units),0)::bigint AS units,
+                jsonb_agg(jsonb_build_object(
+                  'job_id', job.job_id,
+                  'strategy_key', job.strategy_key,
+                  'status', job.status,
+                  'allocation_units', job.allocation_units,
+                  'lease_expires_at', job.lease_expires_at
+                ) ORDER BY job.job_id) AS assignments
+              FROM ingester.backfill_jobs job
+              WHERE job.assigned_worker_id IS NOT NULL
+                AND job.status IN ('running','cancel_requested')
+                AND job.lease_expires_at > now()
+              GROUP BY job.assigned_worker_id
+            )
+            SELECT worker.*,
+              COALESCE(realtime.units,0) + COALESCE(backfill.units,0) AS allocated_units,
+              GREATEST(0, worker.capacity_units::bigint - COALESCE(realtime.units,0) - COALESCE(backfill.units,0)) AS available_units,
+              COALESCE(realtime.leases,0) AS realtime_leases,
+              COALESCE(backfill.leases,0) AS backfill_leases,
+              worker.lifecycle_state='active' AND worker.heartbeat_at > now()-interval '30 seconds' AS heartbeat_fresh,
+              COALESCE(realtime.assignments,'[]'::jsonb) AS assigned_realtime_strategies,
+              COALESCE(backfill.assignments,'[]'::jsonb) AS assigned_backfills
+            FROM ingester.workers worker
+            LEFT JOIN realtime ON realtime.worker_id=worker.worker_id
+            LEFT JOIN backfill ON backfill.worker_id=worker.worker_id
+            ORDER BY worker.worker_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn list_worker_allocations(&self) -> Result<Vec<WorkerAllocationRecord>> {
