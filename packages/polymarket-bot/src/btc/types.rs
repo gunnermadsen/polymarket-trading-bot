@@ -709,6 +709,9 @@ pub struct RealtimeState {
     /// Bounded, inference-only external context shared by every directional-model process.
     #[serde(skip)]
     pub directional_external: DirectionalExternalState,
+    #[serde(skip)]
+    pub unified_book_history:
+        std::sync::Arc<super::unified_model_runtime::adapters::data::BookHistory>,
     /// Bounded display-only history from Polymarket's Chainlink BTC/USD TWAP 60s topic.
     #[serde(skip)]
     pub chainlink_twap_60: ChainlinkTwap60Window,

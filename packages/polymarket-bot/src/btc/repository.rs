@@ -2667,6 +2667,12 @@ impl BtcRepository {
             BtcDecisionAction::NoTrade => ("no_trade", None),
         };
         let mut metadata = serde_json::to_value(decision)?;
+        if let Some(record) = super::unified_model_runtime::telemetry::prediction_record(
+            process_id,
+            decision.feature_snapshot_id,
+        ) {
+            metadata["model_evaluation"] = serde_json::to_value(record)?;
+        }
         if let Some(entry_admission_evidence) = entry_admission_evidence {
             metadata
                 .as_object_mut()

@@ -1,3 +1,4 @@
+use super::unified_model_runtime::telemetry as umr_telemetry;
 use std::{
     collections::HashSet,
     str::FromStr,
@@ -249,50 +250,6 @@ impl DirectionalExternalDecisionSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ChainlinkCandleAccumulator {
-    first_timestamp: DateTime<Utc>,
-    last_timestamp: DateTime<Utc>,
-    open: Decimal,
-    high: Decimal,
-    low: Decimal,
-    close: Decimal,
-    available_at: DateTime<Utc>,
-}
-
-impl ChainlinkCandleAccumulator {
-    fn new(source_timestamp: DateTime<Utc>, available_at: DateTime<Utc>, price: Decimal) -> Self {
-        Self {
-            first_timestamp: source_timestamp,
-            last_timestamp: source_timestamp,
-            open: price,
-            high: price,
-            low: price,
-            close: price,
-            available_at,
-        }
-    }
-
-    fn observe(
-        &mut self,
-        source_timestamp: DateTime<Utc>,
-        available_at: DateTime<Utc>,
-        price: Decimal,
-    ) {
-        if source_timestamp < self.first_timestamp {
-            self.first_timestamp = source_timestamp;
-            self.open = price;
-        }
-        if source_timestamp >= self.last_timestamp {
-            self.last_timestamp = source_timestamp;
-            self.close = price;
-        }
-        self.high = self.high.max(price);
-        self.low = self.low.min(price);
-        self.available_at = self.available_at.max(available_at);
-    }
-}
-
 fn directional_external_decision_snapshot(
     state: &DirectionalExternalState,
     feature_as_of: DateTime<Utc>,
@@ -382,7 +339,7 @@ fn directional_external_decision_snapshot(
     };
 
     let chainlink_candles = if requirements.chainlink_candles {
-        derive_closed_chainlink_candles(state, feature_as_of)?
+        state.rtds().closed_candles(feature_as_of)?
     } else {
         Vec::new()
     };
@@ -422,102 +379,6 @@ fn directional_external_decision_snapshot(
         chainlink_candles,
         open_interest,
     }))
-}
-
-fn derive_closed_chainlink_candles(
-    state: &DirectionalExternalState,
-    feature_as_of: DateTime<Utc>,
-) -> Result<Vec<DirectionalChainlinkCandle>, DirectionalFeatureError> {
-    const REQUIRED_CANDLES: usize = 61;
-    let latest_close = DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0)
-        .ok_or_else(|| {
-        external_snapshot_error(
-            "chainlink_candles",
-            "decision timestamp could not be minute-aligned",
-        )
-    })?;
-    let earliest_open = latest_close - chrono::Duration::minutes(REQUIRED_CANDLES as i64);
-    let mut accumulators: Vec<Option<ChainlinkCandleAccumulator>> = vec![None; REQUIRED_CANDLES];
-
-    for point in &state.chainlink_mid {
-        if point.available_at > feature_as_of
-            || point.source_timestamp < earliest_open
-            || point.source_timestamp >= latest_close
-        {
-            continue;
-        }
-        if point.price <= Decimal::ZERO {
-            return Err(external_snapshot_error(
-                "chainlink_candles",
-                "runtime midpoint history contained an invalid price",
-            ));
-        }
-        let bucket = (point.source_timestamp - earliest_open).num_seconds() / 60;
-        let index = usize::try_from(bucket).map_err(|_| {
-            external_snapshot_error(
-                "chainlink_candles",
-                "runtime midpoint fell outside the required candle window",
-            )
-        })?;
-        let accumulator = accumulators.get_mut(index).ok_or_else(|| {
-            external_snapshot_error(
-                "chainlink_candles",
-                "runtime midpoint fell outside the required candle window",
-            )
-        })?;
-        match accumulator {
-            Some(accumulator) => {
-                accumulator.observe(point.source_timestamp, point.available_at, point.price)
-            }
-            slot @ None => {
-                *slot = Some(ChainlinkCandleAccumulator::new(
-                    point.source_timestamp,
-                    point.available_at,
-                    point.price,
-                ));
-            }
-        }
-    }
-
-    accumulators
-        .into_iter()
-        .enumerate()
-        .map(|(index, accumulator)| {
-            let accumulator = accumulator.ok_or_else(|| {
-                external_snapshot_error(
-                    "chainlink_candles",
-                    "61 contiguous closed RTDS midpoint candles are unavailable at the decision time",
-                )
-            })?;
-            let open_timestamp = earliest_open
-                + chrono::Duration::minutes(i64::try_from(index).expect("61 candles fit i64"));
-            Ok(DirectionalChainlinkCandle {
-                open_timestamp,
-                close_timestamp: open_timestamp + chrono::Duration::minutes(1),
-                open_price: external_decimal_value(
-                    accumulator.open,
-                    "chainlink_candles",
-                    "derived open price was invalid",
-                )?,
-                high_price: external_decimal_value(
-                    accumulator.high,
-                    "chainlink_candles",
-                    "derived high price was invalid",
-                )?,
-                low_price: external_decimal_value(
-                    accumulator.low,
-                    "chainlink_candles",
-                    "derived low price was invalid",
-                )?,
-                close_price: external_decimal_value(
-                    accumulator.close,
-                    "chainlink_candles",
-                    "derived close price was invalid",
-                )?,
-                available_at: accumulator.available_at,
-            })
-        })
-        .collect()
 }
 
 fn external_decimal_value(
@@ -563,6 +424,8 @@ pub struct BtcProcessRunner {
     high_water_mark_entry_submission: Mutex<()>,
     execution_reconcile_started_at: Mutex<Option<Instant>>,
     directional_model_runtime: StdMutex<DirectionalModelProcessRuntime>,
+    unified_session:
+        StdMutex<Option<Box<dyn super::unified_model_runtime::adapters::FeatureSession>>>,
     primary_persistence_state: Option<Arc<RwLock<RealtimeState>>>,
 }
 
@@ -644,6 +507,17 @@ impl BtcProcessRunner {
                 );
             }
         }
+        let unified_session = directional_model_selection(&config.strategy)
+            .map(|selection| runtime_model(&selection))
+            .transpose()?
+            .and_then(|model| model.unified_adapter().map(|a| a.new_session()));
+        umr_telemetry::register(
+            config.process_id,
+            config.run_id,
+            &config.config_hash,
+            execution_lifecycle.mode().as_str(),
+            directional_model_selection(&config.strategy).as_ref(),
+        );
         Ok(Self {
             repository,
             store,
@@ -662,6 +536,7 @@ impl BtcProcessRunner {
             initialized: OnceCell::new(),
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
+            unified_session: StdMutex::new(unified_session),
             primary_persistence_state: None,
         })
     }
@@ -726,6 +601,9 @@ impl BtcProcessRunner {
                 status,
             )
             .await?;
+        if inserted {
+            umr_telemetry::event(self.config.process_id, "decisions", status);
+        }
         Ok(inserted)
     }
 
@@ -956,6 +834,7 @@ impl BtcProcessRunner {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        umr_telemetry::enabled(self.config.process_id, false);
         if let Err(error) = self.force_refresh_settlement_and_reconcile().await {
             warn!(
                 process_id = %self.config.process_id,
@@ -1016,6 +895,8 @@ impl BtcProcessRunner {
 
     async fn observe(&self, observation: StrategyObservation) -> Result<()> {
         if !self.primary_persistence_available().await {
+            umr_telemetry::readiness(self.config.process_id, false);
+            umr_telemetry::event(self.config.process_id, "skipped", "persistence_unavailable");
             return Ok(());
         }
         self.initialize().await?;
@@ -1040,15 +921,29 @@ impl BtcProcessRunner {
         }
 
         let Some(market) = observation.state.current_market.as_ref() else {
+            umr_telemetry::event(self.config.process_id, "skipped", "no_market");
             return Ok(());
         };
         // Keep durable point-in-time inputs on the same immutable observation boundary used by
         // runtime readiness. Initialization, reconciliation and admission must not move the
         // feature timestamp forward while feeds continue advancing.
         let observed_at = observation.readiness.checked_at;
+        let scoped_readiness =
+            process_runtime_readiness(&self.config.strategy, &observation.readiness);
+        for reason in &scoped_readiness.reasons {
+            umr_telemetry::event(
+                self.config.process_id,
+                "readiness_blocks",
+                reason.split(':').next().unwrap_or("unknown"),
+            );
+        }
+        if !scoped_readiness.ready {
+            umr_telemetry::readiness(self.config.process_id, false);
+        }
         let directional_selection = directional_model_selection(&self.config.strategy);
         let mut directional_candidate = None;
         let mut directional_opening_reference = None;
+        let feature_started = Instant::now();
         let (snapshot_identity_at, directional_model, mut directional_model_feature_error) =
             if let Some(selection) = directional_selection.as_ref() {
                 let Some(latest_feature_as_of) = observation
@@ -1058,6 +953,12 @@ impl BtcProcessRunner {
                     .back()
                     .map(|candle| candle.close_timestamp)
                 else {
+                    umr_telemetry::readiness(self.config.process_id, false);
+                    umr_telemetry::event(
+                        self.config.process_id,
+                        "skipped",
+                        "binance_history_unavailable",
+                    );
                     return Ok(());
                 };
                 let model = runtime_model(selection)
@@ -1070,9 +971,11 @@ impl BtcProcessRunner {
                         latest_feature_as_of,
                     )
                 else {
+                    umr_telemetry::event(self.config.process_id, "skipped", "outside_schedule");
                     return Ok(());
                 };
                 if feature_as_of > observed_at {
+                    umr_telemetry::event(self.config.process_id, "skipped", "future_candidate");
                     return Ok(());
                 }
                 if !policy.accepts(candidate_seconds_elapsed) {
@@ -1081,8 +984,23 @@ impl BtcProcessRunner {
                 let Some(candidate) =
                     self.claim_directional_model_candidate(&market.market_id, feature_as_of)?
                 else {
+                    umr_telemetry::event(
+                        self.config.process_id,
+                        "skipped",
+                        "candidate_already_claimed",
+                    );
                     return Ok(());
                 };
+                umr_telemetry::event(self.config.process_id, "opportunities", "scheduled");
+                umr_telemetry::eligible_market(self.config.process_id, &market.market_id);
+                if let Some(session) = self
+                    .unified_session
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("UMR session lock poisoned"))?
+                    .as_mut()
+                {
+                    session.observe_slot(&market.market_id, candidate_seconds_elapsed);
+                }
                 let feature_as_of = candidate.feature_as_of();
                 let candidate_seconds_elapsed = (feature_as_of - market.window_start).num_seconds();
                 if !policy.accepts(candidate_seconds_elapsed) {
@@ -1099,7 +1017,9 @@ impl BtcProcessRunner {
                         return Ok(());
                     }
                 }
-                if directional_schema_requires_opening_boundary(model.feature_schema_version()) {
+                if model.unified_adapter().is_none()
+                    && directional_schema_requires_opening_boundary(model.feature_schema_version())
+                {
                     directional_opening_reference = self
                         .repository
                         .load_market_opening_reference(
@@ -1219,6 +1139,57 @@ impl BtcProcessRunner {
             }
             if model.is_payoff_aware() && snapshot.directional_model.is_none() {
                 let payoff_features = (|| -> Result<BtcDirectionalModelFeatureSnapshot> {
+                    if let Some(adapter) = model.unified_adapter() {
+                        let context = super::unified_model_runtime::adapters::FeatureContext {
+                            state: &observation.state,
+                            names: model.feature_names(),
+                            binding: self
+                                .config
+                                .strategy
+                                .unified_model
+                                .as_ref()
+                                .context("UMR binding unavailable")?,
+                            market_id: &market.market_id,
+                            window_start: market.window_start,
+                            feature_as_of: snapshot_identity_at,
+                            up: inputs.up_book.as_ref().context("UMR UP book unavailable")?,
+                            down: inputs
+                                .down_book
+                                .as_ref()
+                                .context("UMR DOWN book unavailable")?,
+                            fee_rate: inputs
+                                .fee_rate
+                                .and_then(|v| v.to_f64())
+                                .context("UMR fee unavailable")?,
+                        };
+                        let values = self
+                            .unified_session
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("UMR session lock poisoned"))?
+                            .as_mut()
+                            .context("UMR session unavailable")?
+                            .prepare(adapter, &context)?;
+                        let input_sha256 = directional_model_input_sha256(
+                            selection,
+                            model.feature_schema_version(),
+                            &market.market_id,
+                            market.window_start,
+                            snapshot_identity_at,
+                            (snapshot_identity_at - market.window_start).num_seconds(),
+                            &values,
+                        )?;
+                        return Ok(BtcDirectionalModelFeatureSnapshot {
+                            model_key: selection.model_key.clone(),
+                            model_artifact_sha256: selection.artifact_sha256.clone(),
+                            feature_schema_version: model.feature_schema_version().into(),
+                            feature_schema_sha256: selection.feature_schema_sha256.clone(),
+                            feature_as_of: snapshot_identity_at,
+                            seconds_elapsed: (snapshot_identity_at - market.window_start)
+                                .num_seconds(),
+                            feature_values: values,
+                            input_sha256,
+                        });
+                    }
                     let opening_boundary = inputs
                         .chainlink_open
                         .as_ref()
@@ -1281,12 +1252,72 @@ impl BtcProcessRunner {
                 }
             }
         }
+        umr_telemetry::duration(
+            self.config.process_id,
+            "features",
+            feature_started.elapsed().as_secs_f64(),
+        );
+        umr_telemetry::event(
+            self.config.process_id,
+            "feature_builds",
+            if directional_model_feature_error.is_some() {
+                "error"
+            } else {
+                "success"
+            },
+        );
+        if let Some(error) = directional_model_feature_error.as_ref() {
+            umr_telemetry::failure(
+                self.config.process_id,
+                "features",
+                error
+                    .get("detail")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("missing_source_data"),
+            );
+        }
+        if let Some(features) = snapshot.directional_model.as_ref() {
+            umr_telemetry::gauge(
+                self.config.process_id,
+                "feature_age_seconds",
+                (observed_at - features.feature_as_of).num_milliseconds() as f64 / 1000.0,
+            );
+            umr_telemetry::gauge(
+                self.config.process_id,
+                "missing_feature_fraction",
+                features
+                    .feature_values
+                    .iter()
+                    .filter(|v| !v.is_finite())
+                    .count() as f64
+                    / features.feature_values.len().max(1) as f64,
+            );
+        }
+        let decision_started = Instant::now();
         let mut decision = DeterministicBtcStrategy::evaluate_with_directional_model_entry_policy(
             &self.config.strategy,
             &snapshot,
             self.config.directional_model_entry_policy,
         );
+        umr_telemetry::duration(
+            self.config.process_id,
+            "strategy",
+            decision_started.elapsed().as_secs_f64(),
+        );
         enforce_runtime_readiness(&mut decision, &observation.readiness, &self.config.strategy);
+        umr_telemetry::readiness(
+            self.config.process_id,
+            scoped_readiness.ready
+                && directional_model_feature_error.is_none()
+                && decision.prediction.is_some(),
+        );
+        if let Some(reason) = decision.reject_reason.as_ref() {
+            umr_telemetry::event(
+                self.config.process_id,
+                "strategy_rejections",
+                reason.as_str(),
+            );
+        }
         if directional_model_feature_error.is_some() {
             decision.action = BtcDecisionAction::NoTrade;
             decision.reject_reason = Some(BtcRejectReason::DirectionalFeaturesUnavailable);
@@ -1514,6 +1545,27 @@ impl BtcProcessRunner {
             }
         }
         self.store.persist_order_plan_report(&report).await?;
+        for fill in &report.fills {
+            if let (Some(price), Some(size), Some(fee)) =
+                (fill.price.to_f64(), fill.size.to_f64(), fill.fee.to_f64())
+            {
+                let quoted = if fill.token_id == snapshot.up_book.token_id {
+                    snapshot.up_book.executable_ask_vwap
+                } else {
+                    snapshot.down_book.executable_ask_vwap
+                }
+                .and_then(|v| v.to_f64())
+                .unwrap_or(price);
+                umr_telemetry::fill(
+                    self.config.process_id,
+                    price,
+                    size,
+                    fee,
+                    (observed_at - market.window_start).num_milliseconds() as f64 / 1000.0,
+                    quoted,
+                );
+            }
+        }
         let primary_order = report
             .orders
             .first()
@@ -1521,6 +1573,26 @@ impl BtcProcessRunner {
         let primary_state = primary_order.state;
         let filled = primary_state == OrderState::Filled;
         let execution_status = decision_execution_status(primary_state);
+        umr_telemetry::event(self.config.process_id, "execution", execution_status);
+        if filled {
+            umr_telemetry::gauge(
+                self.config.process_id,
+                "last_entry_seconds",
+                (observed_at - market.window_start).num_milliseconds() as f64 / 1000.0,
+            );
+            if let Some(cost) = snapshot
+                .up_book
+                .executable_ask_vwap
+                .filter(|_| intent.outcome == BtcOutcome::Up)
+                .or(snapshot
+                    .down_book
+                    .executable_ask_vwap
+                    .filter(|_| intent.outcome == BtcOutcome::Down))
+                .and_then(|v| v.to_f64())
+            {
+                umr_telemetry::gauge(self.config.process_id, "last_entry_quote_usd", cost);
+            }
+        }
         let mut execution_reject_reason = primary_order
             .request
             .metadata
@@ -2075,7 +2147,20 @@ impl BtcStrategyRunner for BtcProcessRunner {
     }
 
     async fn on_observation(&self, observation: StrategyObservation) -> Result<()> {
-        self.observe(observation).await
+        umr_telemetry::observation(
+            self.config.process_id,
+            observation
+                .state
+                .current_market
+                .as_ref()
+                .map(|m| m.market_id.as_str()),
+        );
+        let mut guard = umr_telemetry::ObservationGuard::new(self.config.process_id);
+        let result = self.observe(observation).await;
+        if result.is_ok() {
+            guard.complete();
+        }
+        result
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -2479,8 +2564,8 @@ mod tests {
             LOSS_REGIME_CONFIDENCE_FLOOR_SCHEMA_VERSION,
         },
         directional_external_runtime::{
-            BinanceOpenInterestPoint, ChainlinkMidPoint, ChainlinkRefPricePoint,
-            DirectionalExternalState, PolygonOraclePoint,
+            BinanceOpenInterestPoint, ChainlinkRefPricePoint, DirectionalExternalState,
+            PolygonOraclePoint,
         },
         directional_features::{
             BTC_DIRECTIONAL_BOUNDARY_ORACLE_CHAINLINK_REFPRICE_CANDLE_OI_FEATURE_SCHEMA_VERSION,
@@ -2506,12 +2591,12 @@ mod tests {
         for minute in 0..61_i64 {
             let open = earliest_open + chrono::Duration::minutes(minute);
             let base = Decimal::new(6_000_000 + minute * 100, 2);
-            state.chainlink_mid.push_back(ChainlinkMidPoint {
+            Arc::make_mut(&mut state.rtds).insert_fixture(crate::btc::rtds_repository::RtdsPoint {
                 source_timestamp: open + chrono::Duration::seconds(5),
                 available_at: open + chrono::Duration::seconds(6),
                 price: base,
             });
-            state.chainlink_mid.push_back(ChainlinkMidPoint {
+            Arc::make_mut(&mut state.rtds).insert_fixture(crate::btc::rtds_repository::RtdsPoint {
                 source_timestamp: open + chrono::Duration::seconds(50),
                 available_at: open + chrono::Duration::seconds(51),
                 price: base + dec!(1.25),
@@ -2526,13 +2611,13 @@ mod tests {
         let mut state = external_midpoint_state(feature_as_of);
         let latest_close =
             DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0).unwrap();
-        state.chainlink_mid.push_back(ChainlinkMidPoint {
+        Arc::make_mut(&mut state.rtds).insert_fixture(crate::btc::rtds_repository::RtdsPoint {
             source_timestamp: latest_close - chrono::Duration::seconds(5),
             available_at: feature_as_of + chrono::Duration::milliseconds(1),
             price: dec!(999999),
         });
 
-        let candles = derive_closed_chainlink_candles(&state, feature_as_of).unwrap();
+        let candles = state.rtds().closed_candles(feature_as_of).unwrap();
 
         assert_eq!(candles.len(), 61);
         assert_eq!(candles.last().unwrap().close_timestamp, latest_close);
@@ -2550,12 +2635,21 @@ mod tests {
         let latest_close =
             DateTime::from_timestamp(feature_as_of.timestamp().div_euclid(60) * 60, 0).unwrap();
         let missing_open = latest_close - chrono::Duration::minutes(20);
-        state.chainlink_mid.retain(|point| {
-            point.source_timestamp < missing_open
-                || point.source_timestamp >= missing_open + chrono::Duration::minutes(1)
-        });
+        let retained = state
+            .rtds()
+            .points_as_of(feature_as_of)
+            .filter(|point| {
+                point.source_timestamp < missing_open
+                    || point.source_timestamp >= missing_open + chrono::Duration::minutes(1)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        state.rtds = Arc::default();
+        for point in retained {
+            Arc::make_mut(&mut state.rtds).insert_fixture(point);
+        }
 
-        let error = derive_closed_chainlink_candles(&state, feature_as_of).unwrap_err();
+        let error = state.rtds().closed_candles(feature_as_of).unwrap_err();
 
         assert_eq!(error.code(), "external_feature_unavailable");
         assert!(error.to_string().contains("61 contiguous closed"));

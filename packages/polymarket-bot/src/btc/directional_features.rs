@@ -2112,6 +2112,33 @@ pub fn build_payoff_aware_feature_values(
     fee_rate: f64,
     feature_names: &[String],
 ) -> Result<Vec<f64>, DirectionalFeatureError> {
+    build_payoff_feature_values_with_policy(
+        window,
+        window_start,
+        feature_as_of,
+        opening_boundary,
+        external,
+        up_book,
+        down_book,
+        fee_rate,
+        feature_names,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_payoff_feature_values_with_policy(
+    window: &BinanceOneSecondWindow,
+    window_start: DateTime<Utc>,
+    feature_as_of: DateTime<Utc>,
+    opening_boundary: Decimal,
+    external: &DirectionalExternalFeatureInputs<'_>,
+    up_book: &OrderbookCheckpoint,
+    down_book: &OrderbookCheckpoint,
+    fee_rate: f64,
+    feature_names: &[String],
+    frozen_early: bool,
+) -> Result<Vec<f64>, DirectionalFeatureError> {
     let seconds_elapsed = (feature_as_of - window_start).num_seconds();
     if !(15..=240).contains(&seconds_elapsed) {
         return Err(DirectionalFeatureError::InvalidTiming {
@@ -2430,17 +2457,32 @@ pub fn build_payoff_aware_feature_values(
         return_30,
         path,
         vol60,
-    )?;
+    );
+    let oracle = if frozen_early {
+        oracle.unwrap_or([f64::NAN; 11])
+    } else {
+        oracle?
+    };
     for (name, value) in BTC_DIRECTIONAL_ORACLE_FEATURE_NAMES.iter().zip(oracle) {
         put(name, value);
     }
-    put("early_oracle_eligible", 1.0);
+    put(
+        "early_oracle_eligible",
+        if !frozen_early || oracle.iter().all(|v| v.is_finite()) {
+            1.0
+        } else {
+            0.0
+        },
+    );
     if feature_names
         .iter()
         .any(|name| name.starts_with("chainlink_candle_"))
     {
-        let chainlink =
-            derive_chainlink_candle_features(external.chainlink_candles, feature_as_of)?;
+        let chainlink = if frozen_early && external.chainlink_candles.is_empty() {
+            [f64::NAN; 8]
+        } else {
+            derive_chainlink_candle_features(external.chainlink_candles, feature_as_of)?
+        };
         for (name, value) in BTC_DIRECTIONAL_CHAINLINK_CANDLE_FEATURE_NAMES
             .iter()
             .zip(chainlink)
@@ -2460,7 +2502,29 @@ pub fn build_payoff_aware_feature_values(
             put(name, value);
         }
     }
-    append_payoff_book_features(&mut values, up_book, down_book, feature_as_of, fee_rate)?;
+    append_payoff_book_features_with_policy(
+        &mut values,
+        up_book,
+        down_book,
+        feature_as_of,
+        fee_rate,
+        frozen_early,
+    )?;
+    if frozen_early {
+        for name in feature_names {
+            if name.starts_with("spot_l2_") || name.starts_with("kraken_l2_") {
+                values.entry(name.clone()).or_insert(f64::NAN);
+            } else if matches!(
+                name.as_str(),
+                "has_spot_l2"
+                    | "has_kraken_l2"
+                    | "probability_change_5s"
+                    | "probability_change_15s"
+            ) {
+                values.entry(name.clone()).or_insert(0.0);
+            }
+        }
+    }
     feature_names
         .iter()
         .map(|name| {
@@ -2471,12 +2535,13 @@ pub fn build_payoff_aware_feature_values(
         .collect()
 }
 
-fn append_payoff_book_features(
+fn append_payoff_book_features_with_policy(
     values: &mut HashMap<String, f64>,
     up: &OrderbookCheckpoint,
     down: &OrderbookCheckpoint,
     observed_at: DateTime<Utc>,
     fee_rate: f64,
+    frozen_early: bool,
 ) -> Result<(), DirectionalFeatureError> {
     let quantities = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 125, 150, 175, 200];
     let curve = |book: &OrderbookCheckpoint| -> Option<(Vec<f64>, f64)> {
@@ -2486,7 +2551,7 @@ fn append_payoff_book_features(
             .iter()
             .filter_map(|level| level.size.to_f64())
             .sum::<f64>();
-        if depth < 800.0 {
+        if depth < if frozen_early { 5.0 } else { 800.0 } {
             return None;
         }
         let mut output = Vec::new();
@@ -2504,9 +2569,13 @@ fn append_payoff_book_features(
                 }
             }
             if remaining > 1e-9 {
-                return None;
+                if !frozen_early {
+                    return None;
+                }
+                output.push(f64::NAN);
+            } else {
+                output.push(notional / quantity as f64);
             }
-            output.push(notional / quantity as f64);
         }
         Some((output, depth))
     };

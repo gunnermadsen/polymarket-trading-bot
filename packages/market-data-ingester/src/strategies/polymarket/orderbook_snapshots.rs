@@ -3679,6 +3679,44 @@ enum ClobIoEvent {
     Failed(StrategyError),
 }
 
+// A terminal socket event must be delivered exactly once. Polling an ended
+// stream again can produce an immediately-ready EOF loop and manufacture
+// queue pressure after the remote peer has already closed the connection.
+async fn enqueue_clob_io_event(sender: &mpsc::Sender<ClobIoEvent>, event: ClobIoEvent) -> bool {
+    if matches!(event, ClobIoEvent::Failed(_)) {
+        let _ = sender.send(event).await;
+        return false;
+    }
+    match sender.try_send(event) {
+        Ok(()) => {
+            crate::streaming::set_websocket_queue_depth(
+                STRATEGY_KEY.as_str(),
+                WEBSOCKET_EVENT_BUFFER.saturating_sub(sender.capacity()),
+                WEBSOCKET_EVENT_BUFFER,
+            );
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            crate::streaming::observe_websocket_queue_overflow(STRATEGY_KEY.as_str());
+            warn!(
+                strategy = %STRATEGY_KEY,
+                queue_depth = WEBSOCKET_EVENT_BUFFER,
+                queue_capacity = WEBSOCKET_EVENT_BUFFER,
+                error_code = "polymarket_clob_consumer_backpressure",
+                "raw Polymarket websocket frame queue is full"
+            );
+            let _ = sender
+                .send(ClobIoEvent::Failed(source_error(
+                    "polymarket_clob_consumer_backpressure",
+                    "Polymarket CLOB processing fell behind the bounded websocket buffer",
+                )))
+                .await;
+            false
+        }
+    }
+}
+
 struct ClobIoWorker {
     shutdown: CancellationToken,
     handle: JoinHandle<()>,
@@ -4054,30 +4092,8 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 received_at,
                             );
                         }
-                        match io_sender.try_send(event) {
-                            Ok(()) => crate::streaming::set_websocket_queue_depth(
-                                STRATEGY_KEY.as_str(),
-                                WEBSOCKET_EVENT_BUFFER.saturating_sub(io_sender.capacity()),
-                                WEBSOCKET_EVENT_BUFFER,
-                            ),
-                            Err(mpsc::error::TrySendError::Closed(_)) => return,
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                crate::streaming::observe_websocket_queue_overflow(
-                                    STRATEGY_KEY.as_str(),
-                                );
-                                warn!(
-                                    strategy = %STRATEGY_KEY,
-                                    queue_depth = WEBSOCKET_EVENT_BUFFER,
-                                    queue_capacity = WEBSOCKET_EVENT_BUFFER,
-                                    error_code = "polymarket_clob_consumer_backpressure",
-                                    "raw Polymarket websocket frame queue is full"
-                                );
-                                let _ = io_sender.send(ClobIoEvent::Failed(source_error(
-                                    "polymarket_clob_consumer_backpressure",
-                                    "Polymarket CLOB processing fell behind the bounded websocket buffer",
-                                ))).await;
-                                return;
-                            }
+                        if !enqueue_clob_io_event(&io_sender, event).await {
+                            return;
                         }
                     }
                 }
@@ -4671,6 +4687,102 @@ mod tests {
             down_token_id: down.to_owned(),
             tick_size: Decimal::new(1, 2),
             received_at: base.received_at,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_socket_event_stops_reader_before_repeated_eof() {
+        for code in [
+            "polymarket_clob_closed",
+            "polymarket_clob_read_failed",
+            "polymarket_clob_eof",
+        ] {
+            let (sender, mut receiver) = mpsc::channel(8);
+            let reader = tokio::spawn(async move {
+                let mut polls = 0;
+                loop {
+                    polls += 1;
+                    let event = ClobIoEvent::Failed(source_error(code, "terminal socket"));
+                    if !enqueue_clob_io_event(&sender, event).await {
+                        return polls;
+                    }
+                }
+            });
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), reader)
+                    .await
+                    .expect("reader must stop at the first terminal event")
+                    .unwrap(),
+                1
+            );
+            match receiver.recv().await.unwrap() {
+                ClobIoEvent::Failed(error) => assert_eq!(error.code, code),
+                _ => panic!("expected original terminal error"),
+            }
+            assert!(receiver.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_socket_event_preserves_cause_behind_queued_frame() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .try_send(ClobIoEvent::Frame {
+                bytes: vec![],
+                received_at: Utc::now(),
+                queued_at: Instant::now(),
+            })
+            .unwrap_or_else(|_| panic!("empty queue"));
+        let send = enqueue_clob_io_event(
+            &sender,
+            ClobIoEvent::Failed(source_error(
+                "polymarket_clob_closed",
+                "slow consumer: send buffer full",
+            )),
+        );
+        tokio::pin!(send);
+        assert!(futures_util::poll!(&mut send).is_pending());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(ClobIoEvent::Frame { .. })
+        ));
+        assert!(!send.await);
+        match receiver.recv().await.unwrap() {
+            ClobIoEvent::Failed(error) => assert_eq!(error.code, "polymarket_clob_closed"),
+            _ => panic!("expected original remote close"),
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_data_queue_still_reports_consumer_backpressure() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let frame = || ClobIoEvent::Frame {
+            bytes: vec![],
+            received_at: Utc::now(),
+            queued_at: Instant::now(),
+        };
+        sender
+            .try_send(frame())
+            .unwrap_or_else(|_| panic!("empty queue"));
+        let send = enqueue_clob_io_event(&sender, frame());
+        tokio::pin!(send);
+        // Poll the handoff while the data queue is full, then make room for
+        // its terminal backpressure report.
+        assert!(futures_util::poll!(&mut send).is_pending());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(ClobIoEvent::Frame { .. })
+        ));
+        assert!(!send.await);
+        match receiver.recv().await.unwrap() {
+            ClobIoEvent::Failed(error) => {
+                assert_eq!(error.code, "polymarket_clob_consumer_backpressure")
+            }
+            _ => panic!("expected genuine data backpressure"),
         }
     }
 
