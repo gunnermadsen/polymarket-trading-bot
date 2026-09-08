@@ -440,7 +440,7 @@ groups:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
               expr: >-
-                ((time() - max by (strategy) (market_data_ingester_strategy_last_persistence_timestamp_seconds{strategy="binance_spot_btcusdt_l2_snapshots"})) > 60) and on (strategy) max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running"})
+                ((time() - max by (strategy) (market_data_ingester_strategy_last_persistence_timestamp_seconds{strategy="binance_spot_btcusdt_l2_snapshots"})) > bool 60) and on (strategy) max by (strategy) (market_data_ingester_strategy_state{strategy="binance_spot_btcusdt_l2_snapshots",desired_state="running"})
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200

@@ -117,6 +117,23 @@ fn compose_exposes_only_standard_ingester_roles() {
 }
 
 #[test]
+fn binance_l2_persistence_alert_returns_a_healthy_zero() {
+    let root = repository_root();
+    let rules = fs::read_to_string(
+        root.join("common/configs/grafana/provisioning/alerting/rules-market-data-ingester.yml"),
+    )
+    .unwrap();
+    let rule = rules
+        .split("- uid: mdi_binance_l2_persistence_stale")
+        .nth(1)
+        .and_then(|remaining| remaining.split("- uid:").next())
+        .expect("Binance L2 persistence alert is provisioned");
+
+    assert!(rule.contains(") > bool 60)"));
+    assert!(rule.contains("noDataState: Alerting"));
+}
+
+#[test]
 fn kraken_backfills_are_one_strategy_per_file() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/strategies/kraken");
     for file in [
