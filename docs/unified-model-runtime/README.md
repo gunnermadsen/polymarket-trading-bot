@@ -84,3 +84,9 @@ Transient feed, history, persistence and transport failures block only affected 
 - [Model integration procedure and acceptance](integration.md)
 
 - [Implementation verification and qualification limits](verification.md)
+
+## Orderbook observation consistency
+
+Model processes resolve observation books from the existing immutable `RealtimeState.unified_book_history`, using the captured market identity, connection epoch and observation timestamp. They must not read the advancing current-book registry and compare it against an earlier observation. Frozen adapters continue to select their own causal whole-second feature boundary from that same history. Current execution-book checks remain separate and unchanged.
+
+Missing, invalid, stale or wrong-epoch inputs block only the affected observation. A later healthy observation recovers without durable authorization changes. The history remains bounded; no new feed, cache or database read is introduced.

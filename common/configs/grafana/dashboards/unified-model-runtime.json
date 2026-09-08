@@ -4378,7 +4378,7 @@
     {
       "id": 72,
       "type": "row",
-      "title": "Investigation",
+      "title": "Orderbook observation diagnostics",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -4390,6 +4390,89 @@
     },
     {
       "id": 73,
+      "title": "Observation book failure causes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Book selection failures per side at the immutable observation boundary. Distinguishes timestamp, identity, epoch and integrity failures; these counts are not model admission rejections.",
+      "gridPos": {
+        "x": 0,
+        "y": 258,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(process_id,reason)(rate(polymarket_umr_book_input_failures_total{process_id=~\"$process\"}[$__rate_interval]))) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}} \u00b7 {{reason}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 74,
+      "type": "row",
+      "title": "Investigation",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 266,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 75,
       "title": "Process lifecycle and diagnostics",
       "type": "logs",
       "datasource": {
@@ -4398,7 +4481,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 258,
+        "y": 267,
         "w": 24,
         "h": 12
       },

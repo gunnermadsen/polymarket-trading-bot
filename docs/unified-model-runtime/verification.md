@@ -79,3 +79,15 @@ The image and evidence below describe the preceding deployment, retained for his
 | VWAP admission | `4ec890d3-720e-49fb-9b8c-b579b2925091` |
 | Temporal consensus | `c3d19b13-16dc-4d20-9afb-d67814f84d38` |
 | High-precision loss veto | `96c89496-da28-45fd-b18a-bad865352e9a` |
+
+## Orderbook observation consistency verification
+
+The isolated `defect/orderbook-observation-consistency` worktree starts from the collected `46d4379` integration lineage. `integration-2026-09-08` continues that lineage; `integration-2026-09-07` is retained unchanged.
+
+A regression advances the current registry after capturing observation books: the preceding implementation fails to return the UP book; the corrected implementation preserves the captured 0.50 ask even though the registry now contains 0.60. Observation lookup uses the existing immutable history. Execution's current-book checks and frozen model packages/policies remain unchanged.
+
+Existing all-target bot checks passed: 395 tests, zero failures, one existing ignored test. They include frozen model reference-vector/feature parity, causal history, lifecycle recovery and HTTP contracts. Added safety assertions cover missing, future, stale, wrong-market, invalid-integrity and wrong-epoch books, and automatic recovery on a healthy epoch. Formatting and diff checks pass. Strict Clippy reports the existing 25 diagnostics outside this correction; those are left unchanged. Initial sandboxed HTTP fixture failures were permission restrictions; the authorized run passed.
+
+The dashboard retains existing panels and adds one Prometheus failure-cause panel plus its section; process diagnostics show the new timestamped book events. No PostgreSQL queries, model changes, migrations, ingester changes or new data sources are involved. Live deployment evidence is recorded after verification.
+
+Outstanding observations outside this correction: optional canonical Chainlink candles remain unavailable, live confidence/admission distributions differ from historical results, and truly unavailable or stale upstream books may still block validly. No changes to these separate concerns are included.

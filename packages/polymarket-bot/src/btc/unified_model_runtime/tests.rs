@@ -445,3 +445,69 @@ fn mounted_catalog_and_paper_playbooks_have_compatible_contracts() {
         std::fs::write(path, serde_json::to_vec_pretty(&serde_json::json!({"contract_version":contract::CONTRACT_VERSION,"models":entries})).unwrap()).unwrap();
     }
 }
+
+#[test]
+fn observation_books_preserve_safety_and_recover_after_epoch_change() {
+    let at = DateTime::from_timestamp(1_788_888_000, 0).unwrap();
+    let original = book(at - Duration::milliseconds(100));
+    let readiness = BookReadiness {
+        market_id: original.market_id.clone(),
+        token_id: original.token_id.clone(),
+        connection_id: original.connection_id,
+        bootstrapped: true,
+        integrity_status: FeedIntegrityStatus::Ok,
+        source_timestamp: Some(original.source_timestamp),
+        received_at: Some(original.received_at),
+        best_bid: original.best_bid,
+        best_ask: original.best_ask,
+    };
+    let mut history = adapters::data::BookHistory::default();
+    let lookup = |h: &adapters::data::BookHistory, r: &BookReadiness, time| {
+        h.observation_book("umr-fixture", "up", Some(r), time, Duration::seconds(2))
+            .map(|b| b.ingest_sequence)
+            .map_err(|e| e.reason)
+    };
+    assert_eq!(lookup(&history, &readiness, at), Err("missing_snapshot"));
+    history.observe(original.clone());
+    assert_eq!(lookup(&history, &readiness, at), Ok(1));
+    assert_eq!(
+        lookup(&history, &readiness, at - Duration::seconds(1)),
+        Err("future_timestamp")
+    );
+    assert_eq!(
+        lookup(&history, &readiness, at + Duration::seconds(3)),
+        Err("stale_source_timestamp")
+    );
+    let mut other = readiness.clone();
+    other.market_id = "next-market".into();
+    assert_eq!(lookup(&history, &other, at), Err("identity_mismatch"));
+    other = readiness.clone();
+    other.integrity_status = FeedIntegrityStatus::CrossedBook;
+    assert_eq!(lookup(&history, &other, at), Err("invalid_integrity"));
+    other = readiness.clone();
+    other.connection_id = Uuid::from_u128(987);
+    assert_eq!(lookup(&history, &other, at), Err("epoch_mismatch"));
+    let captured = history.clone();
+    let mut recovered = original.clone();
+    recovered.connection_id = other.connection_id;
+    recovered.ingest_sequence = 2;
+    history.observe(recovered);
+    assert_eq!(lookup(&history, &other, at), Ok(2));
+    assert_eq!(lookup(&captured, &readiness, at), Ok(1));
+    let mut invalid = original.clone();
+    invalid.integrity_status = FeedIntegrityStatus::CrossedBook;
+    let mut invalid_history = adapters::data::BookHistory::default();
+    invalid_history.observe(invalid);
+    assert_eq!(
+        lookup(&invalid_history, &readiness, at),
+        Err("invalid_integrity")
+    );
+    let mut stale_receipt = original;
+    stale_receipt.received_at = at - Duration::seconds(3);
+    let mut stale_history = adapters::data::BookHistory::default();
+    stale_history.observe(stale_receipt);
+    assert_eq!(
+        lookup(&stale_history, &readiness, at),
+        Err("stale_received_timestamp")
+    );
+}
