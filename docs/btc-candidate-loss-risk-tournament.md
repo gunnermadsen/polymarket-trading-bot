@@ -1,8 +1,8 @@
 # BTC Candidate Loss-Risk Tournament
 
-Status: **frozen training plan**  
-Frozen at: `2026-09-09T14:31:00Z`  
-Champion collection: `btc-5m-frozen-champion-collection-20260902`  
+Status: **frozen training plan**
+Frozen at: `2026-09-09T14:31:00Z`
+Champion collection: `btc-5m-frozen-champion-collection-20260902`
 Runtime implementation: **not started**
 
 This document freezes the intended training and evaluation contract for a single
