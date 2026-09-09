@@ -31,8 +31,8 @@
         "strategy": {
           "decision_strategy": {
             "type": "btc_directional_model",
-            "model_key": "btc-5m-official-temporal-consensus-umr-20260902",
-            "artifact_sha256": "107be64fa68452f3915a508fd678f2d3d874b5954a20267e55bab17a38922229",
+            "model_key": "btc-5m-official-temporal-consensus-umr-20260902-confidence-075",
+            "artifact_sha256": "014fae740a7c43de2baffa5f48023a34ee6b44f7e19b9be72f474ae0a59c94ec",
             "feature_schema_sha256": "38b56e7a5e9819ef91f954224fbc90002cda3c20801fd66cfec63ec0830c0523"
           },
           "target_size": "5",
@@ -84,7 +84,7 @@
               }
             ],
             "policy": {
-              "minimum_confidence": 0.8,
+              "minimum_confidence": 0.75,
               "minimum_edge": 0.125,
               "maximum_share_cost": 0.75,
               "minimum_admission_probability": null,
@@ -119,15 +119,15 @@
             }
           ]
         },
-        "next_experiment_key": "btc-5m-official-temporal-consensus-umr-20260902-run",
+        "next_experiment_key": "btc-5m-official-temporal-consensus-umr-confidence-075-run",
         "preregistration_sha256": "5da1d6f819eae517817c8a647626d3d59315914f3d480ea6d9dc6657f15397af"
       }
     }
   },
   "metadata": {
     "strategy_family": "btc_5m_directional_model",
-    "model_key": "btc-5m-official-temporal-consensus-umr-20260902",
-    "model_artifact_sha256": "107be64fa68452f3915a508fd678f2d3d874b5954a20267e55bab17a38922229",
+    "model_key": "btc-5m-official-temporal-consensus-umr-20260902-confidence-075",
+    "model_artifact_sha256": "014fae740a7c43de2baffa5f48023a34ee6b44f7e19b9be72f474ae0a59c94ec",
     "model_feature_schema_version": "btc-5m-payoff-aware-frozen-early-features-v1",
     "model_feature_schema_sha256": "38b56e7a5e9819ef91f954224fbc90002cda3c20801fd66cfec63ec0830c0523",
     "source_training_model_sha256": "f70332bbf05090fa9582e3986d2aa164def7136254b04476efb490bedc022b9b",

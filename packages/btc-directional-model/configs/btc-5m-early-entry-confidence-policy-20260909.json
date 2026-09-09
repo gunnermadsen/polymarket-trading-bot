@@ -1,0 +1,11 @@
+{
+  "bridge_aware_specialist": {
+    "minimum_confidence": 0.8
+  },
+  "extended_specialist_official": {
+    "minimum_confidence": 0.7
+  },
+  "official_temporal_consensus": {
+    "minimum_confidence": 0.75
+  }
+}
