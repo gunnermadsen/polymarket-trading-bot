@@ -38,7 +38,14 @@ def contract(names: list[str]) -> dict:
         result["inputs"].append(source("kraken_l2", "kraken_btcusd_l2_updates", "frozen_kraken_l2_point_in_time_v1", False, 60, 5000))
     return result
 
-def export(root: Path, output: Path, panel: Path) -> list[dict]:
+def export(
+    root: Path,
+    output: Path,
+    panel: Path,
+    policy_overrides: dict[str, dict] | None = None,
+    selected_champions: set[str] | None = None,
+) -> list[dict]:
+    policy_overrides = policy_overrides or {}
     collection_path=root/"training-results/btc-5m-frozen-champion-collection-20260902/manifest.json"
     collection=json.loads(collection_path.read_text())
     artifacts=[]
@@ -56,6 +63,8 @@ def export(root: Path, output: Path, panel: Path) -> list[dict]:
     if sample.height<16: raise ValueError("Insufficient offline reference rows")
     records=[]
     for champion in CHAMPIONS:
+        if selected_champions is not None and champion not in selected_champions:
+            continue
         directional=extended["models"]["bridge_aware_specialist" if champion=="bridge_aware_specialist" else "extended_specialist_official"]
         learned=admission["admission_models"].get(champion) or robustness["admission_models"].get(champion)
         temporal=robustness["temporal_models"] if champion=="official_temporal_consensus" else []
@@ -64,6 +73,11 @@ def export(root: Path, output: Path, panel: Path) -> list[dict]:
         if frozen.get("abstain",False):raise ValueError("Cannot export an abstaining policy as trading-enabled")
         policy={key:frozen.get(key) for key in ["minimum_confidence","minimum_edge","maximum_share_cost","minimum_admission_probability","minimum_predicted_stress_edge","maximum_predicted_loss"]}
         policy.update(maximum_temporal_std=frozen.get("maximum_probability_std"),minimum_temporal_agreement=frozen.get("minimum_direction_agreement"),execution_reserve_per_share=0.005)
+        override = policy_overrides.get(champion, {})
+        unknown = set(override) - set(policy)
+        if unknown:
+            raise ValueError(f"Unknown policy override fields for {champion}: {sorted(unknown)}")
+        policy.update(override)
         names=list(directional.features)
         for name in ["up_ask_vwap_5","down_ask_vwap_5","fee_rate","pm_up_book_age_seconds","pm_down_book_age_seconds","pm_vwap5_overround"] + (list(learned.features) if learned else []):
             if name not in names and name not in DERIVED:names.append(name)
@@ -75,12 +89,18 @@ def export(root: Path, output: Path, panel: Path) -> list[dict]:
         index=1 if owner is extended else 2 if owner is admission else 3
         source_sha=collection["artifacts"][index]["artifact_sha256"]
         key=f"btc-5m-{champion.replace('_','-')}-umr-20260902"
+        if override:
+            confidence = policy.get("minimum_confidence")
+            if confidence is None:
+                raise ValueError(f"Policy override for {champion} does not define confidence")
+            key += f"-confidence-{round(float(confidence) * 100):03d}"
         payload=_base_model(key,SCHEMA,names,source_sha,dict(kind="unified",definition=definition,prediction_policy={
             "type":"first_confidence_crossing","minimum_seconds_after_open":60,"maximum_seconds_after_open":89,"cadence_seconds":5,
             "early_end_second":None,"early_cadence_seconds":None,"late_start_second":None}))
         payload["provenance"].update(candidate=champion,source_collection_sha256=file_sha256(collection_path),
             directional_artifact_sha256=collection["artifacts"][1]["artifact_sha256"],source_training_run=owner["run_id"],
-            producing_commit=owner["producing_commit"],frozen_policy=frozen,export_is_training=False)
+            producing_commit=owner["producing_commit"],frozen_policy=frozen,policy_override=override,
+            policy_override_basis="sealed_60_89_confidence_sweep",export_is_training=False)
         rows=[]
         for i,row in enumerate(sample.to_dicts()):
             if i%4:continue
@@ -127,6 +147,9 @@ def export(root: Path, output: Path, panel: Path) -> list[dict]:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root",type=Path,required=True);parser.add_argument("--output",type=Path,required=True);parser.add_argument("--panel",type=Path,required=True)
+    parser.add_argument("--policy-overrides", type=Path)
+    parser.add_argument("--champion", action="append", choices=CHAMPIONS)
     args=parser.parse_args()
-    print(json.dumps(export(args.source_root,args.output,args.panel),indent=2))
+    overrides = json.loads(args.policy_overrides.read_text()) if args.policy_overrides else None
+    print(json.dumps(export(args.source_root,args.output,args.panel,overrides,set(args.champion) if args.champion else None),indent=2))
 if __name__=="__main__":main()

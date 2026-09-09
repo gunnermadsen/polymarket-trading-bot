@@ -31,8 +31,8 @@
         "strategy": {
           "decision_strategy": {
             "type": "btc_directional_model",
-            "model_key": "btc-5m-bridge-aware-specialist-umr-20260902",
-            "artifact_sha256": "c9e7ef4bef348554e1ab16fc2f868998668652620f0b93b8f30a3beffb23fb82",
+            "model_key": "btc-5m-bridge-aware-specialist-umr-20260902-confidence-080",
+            "artifact_sha256": "06e5e92e560766ec31281ba3ceb1c43d738d8b326b677bea6ebaaf4dac6f7394",
             "feature_schema_sha256": "38b56e7a5e9819ef91f954224fbc90002cda3c20801fd66cfec63ec0830c0523"
           },
           "target_size": "5",
@@ -84,7 +84,7 @@
               }
             ],
             "policy": {
-              "minimum_confidence": 0.85,
+              "minimum_confidence": 0.8,
               "minimum_edge": 0.0,
               "maximum_share_cost": 0.95,
               "minimum_admission_probability": null,
@@ -119,15 +119,15 @@
             }
           ]
         },
-        "next_experiment_key": "btc-5m-bridge-aware-specialist-umr-20260902-run",
+        "next_experiment_key": "btc-5m-bridge-aware-specialist-umr-confidence-080-run",
         "preregistration_sha256": "5da1d6f819eae517817c8a647626d3d59315914f3d480ea6d9dc6657f15397af"
       }
     }
   },
   "metadata": {
     "strategy_family": "btc_5m_directional_model",
-    "model_key": "btc-5m-bridge-aware-specialist-umr-20260902",
-    "model_artifact_sha256": "c9e7ef4bef348554e1ab16fc2f868998668652620f0b93b8f30a3beffb23fb82",
+    "model_key": "btc-5m-bridge-aware-specialist-umr-20260902-confidence-080",
+    "model_artifact_sha256": "06e5e92e560766ec31281ba3ceb1c43d738d8b326b677bea6ebaaf4dac6f7394",
     "model_feature_schema_version": "btc-5m-payoff-aware-frozen-early-features-v1",
     "model_feature_schema_sha256": "38b56e7a5e9819ef91f954224fbc90002cda3c20801fd66cfec63ec0830c0523",
     "source_training_model_sha256": "5f34a841fcef2ae50fac193eb429a89fafd5173755d6cc15423674a198ffb6fe",
