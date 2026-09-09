@@ -1,0 +1,12 @@
+[data]
+archive_root = "/Volumes/docker-data/polymarket-bot/model-training-archive/btc-early-entry-economic-tournament/20260902"
+
+[splits]
+calibration_start = "2026-08-01T00:00:00Z"
+policy_start = "2026-08-14T00:00:00Z"
+
+[training]
+maximum_rows = 1500000
+
+[output]
+directory = "training-results/btc-5m-candidate-loss-risk-tournament-20260321-20260901"
