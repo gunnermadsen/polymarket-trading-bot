@@ -558,6 +558,7 @@ def _slice_matrix(
                 }
                 row.update(
                     baseline_trades=len(base_keys),
+                    baseline_net_pnl=float(base["net_pnl"].sum()),
                     blocked_winners=int(blocked.filter(pl.col("net_pnl") > 0).height),
                     blocked_losses=int(blocked.filter(pl.col("net_pnl") <= 0).height),
                     avoided_loss_dollars=float(
@@ -568,6 +569,7 @@ def _slice_matrix(
                     ),
                     statistically_insufficient=len(base_keys) < 30,
                 )
+                row["net_risk_value"] = row["net_pnl"] - row["baseline_net_pnl"]
                 rows.append(row)
     return rows
 
@@ -835,6 +837,15 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     baseline_metrics = evidence["no_risk"]
     confidence_control = evidence["matched_confidence"]
     edge_control = evidence["matched_edge"]
+    bucket_risk_value = {
+        bucket: sum(row["net_risk_value"] for row in slices if row["time_bucket"] == bucket)
+        for bucket in BUCKETS
+    }
+    side_risk_value = {
+        side: sum(row["net_risk_value"] for row in slices if row["side"] == side)
+        for side in ("UP", "DOWN")
+    }
+    material_destruction_dollars = 10.0
     qualification_checks = {
         "net_pnl_improved": selected_metrics["net_pnl"] > baseline_metrics["net_pnl"],
         "stress_pnl_improved": selected_metrics["stress_net_pnl"]
@@ -846,6 +857,16 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         "beats_matched_controls": selected_metrics["net_pnl"]
         > max(confidence_control["net_pnl"], edge_control["net_pnl"]),
         "not_single_champion": sum(row["net_risk_value"] > 0 for row in comparison) > 1,
+        "not_single_bucket": sum(value > 0 for value in bucket_risk_value.values()) > 1,
+        "no_materially_destructive_champion": all(
+            row["net_risk_value"] >= -material_destruction_dollars for row in comparison
+        ),
+        "no_materially_destructive_side": all(
+            value >= -material_destruction_dollars for value in side_risk_value.values()
+        ),
+        "no_materially_destructive_bucket": all(
+            value >= -material_destruction_dollars for value in bucket_risk_value.values()
+        ),
     }
     metrics = {
         "schema_version": SCHEMA_VERSION,
@@ -884,7 +905,10 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
                 else "research_not_qualified"
             ),
             "checks": qualification_checks,
+            "material_destruction_dollars": material_destruction_dollars,
         },
+        "selected_risk_value_by_side": side_risk_value,
+        "selected_risk_value_by_bucket": bucket_risk_value,
         "slice_matrix": slices,
         "integrity": {
             "market_disjoint": True,
