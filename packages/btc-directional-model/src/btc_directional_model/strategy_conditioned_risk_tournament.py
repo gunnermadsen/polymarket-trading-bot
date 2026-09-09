@@ -440,7 +440,7 @@ def _report(metrics: dict[str, Any]) -> str:
         lines.append("")
     lines += [
         "## Selected policy by natural entry bucket", "",
-        "| Baseline entry bucket | Trades with risk | W/L | PnL with risk | Delta PnL | Coverage | Avg entry | PF | Recovery | Loss capture | Opportunity rejection | Alignment |",
+        "| Isolated candidate bucket | Trades with risk | W/L | PnL with risk | Delta PnL | Coverage | Avg entry | PF | Recovery | Loss capture | Opportunity rejection | Alignment |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for bucket, row in metrics["selected_bucket_summary"].items():
