@@ -91,3 +91,15 @@ Existing all-target bot checks passed: 395 tests, zero failures, one existing ig
 The dashboard retains existing panels and adds one Prometheus failure-cause panel plus its section; process diagnostics show the new timestamped book events. No PostgreSQL queries, model changes, migrations, ingester changes or new data sources are involved. Live deployment evidence is recorded after verification.
 
 Outstanding observations outside this correction: optional canonical Chainlink candles remain unavailable, live confidence/admission distributions differ from historical results, and truly unavailable or stale upstream books may still block validly. No changes to these separate concerns are included.
+
+### Deployed orderbook correction
+
+Deployed on 2026-09-08 at 18:59:23 UTC directly from defect source `98ae91d3e17c0cb751c49c6e8d29295fdaaa5306`, image `sha256:0b095374c29b402c6ae69efa4b0f873d75209eb0d8c0b3c7a0243189c7bfe23e`. Embedded revision matched the clean build commit; the annotated image tag records provenance. Previous deployed image `sha256:6ab0fad32470dead5996d1250862cd948466cb0b44554e540802f2e77f99cf6e` is retained. No merge or golden promotion occurred.
+
+All ten enabled process IDs and complete process configurations matched the pre-deployment snapshot and resumed automatically. RTDS restored 61 minutes. In the first complete 19:00 UTC market's early entry window, extended official, bridge-aware, temporal consensus and high-precision veto each inferred 6/6 scheduled opportunities with no admissions. VWAP inferred 4/4 claimed opportunities and filled one accepted paper trade, then ceased further entry opportunities as expected. Existing controls also inferred successfully. Post-deployment observation-book failure counts, inference errors and telemetry drops were zero at the verification snapshot; Prometheus inference p95 was approximately 0.45 ms. This is a bounded operational check, not a profitability or sustained-capacity qualification.
+
+Grafana serves the 75-panel provisioned dashboard including the new failure-cause panel. Its PromQL executed successfully; panel IDs are unique, layout rectangles do not overlap, and no PostgreSQL panels exist. Provisioning tag `provisioned/observability/development/20260908T190032Z` records the exact configuration hash and paths.
+
+Unrelated startup observations: Q5 and distilled fair value each reported one missing causal Polygon oracle round at market open immediately after restart, then recovered. These were recorded without changes. The existing strict Clippy findings and optional model-data limitations remain unchanged.
+
+Reproduction, all-target test logs, deployment/model/config comparisons, Prometheus snapshots and bounded Loki results are retained locally under `target/orderbook-evidence/` in this defect worktree.
