@@ -1,4 +1,10 @@
-use std::{collections::BTreeSet, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -33,6 +39,7 @@ use crate::{
         WorkerRegistration,
     },
     runtime::StrategyRegistry,
+    strategies::{dataset_for_strategy, STRATEGY_DATASETS},
 };
 
 use super::error::ApiError;
@@ -142,28 +149,67 @@ impl ControlApi {
 async fn dataset_coverage(
     State(state): State<ApiState>,
 ) -> Result<Json<coverage::CoverageReport>, ApiError> {
-    let backfill_keys = state
-        .registry
-        .backfills()
-        .map(|strategy| strategy.descriptor().strategy_key.to_string())
-        .collect::<BTreeSet<_>>();
-    let targets = state
-        .registry
-        .drains()
-        .map(|strategy| {
-            let descriptor = strategy.descriptor();
-            let candidate = format!("{}_backfill", descriptor.strategy_key);
-            CoverageTarget {
-                product_key: descriptor.strategy_key.to_string(),
-                relation: descriptor.relation.to_string(),
-                backfill_strategy_key: backfill_keys.contains(&candidate).then_some(candidate),
-            }
-        })
-        .collect();
+    let targets = coverage_targets(&state.registry)?;
     coverage::detect(state.profiles.pool(), targets)
         .await
         .map(Json)
         .map_err(ApiError::internal)
+}
+
+fn coverage_targets(registry: &StrategyRegistry) -> Result<Vec<CoverageTarget>, ApiError> {
+    let drains_by_relation = registry
+        .drains()
+        .map(|strategy| {
+            let descriptor = strategy.descriptor();
+            (
+                descriptor.relation.to_string(),
+                descriptor.strategy_key.to_string(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut targets = BTreeMap::<String, CoverageTarget>::new();
+    for strategy in registry.backfills() {
+        let strategy_key = strategy.descriptor().strategy_key.to_string();
+        let dataset = dataset_for_strategy(&strategy_key);
+        let contract = dataset.and_then(crate::domain::contract_for);
+        let product_key = dataset.map_or_else(|| strategy_key.clone(), |key| key.to_string());
+        let relation = contract.map(|contract| contract.canonical_table.to_owned());
+        let drain_strategy_key = relation
+            .as_ref()
+            .and_then(|relation| drains_by_relation.get(relation))
+            .cloned();
+        let gap_strategy_keys = dataset.map_or_else(
+            || vec![strategy_key.clone()],
+            |dataset| {
+                STRATEGY_DATASETS
+                    .iter()
+                    .filter(|binding| binding.dataset == dataset)
+                    .map(|binding| binding.strategy_key.to_owned())
+                    .collect()
+            },
+        );
+        let target = targets
+            .entry(product_key.clone())
+            .or_insert_with(|| CoverageTarget {
+                product_key,
+                relation: relation.clone(),
+                backfill_strategy_keys: Vec::new(),
+                drain_strategy_key: drain_strategy_key.clone(),
+                gap_strategy_keys,
+            });
+        if target.relation != relation || target.drain_strategy_key != drain_strategy_key {
+            return Err(ApiError::internal(
+                "backfill strategies for one dataset declare incompatible coverage storage",
+            ));
+        }
+        target.backfill_strategy_keys.push(strategy_key);
+        if let Some(drain_strategy_key) = &target.drain_strategy_key {
+            if !target.gap_strategy_keys.contains(drain_strategy_key) {
+                target.gap_strategy_keys.push(drain_strategy_key.clone());
+            }
+        }
+    }
+    Ok(targets.into_values().collect())
 }
 
 #[derive(Clone)]
@@ -1101,6 +1147,73 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("if-match", HeaderValue::from_static("\"42\""));
         assert_eq!(expected_generation(&headers).expect("generation"), 42);
+    }
+
+    #[test]
+    fn coverage_targets_are_discovered_from_the_backfill_catalog() {
+        let registry = crate::strategies::registry().expect("strategy registry");
+        let targets = coverage_targets(&registry).expect("coverage targets");
+        let products = targets
+            .iter()
+            .map(|target| target.product_key.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(products.contains("binance_futures_btcusdt_open_interest"));
+        for product in [
+            "kraken_instruments_backfill",
+            "kraken_fee_schedules_backfill",
+            "kraken_trade_candles_backfill",
+            "kraken_mark_candles_backfill",
+            "kraken_spot_candles_backfill",
+            "kraken_open_interest_backfill",
+            "kraken_future_basis_backfill",
+            "kraken_aggressor_differential_backfill",
+            "kraken_trade_volume_backfill",
+            "kraken_trade_count_backfill",
+            "kraken_cvd_backfill",
+            "kraken_liquidation_volume_backfill",
+            "kraken_spreads_backfill",
+            "kraken_liquidity_backfill",
+            "kraken_slippage_backfill",
+            "kraken_funding_rates_backfill",
+            "kraken_spot_btcusd_trade_prints_one_second_ohlcv_backfill",
+        ] {
+            assert!(
+                products.contains(product),
+                "missing coverage product {product}"
+            );
+        }
+        assert_eq!(
+            targets
+                .iter()
+                .flat_map(|target| target.backfill_strategy_keys.iter())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            registry.backfills().count()
+        );
+
+        let open_interest = targets
+            .iter()
+            .find(|target| target.product_key == "binance_futures_btcusdt_open_interest")
+            .expect("open-interest coverage target");
+        assert!(open_interest
+            .gap_strategy_keys
+            .iter()
+            .any(|key| key == "binance_futures_btcusdt_open_interest"));
+        assert!(open_interest
+            .gap_strategy_keys
+            .iter()
+            .any(|key| key == "binance_futures_btcusdt_five_minute_open_interest_backfill"));
+
+        let kraken = targets
+            .iter()
+            .find(|target| target.product_key == "kraken_open_interest_backfill")
+            .expect("Kraken coverage target");
+        assert!(kraken.relation.is_none());
+        assert_eq!(
+            kraken.backfill_strategy_keys,
+            ["kraken_open_interest_backfill"]
+        );
     }
 
     #[test]

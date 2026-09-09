@@ -7,8 +7,10 @@ const MAX_KNOWN_GAPS_PER_PRODUCT: i64 = 10_000;
 #[derive(Debug, Clone)]
 pub struct CoverageTarget {
     pub product_key: String,
-    pub relation: String,
-    pub backfill_strategy_key: Option<String>,
+    pub relation: Option<String>,
+    pub backfill_strategy_keys: Vec<String>,
+    pub drain_strategy_key: Option<String>,
+    pub gap_strategy_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -20,8 +22,9 @@ pub struct CoverageReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct ProductCoverage {
     pub product_key: String,
-    pub relation: String,
+    pub relation: Option<String>,
     pub backfill_strategy_key: Option<String>,
+    pub backfill_strategy_keys: Vec<String>,
     pub database: DatabaseCoverage,
     pub ssd: SsdCoverage,
     pub combined: CombinedCoverage,
@@ -86,6 +89,16 @@ struct ObjectRow {
 }
 
 #[derive(Debug, FromRow)]
+struct ArtifactRow {
+    product_key: String,
+    source_start: DateTime<Utc>,
+    source_end: DateTime<Utc>,
+    row_count: i64,
+    byte_size: i64,
+    object_count: i64,
+}
+
+#[derive(Debug, FromRow)]
 struct GapRow {
     product_key: String,
     source_time_start: DateTime<Utc>,
@@ -100,25 +113,60 @@ pub async fn detect(
     targets: Vec<CoverageTarget>,
 ) -> Result<CoverageReport, sqlx::Error> {
     let generated_at = Utc::now();
-    let product_keys = targets
+    let gap_targets = targets
         .iter()
-        .map(|target| target.product_key.clone())
+        .flat_map(|target| {
+            target
+                .gap_strategy_keys
+                .iter()
+                .map(|key| (target.product_key.clone(), key.clone()))
+        })
         .collect::<Vec<_>>();
-    let schemas = targets
+    let gap_product_keys = gap_targets
         .iter()
-        .map(|target| relation_parts(&target.relation).0.to_owned())
+        .map(|(product_key, _)| product_key.clone())
         .collect::<Vec<_>>();
-    let tables = targets
+    let gap_strategy_keys = gap_targets
         .iter()
-        .map(|target| relation_parts(&target.relation).1.to_owned())
+        .map(|(_, strategy_key)| strategy_key.clone())
+        .collect::<Vec<_>>();
+    let relation_targets = targets
+        .iter()
+        .filter_map(|target| {
+            target.relation.as_deref().map(|relation| {
+                let (schema, table) = relation_parts(relation);
+                (
+                    target.product_key.clone(),
+                    schema.to_owned(),
+                    table.to_owned(),
+                    target.drain_strategy_key.clone().unwrap_or_default(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let relation_product_keys = relation_targets
+        .iter()
+        .map(|(product_key, _, _, _)| product_key.clone())
+        .collect::<Vec<_>>();
+    let schemas = relation_targets
+        .iter()
+        .map(|(_, schema, _, _)| schema.clone())
+        .collect::<Vec<_>>();
+    let tables = relation_targets
+        .iter()
+        .map(|(_, _, table, _)| table.clone())
+        .collect::<Vec<_>>();
+    let relation_drain_keys = relation_targets
+        .iter()
+        .map(|(_, _, _, drain_key)| drain_key.clone())
         .collect::<Vec<_>>();
 
     let chunks = sqlx::query_as::<_, ChunkRow>(
-        "WITH targets AS (SELECT * FROM unnest($1::text[],$2::text[],$3::text[]) \
-         AS target(product_key,schema_name,table_name)) \
+        "WITH targets AS (SELECT * FROM unnest($1::text[],$2::text[],$3::text[],$4::text[]) \
+         AS target(product_key,schema_name,table_name,drain_strategy_key)) \
          SELECT target.product_key,chunk.range_start,chunk.range_end, \
          EXISTS (SELECT 1 FROM ingester.drain_objects object \
-         WHERE object.strategy_key=target.product_key \
+         WHERE object.strategy_key=NULLIF(target.drain_strategy_key,'') \
          AND object.source_chunk_schema=chunk.chunk_schema \
          AND object.source_chunk_name=chunk.chunk_name \
          AND object.status IN ('published','removed')) AS replicated \
@@ -127,30 +175,92 @@ pub async fn detect(
          AND chunk.hypertable_name=target.table_name \
          ORDER BY target.product_key,chunk.range_start,chunk.range_end",
     )
-    .bind(&product_keys)
+    .bind(&relation_product_keys)
     .bind(&schemas)
     .bind(&tables)
+    .bind(&relation_drain_keys)
     .fetch_all(pool)
     .await?;
+    let drain_targets = targets
+        .iter()
+        .filter_map(|target| {
+            target
+                .drain_strategy_key
+                .as_ref()
+                .map(|key| (target.product_key.clone(), key.clone()))
+        })
+        .collect::<Vec<_>>();
+    let drain_product_keys = drain_targets
+        .iter()
+        .map(|(product_key, _)| product_key.clone())
+        .collect::<Vec<_>>();
+    let drain_strategy_keys = drain_targets
+        .iter()
+        .map(|(_, strategy_key)| strategy_key.clone())
+        .collect::<Vec<_>>();
     let objects = sqlx::query_as::<_, ObjectRow>(
-        "SELECT strategy_key AS product_key,source_start,source_end,row_count,byte_size \
-         FROM ingester.drain_objects WHERE strategy_key=ANY($1::text[]) \
-         AND status IN ('published','removed') ORDER BY strategy_key,source_start,source_end",
+        "WITH targets AS (SELECT * FROM unnest($1::text[],$2::text[]) \
+         AS target(product_key,strategy_key)) \
+         SELECT target.product_key,object.source_start,object.source_end, \
+         object.row_count,object.byte_size FROM targets target \
+         JOIN ingester.drain_objects object ON object.strategy_key=target.strategy_key \
+         WHERE object.status IN ('published','removed') \
+         ORDER BY target.product_key,object.source_start,object.source_end",
     )
-    .bind(&product_keys)
+    .bind(&drain_product_keys)
+    .bind(&drain_strategy_keys)
+    .fetch_all(pool)
+    .await?;
+    let artifact_targets = targets
+        .iter()
+        .flat_map(|target| {
+            target
+                .backfill_strategy_keys
+                .iter()
+                .map(|key| (target.product_key.clone(), key.clone()))
+        })
+        .collect::<Vec<_>>();
+    let artifact_product_keys = artifact_targets
+        .iter()
+        .map(|(product_key, _)| product_key.clone())
+        .collect::<Vec<_>>();
+    let artifact_strategy_keys = artifact_targets
+        .iter()
+        .map(|(_, strategy_key)| strategy_key.clone())
+        .collect::<Vec<_>>();
+    let artifacts = sqlx::query_as::<_, ArtifactRow>(
+        "WITH targets AS (SELECT * FROM unnest($1::text[],$2::text[]) \
+         AS target(product_key,strategy_key)) \
+         SELECT target.product_key,job.range_start AS source_start,job.range_end AS source_end, \
+         COALESCE(SUM(artifact.record_count),0)::bigint AS row_count, \
+         COALESCE(SUM(artifact.byte_size),0)::bigint AS byte_size, \
+         COUNT(*)::bigint AS object_count \
+         FROM targets target JOIN ingester.backfill_jobs job \
+         ON job.strategy_key=target.strategy_key AND job.status='completed' \
+         JOIN ingester.backfill_artifacts artifact ON artifact.job_id=job.job_id \
+         AND artifact.strategy_key=target.strategy_key AND artifact.status='completed' \
+         AND artifact.checksum ~ '^[0-9a-f]{64}$' AND artifact.durable_target IS NOT NULL \
+         GROUP BY target.product_key,job.job_id,job.range_start,job.range_end \
+         ORDER BY target.product_key,job.range_start,job.range_end",
+    )
+    .bind(&artifact_product_keys)
+    .bind(&artifact_strategy_keys)
     .fetch_all(pool)
     .await?;
     let known_gaps = sqlx::query_as::<_, GapRow>(
-        "WITH ranked AS (SELECT strategy_key AS product_key,source_time_start,source_time_end, \
-         status,reason_code,count(*) OVER (PARTITION BY strategy_key)::bigint AS total_count, \
-         row_number() OVER (PARTITION BY strategy_key ORDER BY source_time_start,source_time_end,gap_id) AS position \
-         FROM ingester.data_gaps WHERE strategy_key=ANY($1::text[]) \
-         AND source_time_start IS NOT NULL AND source_time_end IS NOT NULL \
-         AND status IN ('open','repairing','unrecoverable')) \
+        "WITH targets AS (SELECT * FROM unnest($1::text[],$2::text[]) \
+         AS target(product_key,strategy_key)), \
+         ranked AS (SELECT target.product_key,gap.source_time_start,gap.source_time_end, \
+         gap.status,gap.reason_code,count(*) OVER (PARTITION BY target.product_key)::bigint AS total_count, \
+         row_number() OVER (PARTITION BY target.product_key ORDER BY gap.source_time_start,gap.source_time_end,gap.gap_id) AS position \
+         FROM targets target JOIN ingester.data_gaps gap ON gap.strategy_key=target.strategy_key \
+         WHERE gap.source_time_start IS NOT NULL AND gap.source_time_end IS NOT NULL \
+         AND gap.status IN ('open','repairing','unrecoverable')) \
          SELECT product_key,source_time_start,source_time_end,status,reason_code,total_count \
-         FROM ranked WHERE position<=$2 ORDER BY product_key,source_time_start,source_time_end",
+         FROM ranked WHERE position<=$3 ORDER BY product_key,source_time_start,source_time_end",
     )
-    .bind(&product_keys)
+    .bind(&gap_product_keys)
+    .bind(&gap_strategy_keys)
     .bind(MAX_KNOWN_GAPS_PER_PRODUCT)
     .fetch_all(pool)
     .await?;
@@ -162,6 +272,10 @@ pub async fn detect(
             .filter(|row| row.product_key == target.product_key)
             .collect::<Vec<_>>();
         let product_objects = objects
+            .iter()
+            .filter(|row| row.product_key == target.product_key)
+            .collect::<Vec<_>>();
+        let product_artifacts = artifacts
             .iter()
             .filter(|row| row.product_key == target.product_key)
             .collect::<Vec<_>>();
@@ -183,6 +297,10 @@ pub async fn detect(
                 start: row.source_start,
                 end: row.source_end,
             })
+            .chain(product_artifacts.iter().map(|row| Interval {
+                start: row.source_start,
+                end: row.source_end,
+            }))
             .collect::<Vec<_>>();
         let combined = merge_intervals(
             database_intervals
@@ -221,10 +339,12 @@ pub async fn detect(
             .iter()
             .find(|row| row.product_key == target.product_key)
             .map_or(0, |row| row.total_count);
+        let backfill_strategy_key = target.backfill_strategy_keys.first().cloned();
         products.push(ProductCoverage {
             product_key: target.product_key,
             relation: target.relation,
-            backfill_strategy_key: target.backfill_strategy_key,
+            backfill_strategy_key,
+            backfill_strategy_keys: target.backfill_strategy_keys,
             database: DatabaseCoverage {
                 from: database_intervals
                     .iter()
@@ -237,9 +357,21 @@ pub async fn detect(
             ssd: SsdCoverage {
                 from: ssd_intervals.iter().map(|interval| interval.start).min(),
                 through: ssd_intervals.iter().map(|interval| interval.end).max(),
-                verified_objects: product_objects.len(),
-                rows: product_objects.iter().map(|row| row.row_count).sum(),
-                bytes: product_objects.iter().map(|row| row.byte_size).sum(),
+                verified_objects: product_objects.len()
+                    + product_artifacts
+                        .iter()
+                        .map(|row| usize::try_from(row.object_count).unwrap_or(usize::MAX))
+                        .fold(0usize, usize::saturating_add),
+                rows: product_objects.iter().map(|row| row.row_count).sum::<i64>()
+                    + product_artifacts
+                        .iter()
+                        .map(|row| row.row_count)
+                        .sum::<i64>(),
+                bytes: product_objects.iter().map(|row| row.byte_size).sum::<i64>()
+                    + product_artifacts
+                        .iter()
+                        .map(|row| row.byte_size)
+                        .sum::<i64>(),
             },
             combined: CombinedCoverage {
                 from: combined.first().map(|interval| interval.start),
