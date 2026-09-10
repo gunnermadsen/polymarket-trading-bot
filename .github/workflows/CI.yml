@@ -5,17 +5,24 @@ on:
     branches:
       - development
       - master
+      - production
   pull_request:
     branches:
       - development
       - master
+      - production
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.92.0
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '192200846560.dkr.ecr.eu-west-1.amazonaws.com' }}
 
 jobs:
   changes:
@@ -37,7 +44,9 @@ jobs:
           CURRENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            || [ -z "$BASE_SHA" ] \
+            || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "polymarket_bot=true" >> "$GITHUB_OUTPUT"
             echo "ingester=true" >> "$GITHUB_OUTPUT"
             echo "db_migrate=true" >> "$GITHUB_OUTPUT"
@@ -138,7 +147,7 @@ jobs:
           --all-features
 
   production-image-validation:
-    name: Validate ${{ matrix.name }} production image
+    name: ${{ github.event_name == 'pull_request' && 'Validate' || 'Build and push' }} ${{ matrix.name }} production image
     needs: [changes, rust-tests, market-data-ingester-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -149,32 +158,48 @@ jobs:
           - name: polymarket-bot
             dockerfile: packages/polymarket-bot/Dockerfile.production
             revision_arg: POLYMARKET_GIT_REVISION
+            repository: capitonic/polymarket-bot
             cache_scope: polymarket-bot-production
             change_key: polymarket_bot
           - name: ingester
             dockerfile: packages/market-data-ingester/Dockerfile.production
             revision_arg: INGESTER_GIT_REVISION
+            repository: capitonic/ingester
             cache_scope: ingester-production
             change_key: ingester
           - name: db-migrate
             dockerfile: packages/db-migrate/Dockerfile.production
             revision_arg: DB_MIGRATE_GIT_REVISION
+            repository: capitonic/db-migrate
             cache_scope: db-migrate-production
             change_key: db_migrate
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
-      - name: Build production image without publishing
+      - name: Configure AWS credentials
+        if: github.event_name != 'pull_request' && needs.changes.outputs[matrix.change_key] == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Log in to Amazon ECR
+        if: github.event_name != 'pull_request' && needs.changes.outputs[matrix.change_key] == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build production image
         if: needs.changes.outputs[matrix.change_key] == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: false
+          push: ${{ github.event_name != 'pull_request' }}
+          provenance: mode=max
+          sbom: true
           build-args: |
             RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
             ${{ matrix.revision_arg }}=${{ github.sha }}
-          tags: capitonic/${{ matrix.name }}:development
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ matrix.repository }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ matrix.repository }}:production
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
