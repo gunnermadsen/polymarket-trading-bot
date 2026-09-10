@@ -32,11 +32,11 @@ fi
 image_revision="$(
   docker image inspect \
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-    polymarket/polymarket-bot:btc-paper
+    capitonic/polymarket-bot:development
 )"
 if [[ "$image_revision" != "$git_revision" ]]; then
   echo "Built image revision mismatch: expected $git_revision, found $image_revision" >&2
   exit 67
 fi
 
-printf 'Built polymarket/polymarket-bot:btc-paper from Git revision %s\n' "$git_revision"
+printf 'Built capitonic/polymarket-bot:development from Git revision %s\n' "$git_revision"

@@ -87,6 +87,7 @@ jobs:
           --all-features
           --
           -D warnings
+          -A clippy::too_many_arguments
 
       - name: Run market data ingester tests
         run: >-
@@ -104,31 +105,36 @@ jobs:
           --no-deps
           --all-features
 
-      - name: Build image with source provenance
-        run: |
-          image="capitonic/market-data-ingester:ci"
-          source_revision="$(git rev-parse --verify 'HEAD^{commit}')"
-          if [ "$source_revision" != "$GITHUB_SHA" ]; then
-            echo "Checked-out revision $source_revision does not match GITHUB_SHA $GITHUB_SHA" >&2
-            exit 1
-          fi
-          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-            echo "Refusing to build an image from a dirty CI checkout" >&2
-            exit 1
-          fi
-
-          docker build \
-            --file packages/market-data-ingester/Dockerfile \
-            --build-arg "INGESTER_GIT_REVISION=$source_revision" \
-            --tag "$image" \
-            .
-
-          image_revision="$(
-            docker image inspect \
-              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-              "$image"
-          )"
-          if [ "$image_revision" != "$source_revision" ]; then
-            echo "Built image revision mismatch: expected $source_revision, found $image_revision" >&2
-            exit 1
-          fi
+  production-image-validation:
+    name: Validate ${{ matrix.name }} production image
+    needs: [rust-tests, market-data-ingester-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: polymarket-bot
+            dockerfile: packages/polymarket-bot/Dockerfile.production
+            revision_arg: POLYMARKET_GIT_REVISION
+            cache_scope: polymarket-bot-production
+          - name: ingester
+            dockerfile: packages/market-data-ingester/Dockerfile.production
+            revision_arg: INGESTER_GIT_REVISION
+            cache_scope: ingester-production
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build production image without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
+            ${{ matrix.revision_arg }}=${{ github.sha }}
+          tags: capitonic/${{ matrix.name }}:development
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max

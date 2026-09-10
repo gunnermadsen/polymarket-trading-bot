@@ -15,9 +15,10 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - When changing lifecycle or readiness code, verify restart recovery and confirm that configured live processes resume eligibility without bypassing the existing per-order capital, identity, accounting, and market-safety checks.
 
 ## Code
-- Rebuild an image only when that component's code changes: Polymarket bot changes rebuild `polymarket-bot`, and ingester changes rebuild `ingester`.
-- build the polymarket bot with provenance env var: POLYMARKET_GIT_REVISION=<GIT_COMMIT_HASH> docker compose build polymarket-bot
-- Do not rebuild an image when its component's code did not change.
+- Source changes do not by themselves authorize or require a local container image build. Do not build, rebuild, push, tag, deploy, or promote an image unless the user explicitly requests that image or release action.
+- Use Cargo compilation, tests, linting, and focused checks as the default verification for Rust source changes. CI may validate production Dockerfiles using configured path filters, but agents must not trigger a release-image workflow without explicit user authorization.
+- When an image build is explicitly requested, build only affected components: bot changes build `polymarket-bot`; ingester changes build the single `ingester` image used by both `ingester-master` and `ingester-worker` through runtime `INGESTER_MODE` configuration. Never build separate master and worker images.
+- Build the bot with `POLYMARKET_GIT_REVISION=<GIT_COMMIT_HASH>` and the ingester with `INGESTER_GIT_REVISION=<GIT_COMMIT_HASH>`.
 - put sensitive secrets in .env files
 - Treat the main worktree's `.env` file as the source of truth for API-key secrets. Worktrees and services must reference or inherit those secrets without creating independent secret values.
 - put non-sensitive runtime configuration in docker-compose files

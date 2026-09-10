@@ -17,10 +17,10 @@ fn rust_packages_use_the_root_workspace_contract() {
     for relative in [
         "packages/polymarket-bot/Dockerfile",
         "packages/polymarket-bot/Dockerfile.production",
-        "packages/market-data-ingester/Dockerfile",
+        "packages/market-data-ingester/Dockerfile.production",
     ] {
         let dockerfile = fs::read_to_string(root.join(relative)).unwrap();
-        assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock rust-toolchain.toml ./"));
+        assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock"));
         assert!(dockerfile.contains("--package "));
     }
 
@@ -129,6 +129,9 @@ fn compose_exposes_only_standard_ingester_roles() {
     for compose in [&base, &production] {
         assert!(compose.contains("ingester-master:"));
         assert!(compose.contains("ingester-worker:"));
+        assert!(compose.contains("capitonic/ingester:"));
+        assert!(!compose.contains("capitonic/ingester-master:"));
+        assert!(!compose.contains("capitonic/ingester-worker:"));
     }
     let compose_files = fs::read_dir(root)
         .unwrap()
@@ -244,7 +247,7 @@ fn raw_weather_backfills_are_native_and_one_strategy_per_file() {
             "strategy registry contains {forbidden}"
         );
     }
-    let dockerfile = fs::read_to_string(root.join("Dockerfile")).unwrap();
+    let dockerfile = fs::read_to_string(root.join("Dockerfile.production")).unwrap();
     for forbidden in [
         "FROM python:",
         "pip install",

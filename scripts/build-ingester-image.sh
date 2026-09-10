@@ -21,12 +21,11 @@ if [[ ! "$git_revision" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
 fi
 
 export INGESTER_GIT_REVISION="$git_revision"
-master_image="${INGESTER_MASTER_IMAGE:-capitonic/ingester-master:development}"
-worker_image="${INGESTER_WORKER_IMAGE:-capitonic/ingester-worker:development}"
+image="${INGESTER_IMAGE:-capitonic/ingester:development}"
 
 docker compose \
   --profile data-ingestion \
-  build ingester-master ingester-worker
+  build ingester-master
 
 if [[ "$(git rev-parse --verify 'HEAD^{commit}')" != "$git_revision" \
   || -n "$(git status --porcelain --untracked-files=all)" ]]; then
@@ -34,21 +33,19 @@ if [[ "$(git rev-parse --verify 'HEAD^{commit}')" != "$git_revision" \
   exit 68
 fi
 
-for image in "$master_image" "$worker_image"; do
-  image_revision="$(
-    docker image inspect \
-      --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-      "$image"
-  )"
-  if [[ "$image_revision" != "$git_revision" ]]; then
-    echo "Built image revision mismatch: expected $git_revision, found $image_revision" >&2
-    exit 67
-  fi
-  image_id="$(docker image inspect --format '{{ .Id }}' "$image")"
-  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    echo "Docker returned an invalid image ID for $image: $image_id" >&2
-    exit 69
-  fi
-  printf 'Built %s from Git revision %s\n' "$image" "$git_revision"
-  printf 'Image ID: %s\n' "$image_id"
-done
+image_revision="$(
+  docker image inspect \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+    "$image"
+)"
+if [[ "$image_revision" != "$git_revision" ]]; then
+  echo "Built image revision mismatch: expected $git_revision, found $image_revision" >&2
+  exit 67
+fi
+image_id="$(docker image inspect --format '{{ .Id }}' "$image")"
+if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "Docker returned an invalid image ID for $image: $image_id" >&2
+  exit 69
+fi
+printf 'Built %s from Git revision %s\n' "$image" "$git_revision"
+printf 'Image ID: %s\n' "$image_id"

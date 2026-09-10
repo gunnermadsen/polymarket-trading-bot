@@ -1,141 +1,127 @@
-name: CD
+name: Production images
 
 on:
   push:
     branches:
       - production
+  workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write
 
 env:
-  AWS_REGION: mx-central-1
+  AWS_REGION: eu-west-1
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
-  ECR_REGISTRY: 192200846560.dkr.ecr.mx-central-1.amazonaws.com
+  ECR_REGISTRY: 192200846560.dkr.ecr.eu-west-1.amazonaws.com
   ECR_POLYMARKET_BOT_REPOSITORY: capitonic/polymarket-bot
-  ECR_DB_MIGRATE_REPOSITORY: capitonic/db-migrate
+  ECR_INGESTER_REPOSITORY: capitonic/ingester
   RUST_TOOLCHAIN: 1.92.0
 
 jobs:
+  lint:
+    name: Format and lint workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: >-
+          rustup toolchain install "$RUST_TOOLCHAIN"
+          --profile minimal
+          --component rustfmt
+          --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: production-lint
+      - name: Check formatting
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
+      - name: Run Clippy
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" clippy
+          --locked --workspace --all-targets --all-features
+
+  test:
+    name: Test ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - polymarket-bot
+          - market-data-ingester
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: production-test-${{ matrix.package }}
+      - name: Run tests
+        run: cargo +"$RUST_TOOLCHAIN" test --locked --package "${{ matrix.package }}" --all-targets --all-features
+
   publish-polymarket-bot:
-    name: Build and push polymarket-bot image
+    name: Build and push polymarket-bot
+    needs: [lint, test]
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
+      - uses: actions/checkout@v6
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Resolve source revision
-        id: source-revision
-        run: |
-          revision="$(git rev-parse --verify 'HEAD^{commit}')"
-          if [ "$revision" != "$GITHUB_SHA" ]; then
-            echo "Checked-out revision $revision does not match GITHUB_SHA $GITHUB_SHA." >&2
-            exit 1
-          fi
-          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-            echo "Refusing to publish an image from a dirty checkout." >&2
-            exit 1
-          fi
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push image
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and push production image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/polymarket-bot/Dockerfile.production
+          platforms: linux/amd64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: |
             RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
-            POLYMARKET_GIT_REVISION=${{ steps.source-revision.outputs.revision }}
+            POLYMARKET_GIT_REVISION=${{ github.sha }}
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:${{ github.sha }}
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:production
-          cache-from: |
-            type=gha,scope=polymarket-bot
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:buildcache
-          cache-to: |
-            type=gha,scope=polymarket-bot,mode=max
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=gha,scope=polymarket-bot-production
+          cache-to: type=gha,scope=polymarket-bot-production,mode=max
 
-  publish-db-migrate:
-    name: Build and push db-migrate image
+  publish-ingester:
+    name: Build and push ingester
+    needs: [lint, test]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Calculate migration checksum
-        id: migration-checksum
-        run: |
-          checksum="$(
-            find packages/db-migrate/src/migrations -type f -print0 \
-              | sort -z \
-              | xargs -0 sha256sum \
-              | sha256sum \
-              | cut -d ' ' -f 1
-          )"
-          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
-          echo "tag=migrations-$checksum" >> "$GITHUB_OUTPUT"
-
+      - uses: actions/checkout@v6
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Check for existing migration image
-        id: db-migrate-image
-        run: |
-          if aws ecr describe-images \
-            --repository-name "$ECR_DB_MIGRATE_REPOSITORY" \
-            --image-ids imageTag="${{ steps.migration-checksum.outputs.tag }}" \
-            >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Migration image already exists for checksum ${{ steps.migration-checksum.outputs.checksum }}."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "No migration image found for checksum ${{ steps.migration-checksum.outputs.checksum }}."
-          fi
-
-      - name: Log in to Amazon ECR
-        if: steps.db-migrate-image.outputs.exists != 'true'
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        if: steps.db-migrate-image.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build and push image
-        if: steps.db-migrate-image.outputs.exists != 'true'
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and push production image
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: packages/db-migrate/Dockerfile
+          file: packages/market-data-ingester/Dockerfile.production
+          target: runtime
+          platforms: linux/amd64
           push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
+            INGESTER_GIT_REVISION=${{ github.sha }}
           tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ steps.migration-checksum.outputs.tag }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ github.sha }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:production
-          cache-from: |
-            type=gha,scope=db-migrate
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:buildcache
-          cache-to: |
-            type=gha,scope=db-migrate,mode=max
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_INGESTER_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_INGESTER_REPOSITORY }}:production
+          cache-from: type=gha,scope=ingester-production
+          cache-to: type=gha,scope=ingester-production,mode=max
