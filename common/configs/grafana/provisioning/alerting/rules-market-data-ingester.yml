@@ -928,7 +928,7 @@ groups:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="polymarket_chainlink_btcusd_twap",error_code=~"^(polymarket_twap_transport_gap|polymarket_rtds_thirty_stale|polymarket_rtds_sixty_stale)$"}[5m])) >= 1
+                (sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="polymarket_chainlink_btcusd_twap",error_code=~"^(polymarket_rtds_thirty_stale|polymarket_rtds_sixty_stale)$"}[5m])) >= 1) or (sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="polymarket_chainlink_btcusd_twap",error_code="polymarket_twap_transport_gap"}[5m])) >= 3)
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -940,7 +940,7 @@ groups:
         for: 0s
         annotations:
           summary: 'Polymarket Chainlink TWAP critical failure evidence'
-          description: 'polymarket_chainlink_btcusd_twap emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          description: 'polymarket_chainlink_btcusd_twap emitted {{ printf "%.0f" $values.B.Value }} stale-source event(s), or at least three continuity-uncertainty events, in five minutes. Error code: {{ $labels.error_code }}.'
           strategy: 'polymarket_chainlink_btcusd_twap'
           failure_condition: 'polymarket_chainlink_twap_critical_failure'
           error_code: '{{ $labels.error_code }}'

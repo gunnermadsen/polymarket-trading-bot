@@ -134,6 +134,24 @@ fn binance_l2_persistence_alert_returns_a_healthy_zero() {
 }
 
 #[test]
+fn polymarket_chainlink_twap_critical_alert_requires_repeated_transport_gaps() {
+    let root = repository_root();
+    let rules = fs::read_to_string(
+        root.join("common/configs/grafana/provisioning/alerting/rules-market-data-ingester.yml"),
+    )
+    .unwrap();
+    let rule = rules
+        .split("- uid: mdi_critical_11")
+        .nth(1)
+        .and_then(|remaining| remaining.split("- uid:").next())
+        .expect("Polymarket Chainlink TWAP critical alert is provisioned");
+
+    assert!(rule.contains("polymarket_rtds_thirty_stale|polymarket_rtds_sixty_stale"));
+    assert!(rule.contains("error_code=\"polymarket_twap_transport_gap\""));
+    assert!(rule.contains("[5m])) >= 3)"));
+}
+
+#[test]
 fn kraken_backfills_are_one_strategy_per_file() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/strategies/kraken");
     for file in [

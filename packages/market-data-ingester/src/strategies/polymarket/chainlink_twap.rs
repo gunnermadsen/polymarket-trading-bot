@@ -1192,6 +1192,15 @@ fn decode_observation(
     {
         return Ok(None);
     }
+    if source_payload.get("topic").is_none() {
+        if let Some(status_code) = source_payload.get("statusCode").and_then(Value::as_u64) {
+            return Err(StrategyError::new(
+                StrategyErrorKind::TransientSource,
+                "polymarket_twap_provider_status",
+                format!("RTDS provider returned status code {status_code}"),
+            ));
+        }
+    }
     let envelope: RtdsEnvelope =
         serde_json::from_value(source_payload.clone()).map_err(|error| {
             let keys = source_payload
@@ -1535,8 +1544,9 @@ mod tests {
         assert!(decode_observation(&serde_json::to_vec(&message).unwrap(), received).is_err());
         let control = br#"{"body":"provider failure","statusCode":500}"#;
         let error = decode_observation(control, received).unwrap_err();
-        assert_eq!(error.code, "polymarket_twap_decode");
-        assert!(error.message.contains("envelope keys"));
+        assert_eq!(error.kind, StrategyErrorKind::TransientSource);
+        assert_eq!(error.code, "polymarket_twap_provider_status");
+        assert!(error.message.contains("500"));
         assert!(!error.message.contains("provider failure"));
     }
 
