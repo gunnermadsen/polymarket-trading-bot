@@ -2031,7 +2031,7 @@ fn validate_closed_boundary(
     }
     let message =
         format!("{subject} {requested} is newer than last fully closed second {last_closed}");
-    if requested == last_closed + chrono::Duration::seconds(1) {
+    if requested <= last_closed + MAX_PROVIDER_CLOCK_SKEW {
         return Err(source_error(error_code, message));
     }
     Err(integrity_error(error_code, message))
@@ -2364,30 +2364,30 @@ mod tests {
     }
 
     #[test]
-    fn one_second_close_boundary_race_is_transient() {
+    fn bounded_close_boundary_clock_lead_is_transient() {
         let last_closed = Utc.timestamp_millis_opt(1_722_470_400_000).unwrap();
         let error = validate_closed_boundary(
-            last_closed + chrono::Duration::seconds(1),
+            last_closed + chrono::Duration::seconds(2),
             last_closed,
             "binance_ohlcv_open_rest_range",
             "REST recovery range end",
         )
-        .expect_err("the next second must wait for its close boundary");
+        .expect_err("bounded provider clock lead must wait for its close boundary");
 
         assert_eq!(error.kind, StrategyErrorKind::TransientSource);
         assert_eq!(error.code, "binance_ohlcv_open_rest_range");
     }
 
     #[test]
-    fn materially_future_close_boundary_remains_an_integrity_failure() {
+    fn excessive_close_boundary_clock_lead_remains_an_integrity_failure() {
         let last_closed = Utc.timestamp_millis_opt(1_722_470_400_000).unwrap();
         let error = validate_closed_boundary(
-            last_closed + chrono::Duration::seconds(2),
+            last_closed + MAX_PROVIDER_CLOCK_SKEW + chrono::Duration::seconds(1),
             last_closed,
             "binance_ohlcv_cursor_in_future",
             "durable OHLCV cursor",
         )
-        .expect_err("a materially future cursor must fail closed");
+        .expect_err("clock lead beyond the provider contract must fail closed");
 
         assert_eq!(error.kind, StrategyErrorKind::Integrity);
         assert_eq!(error.code, "binance_ohlcv_cursor_in_future");
