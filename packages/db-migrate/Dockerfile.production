@@ -1,0 +1,32 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /usr/src/app
+
+COPY packages/db-migrate/package.json packages/db-migrate/package-lock.json ./
+RUN npm ci
+
+COPY packages/db-migrate/tsconfig.json ./
+COPY packages/db-migrate/src ./src
+RUN npm run build \
+    && npm prune --omit=dev
+
+FROM node:20-alpine AS runtime
+
+WORKDIR /usr/src/app
+ENV NODE_ENV=production
+
+ARG DB_MIGRATE_GIT_REVISION
+RUN case "$DB_MIGRATE_GIT_REVISION" in \
+      ""|*[!0-9a-f]*) exit 64 ;; \
+    esac \
+    && case "${#DB_MIGRATE_GIT_REVISION}" in 40|64) ;; *) exit 64 ;; esac
+
+LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarket-trading-bot" \
+      org.opencontainers.image.revision="$DB_MIGRATE_GIT_REVISION"
+
+COPY --from=builder --chown=node:node /usr/src/app/package.json ./package.json
+COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
+
+USER node
+CMD ["npm", "run", "start:prod"]

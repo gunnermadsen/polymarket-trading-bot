@@ -118,7 +118,7 @@ services:
     restart: unless-stopped
 
   db-migrate:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/db-migrate:production
+    image: ${DB_MIGRATE_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/db-migrate:production}
     container_name: db-migrate
     hostname: db-migrate
     mem_limit: 256m
@@ -131,7 +131,7 @@ services:
       - path: ./.env.market-data-ingester
         required: true
     environment:
-      NODE_ENV: "development"
+      NODE_ENV: "production"
       POSTGRES_HOST: "timescaledb-0"
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "postgres"
