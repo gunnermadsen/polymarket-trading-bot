@@ -11,9 +11,9 @@ permissions:
   id-token: write
 
 env:
-  AWS_REGION: eu-west-1
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
-  ECR_REGISTRY: 192200846560.dkr.ecr.eu-west-1.amazonaws.com
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '192200846560.dkr.ecr.eu-west-1.amazonaws.com' }}
   ECR_POLYMARKET_BOT_REPOSITORY: capitonic/polymarket-bot
   ECR_INGESTER_REPOSITORY: capitonic/ingester
   ECR_DB_MIGRATE_REPOSITORY: capitonic/db-migrate
