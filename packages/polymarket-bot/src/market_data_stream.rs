@@ -296,6 +296,7 @@ pub struct MarketDataStreamRuntime {
     master_url: String,
     token: String,
     consumer_id: String,
+    route_client: reqwest::Client,
     repository: BtcRepository,
     state: Arc<RwLock<RealtimeState>>,
     books: Arc<RwLock<BookRegistry>>,
@@ -318,6 +319,11 @@ impl MarketDataStreamRuntime {
             master_url: master_url.trim_end_matches('/').to_owned(),
             token,
             consumer_id,
+            route_client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(3))
+                .timeout(Duration::from_secs(5))
+                .build()
+                .context("build ingester route client")?,
             repository,
             state,
             books,
@@ -409,7 +415,10 @@ impl MarketDataStreamRuntime {
                     .await
             });
         }
-        let mut topology_tick = tokio::time::interval(Duration::from_secs(30));
+        // Worker identities change when Compose recreates a failed replica. Poll
+        // frequently enough to abandon an unreachable old identity promptly,
+        // while each established route remains independently supervised.
+        let mut topology_tick = tokio::time::interval(Duration::from_secs(5));
         topology_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         topology_tick.tick().await;
         loop {
@@ -455,7 +464,8 @@ impl MarketDataStreamRuntime {
                 contract_version: selector.contract_version,
             })
             .collect::<Vec<_>>();
-        let response = reqwest::Client::new()
+        let response = self
+            .route_client
             .post(format!("{}/stream/routes", self.master_url))
             .bearer_auth(&self.token)
             .json(&serde_json::json!({"products": products}))
