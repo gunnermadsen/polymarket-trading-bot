@@ -1,0 +1,28 @@
+[data]
+archive_root = "/Volumes/docker-data/polymarket-bot/model-training-archive/btc-early-entry-economic-tournament/20260902"
+candidate_risk_run = "training-results/btc-5m-candidate-loss-risk-tournament-20260321-20260901/20260909T163841Z"
+strategy_risk_run = "training-results/btc-5m-strategy-conditioned-risk-tournament-20260321-20260901/20260909T210622Z"
+rich_panel = "data/btc-full-august-vwap-admission-20260321-20260901/vwap-admission-panel.parquet"
+
+[splits]
+selection_fit_end = "2026-07-15T00:00:00Z"
+walk_forward_boundaries = [
+  "2026-07-15T00:00:00Z",
+  "2026-07-18T00:00:00Z",
+  "2026-07-25T00:00:00Z",
+  "2026-08-01T00:00:00Z",
+  "2026-08-11T00:00:00Z",
+]
+compatibility_calibration_start = "2026-08-20T00:00:00Z"
+compatibility_test_start = "2026-08-21T00:00:00Z"
+compatibility_test_end = "2026-08-26T00:00:00Z"
+
+[training]
+maximum_rows = 300000
+deferral_penalty = 0.01
+coverage_targets = [0.95, 0.85, 0.70]
+primary_coverage = 0.85
+random_seed = 20260909
+
+[output]
+directory = "training-results/btc-5m-entry-action-risk-tournament-20260321-20260901"
