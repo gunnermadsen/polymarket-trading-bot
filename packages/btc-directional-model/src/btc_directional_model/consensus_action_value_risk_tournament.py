@@ -346,7 +346,8 @@ def _action_diagnostics(frame: pl.DataFrame, score: np.ndarray, threshold: float
             if chosen is None or chosen["observed_at"] != row["observed_at"]:
                 captured += 1
     base = intervention_metrics(frame, score, threshold)
-    surrendered = 1.0 - base["strategy_with_risk"]["coverage_retained"]
+    coverage = base["strategy_with_risk"]["coverage_retained"]
+    surrendered = 1.0 - coverage if coverage is not None else None
     advantage = frame["enter_advantage"].to_numpy()
     finite = np.isfinite(score) & np.isfinite(advantage)
     correlation = (
@@ -359,7 +360,9 @@ def _action_diagnostics(frame: pl.DataFrame, score: np.ndarray, threshold: float
         "catastrophic_losses_blocked": captured,
         "catastrophic_loss_capture_rate": captured / catastrophic if catastrophic else None,
         "pnl_delta_per_coverage_point_surrendered": (
-            base["net_risk_value"] / (100.0 * surrendered) if surrendered > 0 else None
+            base["net_risk_value"] / (100.0 * surrendered)
+            if surrendered is not None and surrendered > 0
+            else None
         ),
         "score_enter_advantage_correlation": correlation,
         "wait_capture_rate": base["deferral_improvement_rate"],
