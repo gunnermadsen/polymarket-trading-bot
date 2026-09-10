@@ -899,7 +899,7 @@ groups:
         for: 0s
         annotations:
           summary: 'Polymarket resolutions critical failure evidence'
-          description: 'polymarket_btc_five_minute_resolutions emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}.'
+          description: 'polymarket_btc_five_minute_resolutions emitted {{ printf "%.0f" $values.B.Value }} selected event(s) in five minutes. Error code: {{ $labels.error_code }}. An unavailable window is retried through the existing bounded gap-repair schedule; repeated transport errors indicate source instability.'
           strategy: 'polymarket_btc_five_minute_resolutions'
           failure_condition: 'polymarket_resolutions_critical_failure'
           error_code: '{{ $labels.error_code }}'

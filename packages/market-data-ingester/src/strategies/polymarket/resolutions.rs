@@ -1012,13 +1012,26 @@ impl PolymarketBtcFiveMinuteResolutionsStrategy {
         {
             return Ok(ReconciliationResult::Pending);
         }
-        if let Some(fact) = parse_gamma_resolution(
+        match parse_gamma_resolution(
             &gamma,
             &identity,
             gamma_received_at,
             self.config.gamma_fallback_grace_seconds,
-        )? {
-            return Ok(ReconciliationResult::Resolved(Box::new(fact)));
+        ) {
+            Ok(Some(fact)) => {
+                return Ok(ReconciliationResult::Resolved(Box::new(fact)));
+            }
+            Ok(None) => {}
+            Err(error) if error.code == "polymarket_resolution_missing_timestamp" => {
+                return Ok(ReconciliationResult::Unavailable {
+                    window_start,
+                    reason: format!(
+                        "Gamma terminal evidence for {} is missing a required timestamp; bounded gap repair will recheck it",
+                        identity.event_slug
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
         }
         Ok(ReconciliationResult::Unavailable {
             window_start,
@@ -3819,6 +3832,15 @@ mod tests {
         let mut incoherent = gamma_fixture();
         incoherent["markets"][0]["closedTime"] = json!("2026-07-13T00:36:06Z");
         assert!(parse_gamma_resolution(&incoherent, &identity(), received_at(), 120).is_err());
+
+        let mut incomplete = gamma_fixture();
+        incomplete["markets"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("closedTime");
+        let error = parse_gamma_resolution(&incomplete, &identity(), received_at(), 120)
+            .expect_err("terminal evidence without closedTime remains incomplete");
+        assert_eq!(error.code, "polymarket_resolution_missing_timestamp");
 
         let too_early = Utc.timestamp_opt(1_783_902_990, 0).single().unwrap();
         assert!(
