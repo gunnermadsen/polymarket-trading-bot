@@ -265,8 +265,10 @@ def _evaluate(
         local = score[mask]
         by_strategy[strategy] = intervention_metrics(part, local, threshold)
         for bucket in BUCKETS:
-            for side in ("UP", "DOWN"):
+            for side in ("ALL", "UP", "DOWN"):
                 cell_mask = ((part["time_bucket"] == bucket) & (part["side"] == side)).to_numpy()
+                if side == "ALL":
+                    cell_mask = (part["time_bucket"] == bucket).to_numpy()
                 cell = part.filter(pl.Series(cell_mask))
                 evidence = intervention_metrics(cell, local[cell_mask], threshold)
                 slices.append({
@@ -275,6 +277,16 @@ def _evaluate(
                     "statistically_insufficient": evidence["baseline"]["trades"] < 30,
                     **evidence,
                 })
+        for side in ("UP", "DOWN"):
+            cell_mask = (part["side"] == side).to_numpy()
+            cell = part.filter(pl.Series(cell_mask))
+            evidence = intervention_metrics(cell, local[cell_mask], threshold)
+            slices.append({
+                "risk_policy": policy, "coverage_target": coverage,
+                "strategy_model": strategy, "time_bucket": "ALL", "side": side,
+                "statistically_insufficient": evidence["baseline"]["trades"] < 30,
+                **evidence,
+            })
     return {"threshold": threshold, "aggregate": aggregate, "by_strategy": by_strategy}, slices
 
 
@@ -305,6 +317,12 @@ def _report(metrics: dict[str, Any]) -> str:
             lines.append(
                 f"| {name} | {float(band):.0%} | {risk['trades']} | {risk['wins']}/{risk['losses']} | ${risk['net_pnl']:.2f} | ${e['net_risk_value']:.2f} | {risk['coverage_retained']:.1%} | {n(risk['profit_factor'],3)} | {n(risk['recovery_wins_per_loss'],3)} | ${risk['max_drawdown']:.2f} | {n(e['loss_capture_rate']*100 if e['loss_capture_rate'] is not None else None,1)}% | {n(e['opportunity_rejection_rate']*100 if e['opportunity_rejection_rate'] is not None else None,1)}% | {n(e['risk_alignment_ratio'],2)}x | {e['deferred_markets']} | {n(e['deferral_improvement_rate']*100 if e['deferral_improvement_rate'] is not None else None,1)}% | ${e['action_regret']:.2f} |"
             )
+    lines += ["", "## Primary-band strategy × risk-model matrix", "", "| Risk model | Trading process / strategy model | PnL with risk | Delta | Trades | W/L | Coverage | Avg entry | Avg cost | PF | Recovery | Max DD | Alignment |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for name, bands in metrics["compatibility_results"].items():
+        band = "1.0" if name == "no_risk" else str(metrics["selection"]["primary_coverage"])
+        for strategy, e in bands[band]["by_strategy"].items():
+            r = e["strategy_with_risk"]
+            lines.append(f"| {name} | {STRATEGIES[strategy]['process_name']} | ${r['net_pnl']:.2f} | ${e['net_risk_value']:.2f} | {r['trades']} | {r['wins']}/{r['losses']} | {r['coverage_retained']:.1%} | {n(r['average_entry_seconds'],1)}s | ${n(r['average_cost'],3)} | {n(r['profit_factor'],3)} | {n(r['recovery_wins_per_loss'],3)} | ${r['max_drawdown']:.2f} | {n(e['risk_alignment_ratio'],2)}x |")
     lines += ["", "## Selected risk model through each trading strategy", ""]
     selected = metrics["selection"]["champion"]
     primary = str(metrics["selection"]["primary_coverage"])
