@@ -1,0 +1,12 @@
+{
+  "ranking": [
+    "economic_harm",
+    "boosted_market_context",
+    "boosted_economics",
+    "logistic_economics",
+    "boosted_recent_history",
+    "frozen_pilot_boosted_recent_history"
+  ],
+  "selected_on": "policy_calibration_only",
+  "universal_champion": "economic_harm"
+}

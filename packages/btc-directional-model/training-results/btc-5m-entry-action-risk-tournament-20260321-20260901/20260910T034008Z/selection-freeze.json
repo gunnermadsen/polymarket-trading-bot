@@ -1,0 +1,12 @@
+{
+  "champion": "boosted_enter_vs_defer",
+  "primary_coverage": 0.85,
+  "ranking": [
+    "boosted_enter_vs_defer",
+    "downside_quantile_action",
+    "logistic_action_value",
+    "regime_strategy_health_action",
+    "regime_conditioned_action"
+  ],
+  "selected_on": "chronological historical walk-forward only"
+}

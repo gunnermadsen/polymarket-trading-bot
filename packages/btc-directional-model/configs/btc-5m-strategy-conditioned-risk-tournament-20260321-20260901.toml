@@ -1,0 +1,18 @@
+[data]
+archive_root = "/Volumes/docker-data/polymarket-bot/model-training-archive/btc-early-entry-economic-tournament/20260902"
+pilot_run = "training-results/btc-5m-candidate-loss-risk-tournament-20260321-20260901/20260909T163841Z"
+
+[splits]
+estimator_calibration_start = "2026-08-01T00:00:00Z"
+estimator_calibration_end = "2026-08-14T00:00:00Z"
+policy_calibration_start = "2026-08-20T00:00:00Z"
+policy_test_start = "2026-08-21T00:00:00Z"
+policy_test_end = "2026-08-26T00:00:00Z"
+
+[training]
+minimum_coverage = 0.50
+deferral_cost_per_candidate = 0.0025
+random_seed = 20260909
+
+[output]
+directory = "training-results/btc-5m-strategy-conditioned-risk-tournament-20260321-20260901"
