@@ -1,0 +1,11 @@
+{
+  "bucket_champions": {
+    "120_149": "bucket_conditioned_harm",
+    "150_179": "winner_preserving_loss",
+    "180_240": "winner_preserving_loss",
+    "60_89": "enhanced_economic_harm",
+    "90_119": "winner_preserving_loss"
+  },
+  "primary_coverage": 0.85,
+  "selected_on": "chronological historical walk-forward only"
+}
