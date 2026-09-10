@@ -1,4 +1,4 @@
-name: CI
+name: Verify and Publish Images
 
 on:
   push:

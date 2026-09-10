@@ -1,4 +1,4 @@
-name: Production deployment
+name: Deploy Production
 
 # Image publication belongs to CI. Add the production deployment job here
 # after its runtime infrastructure has been provisioned.
