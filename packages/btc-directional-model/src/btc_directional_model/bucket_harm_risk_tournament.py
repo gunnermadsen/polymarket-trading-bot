@@ -69,7 +69,8 @@ def attach_bucket_targets(frame: pl.DataFrame, penalty: float) -> pl.DataFrame:
 
 
 def _matrix(frame: pl.DataFrame, features: tuple[str, ...]) -> np.ndarray:
-    return frame.select(pl.col(features).cast(pl.Float32)).to_numpy()
+    matrix = frame.select(pl.col(features).cast(pl.Float32)).to_numpy()
+    return np.nan_to_num(matrix, copy=False, nan=0.0, posinf=1_000_000.0, neginf=-1_000_000.0)
 
 
 def _estimator(kind: str, seed: int, iterations: int) -> Any:
