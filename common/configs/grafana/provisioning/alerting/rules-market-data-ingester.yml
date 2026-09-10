@@ -682,7 +682,7 @@ groups:
               datasource: {type: loki, uid: loki}
               editorMode: code
               expr: >-
-                sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="chainlink_btcusd_reference_price",error_code=~"^(chainlink_reference_http_request|chainlink_reference_http_retryable_status|chainlink_reference_read_response|chainlink_reference_pagination_budget_exhausted|chainlink_reference_response_too_large|chainlink_reference_decode_response|chainlink_reference_response_limit_exceeded|chainlink_reference_page_regressed|chainlink_reference_boundary_overlap_missing|chainlink_reference_boundary_saturated|chainlink_reference_invalid_page|chainlink_reference_nonmonotonic_page|chainlink_reference_duplicate_report|chainlink_reference_feed_mismatch|chainlink_reference_envelope_timestamp_mismatch|chainlink_reference_invalid_prices)$"}[5m])) >= 1
+                sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="chainlink_btcusd_reference_price",error_code=~"^(chainlink_reference_pagination_budget_exhausted|chainlink_reference_response_too_large|chainlink_reference_decode_response|chainlink_reference_response_limit_exceeded|chainlink_reference_page_regressed|chainlink_reference_boundary_overlap_missing|chainlink_reference_boundary_saturated|chainlink_reference_invalid_page|chainlink_reference_nonmonotonic_page|chainlink_reference_duplicate_report|chainlink_reference_feed_mismatch|chainlink_reference_envelope_timestamp_mismatch|chainlink_reference_invalid_prices)$"}[5m])) >= 1
               instant: true
               intervalMs: 1000
               maxDataPoints: 43200
@@ -708,6 +708,47 @@ groups:
           family: market_data_ingestion
           environment: $GRAFANA_ALERT_ENVIRONMENT
           severity: critical
+        dashboardUid: market-data-pipeline
+        panelId: 25
+        isPaused: false
+      - uid: mdi_chainlink_reference_transport_failures
+        title: Chainlink reference price transport repeatedly failing
+        condition: C
+        data:
+          - refId: A
+            queryType: instant
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: loki
+            model:
+              datasource: {type: loki, uid: loki}
+              editorMode: code
+              expr: >-
+                sum by (strategy, error_code) (count_over_time({service_name="ingester",strategy="chainlink_btcusd_reference_price",error_code=~"^(chainlink_reference_http_request|chainlink_reference_http_retryable_status|chainlink_reference_read_response)$"}[10m])) >= 3
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - *reduce
+          - *threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: 'Chainlink reference price transport is repeatedly failing'
+          description: 'chainlink_btcusd_reference_price emitted at least three recoverable transport failures in ten minutes, sustained for two minutes. Error code: {{ $labels.error_code }}.'
+          strategy: 'chainlink_btcusd_reference_price'
+          failure_condition: 'chainlink_reference_price_transport_failures'
+          error_code: '{{ $labels.error_code }}'
+          occurrence_count: '{{ printf "%.0f" $values.B.Value }}'
+          evaluation_window: '10m'
+        labels:
+          strategy: chainlink_btcusd_reference_price
+          condition: strategy_transport_degraded
+          failure_condition: chainlink_reference_price_transport_failures
+          service: ingester
+          family: market_data_ingestion
+          environment: $GRAFANA_ALERT_ENVIRONMENT
+          severity: warning
         dashboardUid: market-data-pipeline
         panelId: 25
         isPaused: false

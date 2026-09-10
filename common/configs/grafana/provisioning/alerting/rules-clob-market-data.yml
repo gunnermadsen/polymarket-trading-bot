@@ -1,5 +1,13 @@
 apiVersion: 1
 
+deleteRules:
+  - orgId: 1
+    uid: clob_source_timestamp_lag_flapping
+  - orgId: 1
+    uid: clob_abrupt_upstream_disconnect
+  - orgId: 1
+    uid: clob_silent_watchdog_disconnect
+
 groups:
   - orgId: 1
     name: clob-market-data-20s
