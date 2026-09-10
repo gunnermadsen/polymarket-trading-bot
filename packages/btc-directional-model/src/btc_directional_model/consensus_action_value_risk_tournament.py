@@ -474,9 +474,63 @@ def _report(metrics: dict[str, Any]) -> str:
         )
     lines += [
         "",
+        "## Strategy × risk policy primary-band matrix",
+        "",
+        "| Risk policy | Trading process / strategy model | Base PnL | Risk PnL | Delta | Stress PnL | Trades | W/L | Coverage | Avg entry | Avg cost | PF | Recovery | Max DD | Alignment |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, bands in metrics["compatibility_results"].items():
+        band = "1.0" if name == "no_risk" else primary
+        for strategy, evidence in bands[band]["by_strategy"].items():
+            base = evidence["baseline"]
+            risk = evidence["strategy_with_risk"]
+            lines.append(
+                f"| {name} | {STRATEGIES[strategy]['process_name']} | "
+                f"${base['net_pnl']:.2f} | ${risk['net_pnl']:.2f} | "
+                f"${evidence['net_risk_value']:.2f} | ${risk['stress_net_pnl']:.2f} | "
+                f"{risk['trades']} | {risk['wins']}/{risk['losses']} | "
+                f"{risk['coverage_retained']:.1%} | {n(risk['average_entry_seconds'], 1)}s | "
+                f"${n(risk['average_cost'], 3)} | {n(risk['profit_factor'], 3)} | "
+                f"{n(risk['recovery_wins_per_loss'], 3)} | ${risk['max_drawdown']:.2f} | "
+                f"{n(evidence['risk_alignment_ratio'], 2)}x |"
+            )
+    lines += [
+        "",
         "## Granular champions",
         "",
         "Champion identity is risk policy + strategy model + time bucket + side + coverage policy. Complete supported and sparse cells are retained in `ledgers/slice-matrix.parquet` and `metrics.json`.",
+        "",
+        "| Bucket | Champion measure | Risk policy | Trading process / strategy model | Side | Target | Base PnL | Risk PnL | Delta | Stress PnL | Trades | W/L | Coverage | PF | Recovery | Max DD | Alignment |",
+        "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for bucket in TRAINING_BUCKETS:
+        champions = metrics["granular_champions"][bucket]
+        emitted: set[tuple[Any, ...]] = set()
+        for measure in ("pnl_champion", "profit_factor_champion", "risk_contribution_champion"):
+            evidence = champions[measure]
+            identity = (
+                evidence["risk_policy"],
+                evidence["strategy_model"],
+                evidence["side"],
+                evidence["coverage_target"],
+            )
+            if identity in emitted:
+                continue
+            emitted.add(identity)
+            base = evidence["baseline"]
+            risk = evidence["strategy_with_risk"]
+            lines.append(
+                f"| {bucket} | {measure.removesuffix('_champion').replace('_', ' ')} | "
+                f"{evidence['risk_policy']} | {STRATEGIES[evidence['strategy_model']]['process_name']} | "
+                f"{evidence['side']} | {evidence['coverage_target']:.0%} | "
+                f"${base['net_pnl']:.2f} | ${risk['net_pnl']:.2f} | "
+                f"${evidence['net_risk_value']:.2f} | ${risk['stress_net_pnl']:.2f} | "
+                f"{risk['trades']} | {risk['wins']}/{risk['losses']} | "
+                f"{risk['coverage_retained']:.1%} | {n(risk['profit_factor'], 3)} | "
+                f"{n(risk['recovery_wins_per_loss'], 3)} | ${risk['max_drawdown']:.2f} | "
+                f"{n(evidence['risk_alignment_ratio'], 2)}x |"
+            )
+    lines += [
         "",
         "## Data integrity and limitations",
         "",
