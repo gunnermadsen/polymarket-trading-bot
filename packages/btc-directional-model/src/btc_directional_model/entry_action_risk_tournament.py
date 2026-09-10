@@ -420,7 +420,7 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     results: dict[str, Any] = {}
     slice_rows: list[dict[str, Any]] = []
     scored = test
-    thresholds: dict[str, dict[str, float]] = {}
+    thresholds: dict[str, dict[str, float | None]] = {}
     for name, model in final_models.items():
         cal_score, test_score = model.score(cal), model.score(test)
         scored = scored.with_columns(pl.Series(f"action_score__{name}", test_score))
@@ -473,7 +473,7 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
         test, np.ones(test.height), -math.inf, "no_risk", 1.0
     )
     results["no_risk"] = {"1.0": no_risk}
-    thresholds["no_risk"] = {"1.0": -math.inf}
+    thresholds["no_risk"] = {"1.0": None}
     slice_rows.extend(no_risk_slices)
 
     ledgers = run_dir / "ledgers"
