@@ -21,8 +21,15 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+import __main__
+
 from .candidate_loss_risk_tournament import _sha256, _write_json, trade_metrics
-from .strategy_conditioned_risk_tournament import BUCKETS, STRATEGIES, build_strategy_panel
+from .strategy_conditioned_risk_tournament import (
+    BUCKETS,
+    STRATEGIES,
+    EconomicHarmModel,
+    build_strategy_panel,
+)
 
 SCHEMA_VERSION = "strategy_conditioned_entry_action_risk_tournament_v1"
 KEYS = ("market_id", "observed_at")
@@ -427,6 +434,9 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
 
     # Frozen loss-risk and simple economics controls are comparison policies only. They do not
     # participate in research-model selection and are matched to the same coverage bands.
+    # The preceding CLI-authored artifact recorded its local composite under __main__.
+    # Bind that known class only for backwards-compatible deserialization of the frozen control.
+    __main__.EconomicHarmModel = EconomicHarmModel
     prior_artifact = joblib.load(strategy_run / "tournament.joblib")
     prior_fit = pl.read_parquet(candidate_run / "checkpoints/construction-panel.parquet")
     mean_loss = float(-prior_fit.filter(pl.col("net_pnl") <= 0)["net_pnl"].mean())
