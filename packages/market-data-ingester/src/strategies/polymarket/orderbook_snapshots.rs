@@ -3672,7 +3672,7 @@ struct DiscoveryWorker {
 
 enum ClobIoEvent {
     Frame {
-        bytes: Vec<u8>,
+        message: Message,
         received_at: DateTime<Utc>,
         queued_at: Instant,
     },
@@ -4044,10 +4044,10 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                     continue;
                                 }
                                 if value.is_empty() { continue; }
-                                ClobIoEvent::Frame { bytes: text.as_bytes().to_vec(), received_at, queued_at: Instant::now() }
+                                ClobIoEvent::Frame { message: Message::Text(text), received_at, queued_at: Instant::now() }
                             }
                             Some(Ok(Message::Binary(bytes))) => ClobIoEvent::Frame {
-                                bytes: bytes.to_vec(),
+                                message: Message::Binary(bytes),
                                 received_at,
                                 queued_at: Instant::now(),
                             },
@@ -4077,14 +4077,19 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 "Polymarket CLOB websocket ended",
                             )),
                         };
-                        if let ClobIoEvent::Frame { bytes, .. } = &event {
+                        if let ClobIoEvent::Frame { message, .. } = &event {
+                            let frame_bytes = match message {
+                                Message::Text(text) => text.as_bytes(),
+                                Message::Binary(bytes) => bytes.as_ref(),
+                                _ => unreachable!("CLOB frame event contains non-data message"),
+                            };
                             let now = Instant::now();
                             let interframe = last_data_frame_at
                                 .replace(now)
                                 .map(|previous| now.saturating_duration_since(previous));
                             crate::streaming::observe_websocket_frame(
                                 STRATEGY_KEY.as_str(),
-                                bytes.len(),
+                                frame_bytes.len(),
                                 interframe,
                             );
                             crate::streaming::observe_source_event(
@@ -4301,7 +4306,7 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                 }
                 event = io_receiver.recv() => {
                     match event {
-                        Some(ClobIoEvent::Frame { bytes, received_at, queued_at }) => {
+                        Some(ClobIoEvent::Frame { message, received_at, queued_at }) => {
                             crate::streaming::observe_websocket_queue_delay(
                                 STRATEGY_KEY.as_str(),
                                 queued_at.elapsed(),
@@ -4311,13 +4316,18 @@ impl PolymarketBtcFiveMinuteOrderbooksStrategy {
                                 io_receiver.len(),
                                 WEBSOCKET_EVENT_BUFFER,
                             );
+                            let frame_bytes = match &message {
+                                Message::Text(text) => text.as_bytes(),
+                                Message::Binary(bytes) => bytes.as_ref(),
+                                _ => unreachable!("CLOB frame event contains non-data message"),
+                            };
                             self.apply_frame(
                                 &persistence_sender,
                                 publication_sender,
                                 continuity,
                                 &mut registry,
                                 connection_epoch,
-                                &bytes,
+                                frame_bytes,
                                 received_at,
                             ).await?;
                         }
@@ -4728,7 +4738,7 @@ mod tests {
         let (sender, mut receiver) = mpsc::channel(1);
         sender
             .try_send(ClobIoEvent::Frame {
-                bytes: vec![],
+                message: Message::Binary(Vec::new().into()),
                 received_at: Utc::now(),
                 queued_at: Instant::now(),
             })
@@ -4758,10 +4768,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_frame_handoff_preserves_owned_payload() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let message = Message::Binary(vec![1_u8, 2, 3, 4].into());
+        let payload_address = match &message {
+            Message::Binary(payload) => payload.as_ptr(),
+            _ => unreachable!(),
+        };
+        assert!(
+            enqueue_clob_io_event(
+                &sender,
+                ClobIoEvent::Frame {
+                    message,
+                    received_at: Utc::now(),
+                    queued_at: Instant::now(),
+                },
+            )
+            .await
+        );
+        match receiver.recv().await.unwrap() {
+            ClobIoEvent::Frame {
+                message: Message::Binary(payload),
+                ..
+            } => assert_eq!(payload.as_ptr(), payload_address),
+            _ => panic!("expected binary data frame"),
+        }
+    }
+
+    #[tokio::test]
     async fn full_data_queue_still_reports_consumer_backpressure() {
         let (sender, mut receiver) = mpsc::channel(1);
         let frame = || ClobIoEvent::Frame {
-            bytes: vec![],
+            message: Message::Binary(Vec::new().into()),
             received_at: Utc::now(),
             queued_at: Instant::now(),
         };
