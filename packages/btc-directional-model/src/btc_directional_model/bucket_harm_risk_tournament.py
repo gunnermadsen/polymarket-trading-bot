@@ -175,7 +175,10 @@ def _feature_sets(frame: pl.DataFrame) -> dict[str, tuple[str, ...]]:
     excluded = {
         "future_best_within_bucket_pnl", "within_bucket_defer_value", "winner_value", "loss_value"
     }
-    all_features = tuple(name for name in _feature_names(frame) if name not in excluded)
+    all_features = tuple(
+        name for name in _feature_names(frame)
+        if name not in excluded and frame[name].drop_nulls().n_unique() >= 2
+    )
     economic = tuple(name for name in all_features if name in {
         "seconds_elapsed", "seconds_remaining", "selected_probability", "confidence",
         "share_cost", "fee_per_share", "expected_edge", "probability_change", "edge_change",
@@ -359,7 +362,7 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     fit_end = parse(raw["splits"]["selection_fit_end"])
     boundaries = [parse(value) for value in raw["splits"]["walk_forward_boundaries"]]
     selection_fit = training.filter(pl.col("window_start") < fit_end)
-    feature_sets = _feature_sets(training)
+    feature_sets = _feature_sets(selection_fit)
     seed = int(raw["training"]["random_seed"])
     iterations = int(raw["training"]["maximum_iterations"])
     selection_checkpoint = checkpoints / "selection-models.joblib"
