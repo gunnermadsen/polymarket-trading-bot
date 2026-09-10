@@ -1563,6 +1563,11 @@ impl BinanceSpotOneSecondOhlcvStrategy {
             if candle.open_timestamp > expected {
                 self.persist_candles_observed(state, std::mem::take(pending))
                     .await?;
+                await_closed_boundary(
+                    candle.open_timestamp - chrono::Duration::seconds(1),
+                    shutdown,
+                )
+                .await?;
                 self.repair_gap(
                     state,
                     expected,
@@ -2037,6 +2042,48 @@ fn validate_closed_boundary(
     Err(integrity_error(error_code, message))
 }
 
+async fn await_closed_boundary(
+    requested: DateTime<Utc>,
+    shutdown: &CancellationToken,
+) -> Result<(), StrategyError> {
+    let Some(wait) = closed_boundary_wait(requested, Utc::now())? else {
+        return Ok(());
+    };
+    tokio::select! {
+        _ = shutdown.cancelled() => Err(shutdown_error()),
+        _ = tokio::time::sleep(wait) => Ok(()),
+    }
+}
+
+fn closed_boundary_wait(
+    requested: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<Option<Duration>, StrategyError> {
+    let last_closed = last_fully_closed_open(now)?;
+    if requested <= last_closed {
+        return Ok(None);
+    }
+    if requested > last_closed + MAX_PROVIDER_CLOCK_SKEW {
+        return Err(integrity_error(
+            "binance_ohlcv_live_gap_clock_lead",
+            format!(
+                "live gap recovery range end {requested} is newer than last fully closed second {last_closed}"
+            ),
+        ));
+    }
+    let close_at = requested + chrono::Duration::seconds(1);
+    let wait = (close_at - now)
+        .to_std()
+        .map_err(|_| {
+            integrity_error(
+                "binance_ohlcv_invalid_close_boundary_wait",
+                "live gap close-boundary wait is negative or out of range",
+            )
+        })?
+        .saturating_add(Duration::from_millis(25));
+    Ok(Some(wait))
+}
+
 fn timestamp_millis(value: i64, field: &str) -> Result<DateTime<Utc>, StrategyError> {
     if value < 0 {
         return Err(source_error(
@@ -2391,6 +2438,28 @@ mod tests {
 
         assert_eq!(error.kind, StrategyErrorKind::Integrity);
         assert_eq!(error.code, "binance_ohlcv_cursor_in_future");
+    }
+
+    #[test]
+    fn live_gap_waits_until_the_requested_second_is_closed() {
+        let now = Utc.timestamp_millis_opt(1_722_470_400_800).unwrap();
+        let requested = Utc.timestamp_millis_opt(1_722_470_401_000).unwrap();
+
+        assert_eq!(
+            closed_boundary_wait(requested, now).expect("bounded clock lead"),
+            Some(Duration::from_millis(1_225))
+        );
+    }
+
+    #[test]
+    fn live_gap_does_not_wait_for_an_already_closed_second() {
+        let now = Utc.timestamp_millis_opt(1_722_470_402_100).unwrap();
+        let requested = Utc.timestamp_millis_opt(1_722_470_401_000).unwrap();
+
+        assert_eq!(
+            closed_boundary_wait(requested, now).expect("closed boundary"),
+            None
+        );
     }
 
     #[test]
