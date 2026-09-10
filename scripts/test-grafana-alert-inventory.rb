@@ -1,6 +1,7 @@
 # Validate that the checked-in Grafana alert inventory is complete and self-consistent.
 require 'yaml'
 require 'open3'
+require 'json'
 
 root = File.expand_path('..', __dir__)
 alert_dir = File.join(root, 'common/configs/grafana/provisioning/alerting')
@@ -111,5 +112,16 @@ output, status = Open3.capture2e(
 )
 puts output
 abort 'duplicate-owner Prometheus expression tests failed' unless status.success?
+
+dashboard_path = File.join(root, 'common/configs/grafana/dashboards/market-data-pipeline.json')
+dashboard = JSON.parse(File.read(dashboard_path))
+health_panel = dashboard.fetch('panels').find { |panel| panel['title'] == 'Current Strategy Health' }
+raise 'missing Current Strategy Health panel' unless health_panel
+health_expression = health_panel.dig('targets', 0, 'expr').to_s
+health_selectors = health_expression.scan(/market_data_ingester_strategy_state\{([^}]*)\}/).flatten
+raise 'Current Strategy Health has no lifecycle selectors' if health_selectors.empty?
+unless health_selectors.all? { |selector| selector.include?('desired_state="running"') }
+  raise 'Current Strategy Health includes strategies that are not desired-running'
+end
 
 puts "PASS #{rules.size} Grafana alert rules across #{paths.size} provisioned files"
