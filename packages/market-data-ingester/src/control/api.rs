@@ -809,7 +809,7 @@ impl ControlReadiness {
         (sender, Self { receiver })
     }
 
-    fn is_ready(&self) -> bool {
+    pub(crate) fn is_ready(&self) -> bool {
         *self.receiver.borrow()
     }
 }

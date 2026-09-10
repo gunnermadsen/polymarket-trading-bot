@@ -98,7 +98,23 @@ impl BackfillWorkerRuntime {
 
     pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
         let runtime = Arc::new(self);
-        runtime.register().await?;
+        let mut registration_delay = Duration::from_secs(1);
+        loop {
+            match runtime.register().await {
+                Ok(()) => break,
+                Err(error) => warn!(
+                    worker_id = %runtime.worker.worker_id,
+                    %error,
+                    retry_delay_ms = registration_delay.as_millis(),
+                    "ingester worker registration unavailable; preserving realtime worker process"
+                ),
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(registration_delay) => {}
+            }
+            registration_delay = (registration_delay * 2).min(Duration::from_secs(30));
+        }
         info!(worker_id=%runtime.worker.worker_id, capacity_units=runtime.worker.capacity_units, realtime_slot_limit=runtime.worker.realtime_slot_limit, "ingester worker registered");
         let mut idle = tokio::time::interval(Duration::from_secs(1));
         idle.set_missed_tick_behavior(MissedTickBehavior::Skip);

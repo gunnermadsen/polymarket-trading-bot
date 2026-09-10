@@ -20,25 +20,45 @@ use crate::{
 use super::{shutdown_signal, BootstrapSettings, IngesterMode};
 
 const COMPONENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
-const DATABASE_HEALTHCHECK_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const DATABASE_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const DATABASE_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+const DATABASE_READINESS_INTERVAL: Duration = Duration::from_secs(2);
 
-async fn await_pool_health(pool: &sqlx::PgPool, pool_name: &'static str) {
+async fn connect_pool_with_retry(
+    settings: &BootstrapSettings,
+    pool_name: &'static str,
+    max_connections: u32,
+    acquire_timeout: Duration,
+) -> sqlx::PgPool {
+    let mut retry_delay = DATABASE_RETRY_INITIAL_DELAY;
     loop {
-        match sqlx::query_scalar::<_, i32>("SELECT 1")
-            .fetch_one(pool)
-            .await
-        {
-            Ok(_) => return,
+        let attempt = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .acquire_timeout(acquire_timeout)
+            .connect_with(settings.database.clone())
+            .await;
+        match attempt {
+            Ok(pool) => match sqlx::query_scalar::<_, i32>("SELECT 1")
+                .fetch_one(&pool)
+                .await
+            {
+                Ok(_) => return pool,
+                Err(error) => {
+                    pool.close().await;
+                    warn!(pool = pool_name, %error, retry_after_ms = retry_delay.as_millis(), "market-data ingester database healthcheck deferred");
+                }
+            },
             Err(error) => {
                 warn!(
                     pool = pool_name,
                     error = %error,
-                    retry_after_ms = DATABASE_HEALTHCHECK_RETRY_INTERVAL.as_millis(),
-                    "market-data ingester database pool healthcheck deferred"
+                    retry_after_ms = retry_delay.as_millis(),
+                    "market-data ingester database connection deferred"
                 );
-                tokio::time::sleep(DATABASE_HEALTHCHECK_RETRY_INTERVAL).await;
             }
         }
+        tokio::time::sleep(retry_delay).await;
+        retry_delay = (retry_delay * 2).min(DATABASE_RETRY_MAX_DELAY);
     }
 }
 
@@ -58,20 +78,20 @@ impl Application {
 
     pub async fn from_environment_with_registry(registry: StrategyRegistry) -> Result<Self> {
         let settings = BootstrapSettings::from_environment()?;
-        let strategy_pool = PgPoolOptions::new()
-            .max_connections(settings.database_pool_connections)
-            .acquire_timeout(settings.database_acquire_timeout)
-            .connect_with(settings.database.clone())
-            .await
-            .context("failed to connect market-data ingester strategy pool to TimescaleDB")?;
-        let control_pool = PgPoolOptions::new()
-            .max_connections(settings.control_database_pool_connections)
-            .acquire_timeout(settings.control_database_acquire_timeout)
-            .connect_with(settings.database.clone())
-            .await
-            .context("failed to connect market-data ingester control pool to TimescaleDB")?;
-        await_pool_health(&strategy_pool, "strategy").await;
-        await_pool_health(&control_pool, "control").await;
+        let strategy_pool = connect_pool_with_retry(
+            &settings,
+            "strategy",
+            settings.database_pool_connections,
+            settings.database_acquire_timeout,
+        )
+        .await;
+        let control_pool = connect_pool_with_retry(
+            &settings,
+            "control",
+            settings.control_database_pool_connections,
+            settings.control_database_acquire_timeout,
+        )
+        .await;
         Ok(Self {
             settings,
             strategy_pool,
@@ -89,7 +109,7 @@ impl Application {
 
     async fn run_master(self) -> Result<()> {
         let profiles = ProfileRepository::new(self.control_pool.clone());
-        let (_readiness_sender, readiness) = ControlReadiness::channel(true);
+        let (readiness_sender, readiness) = ControlReadiness::channel(false);
         let shutdown = CancellationToken::new();
         let api = ControlApi::new(
             profiles.clone(),
@@ -115,6 +135,24 @@ impl Application {
                     .await
                     .context("market-data ingester control API stopped"),
             )
+        });
+        let readiness_shutdown = shutdown.clone();
+        let readiness_pool = self.control_pool.clone();
+        components.spawn(async move {
+            let mut ticker = tokio::time::interval(DATABASE_READINESS_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = readiness_shutdown.cancelled() => return ("control database readiness", Ok(())),
+                    _ = ticker.tick() => {
+                        let ready = sqlx::query_scalar::<_, i32>("SELECT 1")
+                            .fetch_one(&readiness_pool)
+                            .await
+                            .is_ok();
+                        let _ = readiness_sender.send(ready);
+                    }
+                }
+            }
         });
         let component_failure = tokio::select! {
             _ = shutdown_signal() => {
@@ -164,7 +202,7 @@ impl Application {
 
     async fn run_worker(self) -> Result<()> {
         let profiles = ProfileRepository::new(self.control_pool.clone());
-        let (readiness_sender, _readiness) = ControlReadiness::channel(false);
+        let (readiness_sender, readiness) = ControlReadiness::channel(false);
         let supervisor = StrategySupervisor::new(
             profiles,
             self.registry.clone(),
@@ -222,13 +260,35 @@ impl Application {
         let metrics_bind = self.settings.worker_metrics_bind;
         components.spawn(async move {
             let metrics_publisher = publisher.clone();
+            let worker_readiness = readiness.clone();
+            let metrics_readiness = readiness.clone();
             let app = Router::new()
                 .route("/health/live", get(|| async { "ok\n" }))
+                .route(
+                    "/health/ready",
+                    get(move || {
+                        let readiness = worker_readiness.clone();
+                        async move {
+                            if readiness.is_ready() {
+                                axum::http::StatusCode::OK
+                            } else {
+                                axum::http::StatusCode::SERVICE_UNAVAILABLE
+                            }
+                        }
+                    }),
+                )
                 .route(
                     "/prometheus/metrics",
                     get(move || {
                         let publisher = metrics_publisher.clone();
-                        async move { publisher.render_metrics() }
+                        let readiness = metrics_readiness.clone();
+                        async move {
+                            format!(
+                                "{}# HELP market_data_ingester_worker_readiness Whether realtime assignment reconciliation is currently healthy.\n# TYPE market_data_ingester_worker_readiness gauge\nmarket_data_ingester_worker_readiness {}\n",
+                                publisher.render_metrics(),
+                                u8::from(readiness.is_ready())
+                            )
+                        }
                     }),
                 );
             let result = async {

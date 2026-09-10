@@ -287,6 +287,12 @@ services:
       - ${POLYMARKET_ORDERBOOK_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/orderbook-drain}:/var/lib/polymarket-orderbooks
       - ${KRAKEN_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/kraken-data}:/var/lib/kraken-data
       - ${FINANCIAL_DATA_ROOT:-/Volumes/docker-data/polymarket-bot/global-financial-data}:/var/lib/financial-data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8099/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     depends_on:
       ingester-master:
         condition: service_healthy
