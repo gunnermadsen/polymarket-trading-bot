@@ -1610,13 +1610,13 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                 self.recover_exact_range(state, start, last_closed, shutdown)
                     .await
             }
-            Some(cursor) if cursor > last_closed => Err(integrity_error(
-                "binance_ohlcv_cursor_in_future",
-                format!(
-                    "durable OHLCV cursor {cursor} is newer than last fully closed second {last_closed}"
-                ),
-            )),
             Some(cursor) => {
+                validate_closed_boundary(
+                    cursor,
+                    last_closed,
+                    "binance_ohlcv_cursor_in_future",
+                    "durable OHLCV cursor",
+                )?;
                 let overlap_start = cursor
                     - chrono::Duration::seconds(
                         self.config.recovery_overlap_seconds.saturating_sub(1),
@@ -1880,12 +1880,12 @@ impl BinanceSpotOneSecondOhlcvStrategy {
         shutdown: &CancellationToken,
     ) -> Result<Vec<OneSecondOhlcv>, StrategyError> {
         let last_closed = last_fully_closed_open(Utc::now())?;
-        if end > last_closed {
-            return Err(integrity_error(
-                "binance_ohlcv_open_rest_range",
-                "attempted to recover a provider kline that is not fully closed",
-            ));
-        }
+        validate_closed_boundary(
+            end,
+            last_closed,
+            "binance_ohlcv_open_rest_range",
+            "REST recovery range end",
+        )?;
         let url = format!(
             "{}/api/v3/klines",
             self.config.rest_base_url.trim_end_matches('/')
@@ -2018,6 +2018,23 @@ fn last_fully_closed_open(now: DateTime<Utc>) -> Result<DateTime<Utc>, StrategyE
         current_second.saturating_sub(1_000),
         "last fully closed open time",
     )
+}
+
+fn validate_closed_boundary(
+    requested: DateTime<Utc>,
+    last_closed: DateTime<Utc>,
+    error_code: &'static str,
+    subject: &'static str,
+) -> Result<(), StrategyError> {
+    if requested <= last_closed {
+        return Ok(());
+    }
+    let message =
+        format!("{subject} {requested} is newer than last fully closed second {last_closed}");
+    if requested == last_closed + chrono::Duration::seconds(1) {
+        return Err(source_error(error_code, message));
+    }
+    Err(integrity_error(error_code, message))
 }
 
 fn timestamp_millis(value: i64, field: &str) -> Result<DateTime<Utc>, StrategyError> {
@@ -2344,6 +2361,36 @@ mod tests {
             candles[1].open_timestamp - candles[0].open_timestamp,
             chrono::Duration::seconds(1)
         );
+    }
+
+    #[test]
+    fn one_second_close_boundary_race_is_transient() {
+        let last_closed = Utc.timestamp_millis_opt(1_722_470_400_000).unwrap();
+        let error = validate_closed_boundary(
+            last_closed + chrono::Duration::seconds(1),
+            last_closed,
+            "binance_ohlcv_open_rest_range",
+            "REST recovery range end",
+        )
+        .expect_err("the next second must wait for its close boundary");
+
+        assert_eq!(error.kind, StrategyErrorKind::TransientSource);
+        assert_eq!(error.code, "binance_ohlcv_open_rest_range");
+    }
+
+    #[test]
+    fn materially_future_close_boundary_remains_an_integrity_failure() {
+        let last_closed = Utc.timestamp_millis_opt(1_722_470_400_000).unwrap();
+        let error = validate_closed_boundary(
+            last_closed + chrono::Duration::seconds(2),
+            last_closed,
+            "binance_ohlcv_cursor_in_future",
+            "durable OHLCV cursor",
+        )
+        .expect_err("a materially future cursor must fail closed");
+
+        assert_eq!(error.kind, StrategyErrorKind::Integrity);
+        assert_eq!(error.code, "binance_ohlcv_cursor_in_future");
     }
 
     #[test]
