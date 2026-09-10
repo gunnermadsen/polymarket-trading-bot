@@ -1,0 +1,38 @@
+[data]
+entry_action_run = "training-results/btc-5m-entry-action-risk-tournament-20260321-20260901/20260910T034008Z"
+bucket_harm_run = "training-results/btc-5m-bucket-harm-risk-tournament-20260321-20260909/20260910T184905Z"
+candidate_risk_run = "training-results/btc-5m-candidate-loss-risk-tournament-20260321-20260901/20260909T163841Z"
+strategy_risk_run = "training-results/btc-5m-strategy-conditioned-risk-tournament-20260321-20260901/20260909T210622Z"
+
+[splits]
+selection_fit_end = "2026-07-15T00:00:00Z"
+walk_forward_boundaries = [
+  "2026-07-15T00:00:00Z",
+  "2026-07-18T00:00:00Z",
+  "2026-07-25T00:00:00Z",
+  "2026-08-01T00:00:00Z",
+  "2026-08-11T00:00:00Z",
+]
+compatibility_calibration_start = "2026-08-20T00:00:00Z"
+compatibility_test_start = "2026-08-21T00:00:00Z"
+compatibility_test_end = "2026-08-26T00:00:00Z"
+
+[training]
+coverage_targets = [0.95, 0.85, 0.70]
+primary_coverage = 0.85
+deferral_penalty = 0.01
+maximum_iterations = 60
+random_seed = 20260910
+conformal_calibration_fraction = 0.20
+conformal_error_quantile = 0.80
+
+[forward_audit]
+window_start = "2026-09-07T21:21:00Z"
+window_end = "2026-09-10T00:00:00Z"
+source = "read-only process-scoped btc_strategy_decisions audit"
+process_decision_counts = [61380, 3586, 3576, 3602, 3587, 3430]
+process_market_counts = [607, 601, 603, 603, 601, 604]
+process_buy_counts = [98, 2, 8, 0, 1, 54]
+
+[output]
+directory = "training-results/btc-5m-consensus-action-value-risk-tournament-20260321-20260909"
