@@ -6,6 +6,7 @@ import argparse
 import math
 import platform
 import subprocess
+import sys
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
@@ -469,9 +470,8 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
             evidence, slices = _evaluate(test, test_score, threshold, name, target)
             results[name][str(target)] = evidence
             slice_rows.extend(slices)
-    no_risk, no_risk_slices = _evaluate(
-        test, np.ones(test.height), -math.inf, "no_risk", 1.0
-    )
+    no_risk_limit = -float(np.finfo(np.float64).max)
+    no_risk, no_risk_slices = _evaluate(test, np.ones(test.height), no_risk_limit, "no_risk", 1.0)
     results["no_risk"] = {"1.0": no_risk}
     thresholds["no_risk"] = {"1.0": None}
     slice_rows.extend(no_risk_slices)
@@ -482,6 +482,10 @@ def train_tournament(config_path: Path, resume_run: str | None = None) -> Path:
     pl.DataFrame(slice_rows).write_parquet(ledgers / "slice-matrix.parquet", compression="zstd", statistics=True)
     producing_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=package_root, text=True).strip()
     artifact = run_dir / "tournament.joblib"
+    if __name__ == "__main__":
+        canonical_module = "btc_directional_model.entry_action_risk_tournament"
+        sys.modules[canonical_module] = sys.modules[__name__]
+        EntryActionModel.__module__ = canonical_module
     joblib.dump({
         "schema_version": SCHEMA_VERSION, "run_id": run_id, "producing_commit": producing_commit,
         "models": final_models, "thresholds": thresholds, "research_champion": champion,
