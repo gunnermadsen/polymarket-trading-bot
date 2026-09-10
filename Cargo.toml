@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "packages/market-data-ingester",
+    "packages/polymarket-bot",
+]
+resolver = "2"

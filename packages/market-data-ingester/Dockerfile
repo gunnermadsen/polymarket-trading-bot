@@ -9,18 +9,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.lock ./
-COPY packages/market-data-ingester/build.rs ./build.rs
-COPY common/proto /common/proto
-RUN mkdir src \
-    && printf 'fn main() {}\n' > src/main.rs \
-    && printf 'pub fn placeholder() {}\n' > src/lib.rs \
-    && cargo build --locked --release \
-    && rm -rf src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.toml
+COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.toml
+COPY packages/market-data-ingester/build.rs packages/market-data-ingester/build.rs
+COPY common/proto common/proto
+RUN mkdir -p packages/market-data-ingester/src \
+    && printf 'fn main() {}\n' > packages/market-data-ingester/src/main.rs \
+    && printf 'pub fn placeholder() {}\n' > packages/market-data-ingester/src/lib.rs \
+    && cargo build --locked --release --package market-data-ingester \
+    && rm -rf packages/market-data-ingester/src
 
-COPY packages/market-data-ingester/src ./src
-RUN find src -type f -exec touch {} + \
-    && cargo build --locked --release \
+COPY packages/market-data-ingester/src packages/market-data-ingester/src
+RUN find packages/market-data-ingester/src -type f -exec touch {} + \
+    && cargo build --locked --release --package market-data-ingester \
     && cp target/release/ingester /usr/local/bin/ingester
 
 FROM debian:bookworm-slim AS master

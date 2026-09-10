@@ -23,9 +23,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-env-changed=POLYMARKET_BUILD_SOURCE_ID");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let workspace_dir = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("package manifest is not beneath the workspace root")?;
     let mut files = vec![
+        workspace_dir.join("Cargo.toml"),
+        workspace_dir.join("Cargo.lock"),
         manifest_dir.join("Cargo.toml"),
-        manifest_dir.join("Cargo.lock"),
         manifest_dir.join("build.rs"),
     ];
     collect_files(&manifest_dir.join("src"), &mut files)?;
@@ -34,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut hasher = Sha256::new();
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
-        let relative = path.strip_prefix(&manifest_dir)?.to_string_lossy();
+        let relative = path.strip_prefix(workspace_dir)?.to_string_lossy();
         let contents = fs::read(&path)?;
         hasher.update((relative.len() as u64).to_le_bytes());
         hasher.update(relative.as_bytes());

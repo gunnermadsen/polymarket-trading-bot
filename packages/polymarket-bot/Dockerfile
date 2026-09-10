@@ -1,4 +1,4 @@
-FROM rust:1.91-bookworm AS builder-base
+FROM rust:1.92.0-bookworm AS builder-base
 
 WORKDIR /app
 
@@ -6,15 +6,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
-COPY packages/polymarket-bot/build.rs ./build.rs
-COPY common/proto /common/proto
-COPY packages/polymarket-bot/src ./src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.toml
+COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.toml
+COPY packages/polymarket-bot/build.rs packages/polymarket-bot/build.rs
+COPY common/proto common/proto
+COPY packages/polymarket-bot/src packages/polymarket-bot/src
 
 FROM builder-base AS test
 
 # Keep the complete validation suite available without coupling it to image packaging.
-COPY packages/polymarket-bot/tests ./tests
+COPY packages/polymarket-bot/tests packages/polymarket-bot/tests
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 COPY README.md /README.md
 
@@ -24,7 +26,7 @@ RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/ca
     --mount=type=cache,id=polymarket-bot-dev-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=polymarket-bot-dev-test-target,target=/app/target,sharing=locked \
     chmod -R u=rwX,go=rX /opt/polymarket-models \
-    && cargo test --locked --all-targets -- --include-ignored
+    && cargo test --locked --package polymarket-bot --all-targets -- --include-ignored
 
 FROM builder-base AS builder
 
@@ -33,7 +35,7 @@ ENV CARGO_INCREMENTAL=1
 RUN --mount=type=cache,id=polymarket-bot-dev-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=polymarket-bot-dev-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=polymarket-bot-dev-release-target,target=/app/target,sharing=locked \
-    cargo build --locked --release \
+    cargo build --locked --release --package polymarket-bot \
       --bin polymarket-bot \
       --bin derive-clob-creds \
     && mkdir -p /opt/polymarket-artifacts \

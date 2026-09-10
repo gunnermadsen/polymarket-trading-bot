@@ -1,6 +1,36 @@
 use std::{fs, path::Path};
 
 #[test]
+fn rust_packages_use_the_root_workspace_contract() {
+    let root = repository_root();
+    let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    assert!(workspace.contains("\"packages/market-data-ingester\""));
+    assert!(workspace.contains("\"packages/polymarket-bot\""));
+    assert!(workspace.contains("resolver = \"2\""));
+    assert!(root.join("Cargo.lock").is_file());
+    assert!(root.join("rust-toolchain.toml").is_file());
+    assert!(!root.join("packages/polymarket-bot/Cargo.lock").exists());
+    assert!(!root
+        .join("packages/market-data-ingester/Cargo.lock")
+        .exists());
+
+    for relative in [
+        "packages/polymarket-bot/Dockerfile",
+        "packages/polymarket-bot/Dockerfile.production",
+        "packages/market-data-ingester/Dockerfile",
+    ] {
+        let dockerfile = fs::read_to_string(root.join(relative)).unwrap();
+        assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock rust-toolchain.toml ./"));
+        assert!(dockerfile.contains("--package "));
+    }
+
+    let ci = fs::read_to_string(root.join(".github/workflows/CI.yml")).unwrap();
+    assert!(ci.contains("hashFiles('Cargo.lock')"));
+    assert!(!ci.contains("packages/polymarket-bot/Cargo.lock"));
+    assert!(!ci.contains("packages/market-data-ingester/Cargo.lock"));
+}
+
+#[test]
 fn polymarket_image_has_no_backfill_runtime() {
     let root = repository_root();
     for relative in [

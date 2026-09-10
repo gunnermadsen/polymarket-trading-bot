@@ -9,26 +9,27 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.lock ./
-COPY packages/polymarket-bot/build.rs ./build.rs
-COPY common/proto /common/proto
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.toml
+COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.toml
+COPY packages/polymarket-bot/build.rs packages/polymarket-bot/build.rs
+COPY common/proto common/proto
 
-RUN mkdir -p src/bin \
-    && printf 'pub fn placeholder() {}\n' > src/lib.rs \
-    && printf 'fn main() {}\n' > src/main.rs \
-    && printf 'fn main() {}\n' > src/bin/derive-clob-creds.rs \
-    && printf 'fn main() {}\n' > src/bin/fit-chainlink-reliability-calibration.rs
+RUN mkdir -p packages/polymarket-bot/src/bin \
+    && printf 'pub fn placeholder() {}\n' > packages/polymarket-bot/src/lib.rs \
+    && printf 'fn main() {}\n' > packages/polymarket-bot/src/main.rs \
+    && printf 'fn main() {}\n' > packages/polymarket-bot/src/bin/derive-clob-creds.rs
 
 # Keep compiled dependencies in a normal layer so remote BuildKit cache exporters
 # can reuse them on ephemeral GitHub Actions runners.
-RUN cargo build --locked --release
+RUN cargo build --locked --release --package polymarket-bot
 
-COPY packages/polymarket-bot/src ./src
+COPY packages/polymarket-bot/src packages/polymarket-bot/src
 COPY packages/btc-directional-model/runtime-models /opt/polymarket-models
 
 RUN chmod -R u=rwX,go=rX /opt/polymarket-models \
     && cargo clean --release -p polymarket-bot \
-    && cargo build --locked --release \
+    && cargo build --locked --release --package polymarket-bot \
     && cp /app/target/release/polymarket-bot /usr/local/bin/polymarket-bot \
     && cp /app/target/release/derive-clob-creds /usr/local/bin/derive-clob-creds
 

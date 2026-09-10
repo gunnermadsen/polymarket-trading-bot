@@ -33,9 +33,9 @@ Source-specific configuration, decoding, recovery, and fact SQL stay inside the 
 The canonical master and worker images compile the same registry. Runtime start and stop decisions come from `ingester.profiles`, not Cargo features or provider-specific environment variables.
 
 ```bash
-cargo fmt --check --manifest-path packages/market-data-ingester/Cargo.toml
-cargo clippy --manifest-path packages/market-data-ingester/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path packages/market-data-ingester/Cargo.toml --all-targets
+cargo fmt --all -- --check
+cargo clippy --locked --package market-data-ingester --all-targets --all-features -- -D warnings
+cargo test --locked --package market-data-ingester --all-targets --all-features
 ```
 
 Create an ignored `.env.market-data-ingester` from the repository template and

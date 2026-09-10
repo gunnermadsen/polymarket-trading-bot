@@ -36,13 +36,13 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            packages/polymarket-bot/target
-          key: rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('packages/polymarket-bot/Cargo.lock') }}
+            target
+          key: polymarket-bot-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+            polymarket-bot-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Run Rust tests
-        run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path packages/polymarket-bot/Cargo.toml --all-targets
+        run: cargo +"$RUST_TOOLCHAIN" test --locked --package polymarket-bot --all-targets
 
   market-data-ingester-tests:
     name: Market data ingester tests
@@ -66,15 +66,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            packages/market-data-ingester/target
-          key: market-data-ingester-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('packages/market-data-ingester/Cargo.lock') }}
+            target
+          key: market-data-ingester-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             market-data-ingester-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Check Rust formatting
         run: >-
           cargo +"$RUST_TOOLCHAIN" fmt
-          --manifest-path packages/market-data-ingester/Cargo.toml
           --all
           --
           --check
@@ -83,7 +82,7 @@ jobs:
         run: >-
           cargo +"$RUST_TOOLCHAIN" clippy
           --locked
-          --manifest-path packages/market-data-ingester/Cargo.toml
+          --package market-data-ingester
           --all-targets
           --all-features
           --
@@ -93,7 +92,7 @@ jobs:
         run: >-
           cargo +"$RUST_TOOLCHAIN" test
           --locked
-          --manifest-path packages/market-data-ingester/Cargo.toml
+          --package market-data-ingester
           --all-targets
           --all-features
 
@@ -101,7 +100,7 @@ jobs:
         run: >-
           cargo +"$RUST_TOOLCHAIN" doc
           --locked
-          --manifest-path packages/market-data-ingester/Cargo.toml
+          --package market-data-ingester
           --no-deps
           --all-features
 
@@ -119,9 +118,10 @@ jobs:
           fi
 
           docker build \
-            --build-arg "MARKET_DATA_INGESTER_GIT_REVISION=$source_revision" \
+            --file packages/market-data-ingester/Dockerfile \
+            --build-arg "INGESTER_GIT_REVISION=$source_revision" \
             --tag "$image" \
-            packages/market-data-ingester
+            .
 
           image_revision="$(
             docker image inspect \
