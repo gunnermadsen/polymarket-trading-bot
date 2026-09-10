@@ -20,6 +20,27 @@ use crate::{
 use super::{shutdown_signal, BootstrapSettings, IngesterMode};
 
 const COMPONENT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(45);
+const DATABASE_HEALTHCHECK_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+async fn await_pool_health(pool: &sqlx::PgPool, pool_name: &'static str) {
+    loop {
+        match sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(pool)
+            .await
+        {
+            Ok(_) => return,
+            Err(error) => {
+                warn!(
+                    pool = pool_name,
+                    error = %error,
+                    retry_after_ms = DATABASE_HEALTHCHECK_RETRY_INTERVAL.as_millis(),
+                    "market-data ingester database pool healthcheck deferred"
+                );
+                tokio::time::sleep(DATABASE_HEALTHCHECK_RETRY_INTERVAL).await;
+            }
+        }
+    }
+}
 
 pub struct Application {
     settings: BootstrapSettings,
@@ -49,14 +70,8 @@ impl Application {
             .connect_with(settings.database.clone())
             .await
             .context("failed to connect market-data ingester control pool to TimescaleDB")?;
-        sqlx::query_scalar::<_, i32>("SELECT 1")
-            .fetch_one(&strategy_pool)
-            .await
-            .context("market-data ingester strategy pool healthcheck failed")?;
-        sqlx::query_scalar::<_, i32>("SELECT 1")
-            .fetch_one(&control_pool)
-            .await
-            .context("market-data ingester control pool healthcheck failed")?;
+        await_pool_health(&strategy_pool, "strategy").await;
+        await_pool_health(&control_pool, "control").await;
         Ok(Self {
             settings,
             strategy_pool,

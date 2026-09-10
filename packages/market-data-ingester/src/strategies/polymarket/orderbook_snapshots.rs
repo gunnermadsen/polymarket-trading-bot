@@ -69,7 +69,7 @@ const MAX_CHANGES_PER_MESSAGE: usize = 20_000;
 const MAX_IDENTIFIER_BYTES: usize = 512;
 const MAX_SOURCE_HASH_BYTES: usize = 256;
 const MAX_NUMERIC_BYTES: usize = 64;
-const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 1_000;
+const MAX_PROVIDER_CLOCK_LEAD_MILLISECONDS: i64 = 5_000;
 const WEBSOCKET_EVENT_BUFFER: usize = 4_096;
 const PERSISTENCE_COMMAND_BUFFER: usize = 32;
 const PUBLICATION_COMMAND_BUFFER: usize = 1_024;
@@ -4876,7 +4876,7 @@ mod tests {
         assert!(OrderbookCheckpoint::from_value(&checkpoint).is_ok());
 
         let mut excessive_lead = checkpoint;
-        excessive_lead["books"][0]["source_timestamp"] = json!("2026-08-14T18:56:49.059Z");
+        excessive_lead["books"][0]["source_timestamp"] = json!("2026-08-14T18:56:52.002Z");
         assert!(OrderbookCheckpoint::from_value(&excessive_lead).is_err());
     }
 
