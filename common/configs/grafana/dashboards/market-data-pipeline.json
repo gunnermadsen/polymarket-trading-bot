@@ -1192,7 +1192,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "2 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"healthy\"}) or 1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"degraded\"}) or 0 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unhealthy\"}) or -1 * max by (strategy) (market_data_ingester_strategy_state{health_status=\"unknown\"})",
+          "expr": "2 * max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",health_status=\"healthy\"}) or 1 * max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",health_status=\"degraded\"}) or 0 * max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",health_status=\"unhealthy\"}) or -1 * max by (strategy) (market_data_ingester_strategy_state{desired_state=\"running\",health_status=\"unknown\"})",
           "instant": true,
           "legendFormat": "{{strategy}}",
           "range": false,

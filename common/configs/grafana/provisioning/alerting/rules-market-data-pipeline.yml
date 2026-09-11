@@ -327,7 +327,7 @@ groups:
             model:
               datasource: {type: prometheus, uid: prometheus}
               editorMode: code
-              expr: 'max(sum by (product) (ingester_stream_subscribers > 0))'
+              expr: 'max(count by (product) (ingester_stream_subscribers > 0))'
               instant: true
               refId: A
           - refId: B

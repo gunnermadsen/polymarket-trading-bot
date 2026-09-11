@@ -84,12 +84,24 @@ if [ ! -f "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" ]; then
   echo "Missing Grafana directional runtime alert provisioning source" >&2
   exit 1
 fi
+if [ ! -f "${SRC_DIR}/alerting/rules-execution-freshness.yml" ]; then
+  echo "Missing Grafana execution freshness alert provisioning source" >&2
+  exit 1
+fi
 if [ ! -f "${SRC_DIR}/alerting/rules-market-data-ingester.yml" ]; then
   echo "Missing Grafana market-data ingester alert provisioning source" >&2
   exit 1
 fi
 if [ ! -f "${SRC_DIR}/alerting/rules-worker-allocation.yml" ]; then
   echo "Missing Grafana worker allocation alert provisioning source" >&2
+  exit 1
+fi
+if [ ! -f "${SRC_DIR}/alerting/rules-market-data-pipeline.yml" ]; then
+  echo "Missing Grafana market-data pipeline alert provisioning source" >&2
+  exit 1
+fi
+if [ ! -f "${SRC_DIR}/alerting/rules-umr.yml" ]; then
+  echo "Missing Grafana unified model runtime alert provisioning source" >&2
   exit 1
 fi
 
@@ -99,6 +111,7 @@ cp "${SRC_DIR}/alerting/rules-prometheus.yml" "${DST_DIR}/alerting/rules-prometh
 cp "${SRC_DIR}/alerting/rules-directional-runtime-health.yml" "${DST_DIR}/alerting/rules-directional-runtime-health.yml"
 cp "${SRC_DIR}/alerting/rules-execution-freshness.yml" "${DST_DIR}/alerting/rules-execution-freshness.yml"
 cp "${SRC_DIR}/alerting/rules-market-data-ingester.yml" "${DST_DIR}/alerting/rules-market-data-ingester.yml"
+cp "${SRC_DIR}/alerting/rules-market-data-pipeline.yml" "${DST_DIR}/alerting/rules-market-data-pipeline.yml"
 cp "${SRC_DIR}/alerting/rules-worker-allocation.yml" "${DST_DIR}/alerting/rules-worker-allocation.yml"
 cp "${SRC_DIR}/alerting/rules-umr.yml" "${DST_DIR}/alerting/rules-umr.yml"
 

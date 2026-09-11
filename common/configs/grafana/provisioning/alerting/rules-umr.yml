@@ -106,7 +106,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -209,7 +210,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -312,7 +314,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -415,7 +418,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -518,7 +522,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -621,7 +626,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -724,7 +730,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -827,7 +834,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         },
@@ -930,7 +938,8 @@
           "labels": {
             "family": "umr",
             "service": "polymarket-bot",
-            "severity": "warning"
+            "severity": "warning",
+            "environment": "$GRAFANA_ALERT_ENVIRONMENT"
           },
           "isPaused": false
         }
