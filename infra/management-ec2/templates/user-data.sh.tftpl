@@ -41,7 +41,7 @@ apt-get update
 apt-get install -y --no-install-recommends cloudflared
 
 useradd --create-home --shell /bin/bash "$RDP_USERNAME"
-usermod -aG ssl-cert "$RDP_USERNAME"
+usermod -aG ssl-cert xrdp
 rdp_password="$(
   aws secretsmanager get-secret-value \
     --region "$AWS_REGION" \
@@ -82,7 +82,7 @@ DESKTOP
 chown -R "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/Desktop"
 chmod 0755 "/home/$RDP_USERNAME/Desktop/google-chrome.desktop"
 
-sed -i 's|^port=.*|port=tcp://127.0.0.1:3389|' /etc/xrdp/xrdp.ini
+sed -i '0,/^port=.*/s||port=tcp://127.0.0.1:3389|' /etc/xrdp/xrdp.ini
 systemctl enable --now xrdp
 
 install -d -m 0700 /etc/cloudflared
