@@ -711,7 +711,7 @@ groups:
         dashboardUid: market-data-pipeline
         panelId: 25
         isPaused: false
-      - uid: mdi_chainlink_reference_transport_failures
+      - uid: mdi_chainlink_ref_transport_failures
         title: Chainlink reference price transport repeatedly failing
         condition: C
         data:
