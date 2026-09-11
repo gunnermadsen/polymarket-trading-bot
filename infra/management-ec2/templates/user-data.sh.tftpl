@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+
+export DEBIAN_FRONTEND=noninteractive
+AWS_REGION='${aws_region}'
+APP_SECRET_NAME='${app_secret_name}'
+RDP_USERNAME='${rdp_username}'
+TUNNEL_TOKEN_PARAMETER='${tunnel_token_parameter}'
+
+apt-get update
+apt-get install -y --no-install-recommends \
+  ca-certificates curl dbus-x11 gnupg jq unzip \
+  xfce4-session xfce4-panel xfce4-settings xfdesktop4 thunar xfce4-terminal \
+  xorgxrdp xrdp
+
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+  | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
+echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' \
+  > /etc/apt/sources.list.d/google-chrome.list
+apt-get update
+apt-get install -y --no-install-recommends google-chrome-stable
+
+curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install --update
+rm -rf /tmp/aws /tmp/awscliv2.zip
+
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  | gpg --dearmor --yes -o /etc/apt/keyrings/cloudflare-main.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' \
+  > /etc/apt/sources.list.d/cloudflared.list
+apt-get update
+apt-get install -y --no-install-recommends cloudflared
+
+useradd --create-home --shell /bin/bash "$RDP_USERNAME"
+usermod -aG ssl-cert "$RDP_USERNAME"
+rdp_password="$(
+  aws secretsmanager get-secret-value \
+    --region "$AWS_REGION" \
+    --secret-id "$APP_SECRET_NAME" \
+    --query SecretString \
+    --output text \
+    | jq -er '.RDP_PASSWORD'
+)"
+printf '%s:%s\n' "$RDP_USERNAME" "$rdp_password" | chpasswd
+unset rdp_password
+
+printf '%s\n' 'startxfce4' > "/home/$RDP_USERNAME/.xsession"
+chown "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/.xsession"
+chmod 0600 "/home/$RDP_USERNAME/.xsession"
+
+install -d -m 0755 /etc/opt/chrome/policies/managed
+cat > /etc/opt/chrome/policies/managed/capitonic.json <<'JSON'
+{
+  "BackgroundModeEnabled": false,
+  "BrowserSignin": 0,
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "PasswordManagerEnabled": true,
+  "RestoreOnStartup": 1
+}
+JSON
+
+install -d -m 0755 "/home/$RDP_USERNAME/Desktop"
+cat > "/home/$RDP_USERNAME/Desktop/google-chrome.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Exec=/usr/bin/google-chrome-stable --disable-background-mode --process-per-site %U
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;
+DESKTOP
+chown -R "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/Desktop"
+chmod 0755 "/home/$RDP_USERNAME/Desktop/google-chrome.desktop"
+
+sed -i 's|^port=.*|port=tcp://127.0.0.1:3389|' /etc/xrdp/xrdp.ini
+systemctl enable --now xrdp
+
+install -d -m 0700 /etc/cloudflared
+aws ssm get-parameter \
+  --region "$AWS_REGION" \
+  --name "$TUNNEL_TOKEN_PARAMETER" \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text > /etc/cloudflared/token
+chmod 0600 /etc/cloudflared/token
+
+cat > /etc/systemd/system/cloudflared.service <<'UNIT'
+[Unit]
+Description=Cloudflare Tunnel for Capitonic management RDP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --protocol quic run --token-file /etc/cloudflared/token
+Restart=always
+RestartSec=5s
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/cloudflared/token
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now cloudflared
+
+systemctl disable --now ssh.service ssh.socket 2>/dev/null || true
+systemctl mask ssh.service ssh.socket 2>/dev/null || true
+apt-get autoremove -y
+apt-get clean
+rm -rf /var/lib/apt/lists/*

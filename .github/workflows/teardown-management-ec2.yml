@@ -1,0 +1,86 @@
+name: Teardown Management EC2
+
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      confirm_destroy:
+        description: "Type teardown-management-ec2 to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  APP_SECRET_NAME: capitonic/polymarket-bot/production
+  TF_DIR: infra/management-ec2
+  TF_STATE_BUCKET: capitonic-polybot-tfstate-192200846560-euw1
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  teardown:
+    if: github.event_name == 'workflow_call' || inputs.confirm_destroy == 'teardown-management-ec2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: production-management-ec2
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load masked Cloudflare inputs
+        run: scripts/load-management-terraform-env.sh
+
+      - name: Initialize Terraform
+        run: |
+          set -euo pipefail
+          cat > "$TF_DIR/backend.hcl" <<EOF
+          bucket       = "$TF_STATE_BUCKET"
+          key          = "production/management-ec2/terraform.tfstate"
+          region       = "$AWS_REGION"
+          encrypt      = true
+          use_lockfile = true
+          EOF
+          terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+          terraform -chdir="$TF_DIR" validate
+
+      - name: Capture disposable resource identities
+        run: |
+          echo "INSTANCE_ID=$(terraform -chdir="$TF_DIR" output -raw instance_id)" >> "$GITHUB_ENV"
+          echo "TUNNEL_ID=$(terraform -chdir="$TF_DIR" output -raw tunnel_id)" >> "$GITHUB_ENV"
+
+      - name: Destroy only management resources
+        run: terraform -chdir="$TF_DIR" destroy -auto-approve -input=false -lock-timeout=60s
+
+      - name: Verify management teardown
+        run: |
+          set -euo pipefail
+          set +x
+          active="$(aws ec2 describe-instances \
+            --filters Name=tag:Component,Values=management Name=tag:Environment,Values=production \
+              Name=instance-state-name,Values=pending,running,stopping,stopped \
+            --query 'Reservations[].Instances[].InstanceId' --output text)"
+          [ -z "$active" ] || { echo "Management instances remain: $active" >&2; exit 1; }
+          ! aws iam get-role --role-name capitonic-polymarket-bot-management-host >/dev/null 2>&1
+          ! aws iam get-instance-profile --instance-profile-name capitonic-polymarket-bot-management-host >/dev/null 2>&1
+          [ "$(aws ec2 describe-security-groups --filters Name=group-name,Values=capitonic-polymarket-bot-management-sg \
+            --query 'length(SecurityGroups)' --output text)" = "0" ]
+          ! aws ssm get-parameter --name /capitonic/production/management/cloudflare-tunnel-token >/dev/null 2>&1
+
+          echo "Management EC2, EBS, IAM, security group, tunnel token, Cloudflare tunnel, DNS, and Access app were destroyed." \
+            >> "$GITHUB_STEP_SUMMARY"

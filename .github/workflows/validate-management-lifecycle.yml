@@ -1,0 +1,28 @@
+name: Validate Management Lifecycle
+
+on:
+  push:
+    branches:
+      - feature/management-host-lifecycle
+    paths:
+      - .github/workflows/deploy-management-ec2.yml
+      - .github/workflows/teardown-management-ec2.yml
+      - .github/workflows/validate-management-lifecycle.yml
+      - infra/management-ec2/**
+      - scripts/load-management-terraform-env.sh
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  initial-deployment:
+    uses: ./.github/workflows/deploy-management-ec2.yml
+
+  teardown-verification:
+    needs: initial-deployment
+    uses: ./.github/workflows/teardown-management-ec2.yml
+
+  final-deployment:
+    needs: teardown-verification
+    uses: ./.github/workflows/deploy-management-ec2.yml
