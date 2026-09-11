@@ -1,0 +1,97 @@
+name: capitonic-recovery-test
+
+x-ingester-environment: &ingester-environment
+  RUST_LOG: info
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: recovery-test-password
+  POSTGRES_DB: polymarket
+  POSTGRES_SSL_MODE: disable
+  INGESTER_ADMIN_TOKEN: recovery-test-administrative-token
+  MARKET_DATA_INGESTER_DB_POOL_CONNECTIONS: "1"
+  MARKET_DATA_INGESTER_CONTROL_DB_POOL_CONNECTIONS: "1"
+  MARKET_DATA_INGESTER_DB_ACQUIRE_TIMEOUT_SECS: "1"
+  MARKET_DATA_INGESTER_CONTROL_DB_ACQUIRE_TIMEOUT_SECS: "1"
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.14.2-pg14
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: recovery-test-password
+      POSTGRES_DB: polymarket
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d polymarket"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    networks:
+      - database
+
+  db-migrate:
+    build:
+      context: ../../../..
+      dockerfile: packages/db-migrate/Dockerfile.production
+      args:
+        DB_MIGRATE_GIT_REVISION: ${RECOVERY_TEST_GIT_REVISION}
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: recovery-test-password
+      POSTGRES_DB: polymarket
+      POSTGRES_SSL_MODE: disable
+      DB_MIGRATIONS_PATTERN: "migrations/{1777102000000-CreatePolymarketBotSchema,1777104000000-CreatePolymarketWhaleBackfillSchema,1777125000000-AddMlTrainingBackfillIngestion,1786381000000-AddMarketDataIngesterControlPlane,1788295500000-CreateUnifiedIngesterBackfills,1788295700000-CorrectUnifiedIngesterAssignmentConstraint,1788732000000-AddIngesterDrainJobs,1788818700000-AddDrainReconciliationMode,1788818800000-AddIngesterWorkerAllocationPolicy,1788818900000-CorrectIngesterWorkerAllocationColumnTypes}.{ts,js}"
+    networks:
+      - database
+
+  ingester-master:
+    build:
+      context: ../../../..
+      dockerfile: packages/market-data-ingester/Dockerfile.production
+      args:
+        INGESTER_GIT_REVISION: ${RECOVERY_TEST_GIT_REVISION}
+    environment:
+      <<: *ingester-environment
+      INGESTER_MODE: master
+      INGESTER_INSTANCE: recovery-master
+      INGESTER_API_BIND: 0.0.0.0:8098
+    networks:
+      - control
+      - database
+
+  ingester-worker:
+    build:
+      context: ../../../..
+      dockerfile: packages/market-data-ingester/Dockerfile.production
+      args:
+        INGESTER_GIT_REVISION: ${RECOVERY_TEST_GIT_REVISION}
+    environment:
+      <<: *ingester-environment
+      INGESTER_MODE: worker
+      INGESTER_INSTANCE: recovery-worker
+      INGESTER_WORKER_ID: recovery-worker
+      INGESTER_ADVERTISE_HOST: ingester-worker
+      INGESTER_GRPC_BIND: 0.0.0.0:50051
+      INGESTER_WORKER_METRICS_BIND: 0.0.0.0:8099
+      INGESTER_MASTER_URL: http://ingester-master:8098
+      INGESTER_DEPLOYMENT_ID: recovery-test
+      INGESTER_IMAGE_DIGEST: recovery-test
+      INGESTER_GIT_REVISION: ${RECOVERY_TEST_GIT_REVISION}
+      INGESTER_WORKER_MAX_BACKFILLS: "1"
+      INGESTER_WORKER_CAPACITY_UNITS: "1"
+      INGESTER_WORKER_REALTIME_SLOT_LIMIT: "1"
+    networks:
+      - control
+      - database
+
+  probe:
+    image: curlimages/curl:8.12.1
+    command: ["sleep", "infinity"]
+    networks:
+      - control
+
+networks:
+  control:
+  database:

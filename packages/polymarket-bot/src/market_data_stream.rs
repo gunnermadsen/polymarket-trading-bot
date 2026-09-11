@@ -1200,11 +1200,131 @@ impl StreamMetrics {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU8, AtomicUsize};
+
+    use axum::{routing::post, Json, Router};
     use chrono::TimeZone;
+    use sqlx::postgres::PgPoolOptions;
+    use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+    use tonic::{Response, Status};
 
     use crate::grafana_live::{CountdownSnapshot, CountdownStatus, MarketPathPublicationState};
 
     use super::*;
+
+    #[derive(Clone)]
+    struct RecoveryStreamFixture {
+        worker_id: &'static str,
+        connections: Arc<AtomicUsize>,
+        shutdown: watch::Receiver<bool>,
+    }
+
+    #[tonic::async_trait]
+    impl proto::market_data_stream_server::MarketDataStream for RecoveryStreamFixture {
+        type StreamStream = ReceiverStream<std::result::Result<proto::MarketDataMessage, Status>>;
+
+        async fn stream(
+            &self,
+            request: Request<tonic::Streaming<SubscriptionCommand>>,
+        ) -> std::result::Result<Response<Self::StreamStream>, Status> {
+            let mut inbound = request.into_inner();
+            let (sender, receiver) = mpsc::channel(4);
+            let worker_id = self.worker_id.to_owned();
+            let connections = self.connections.clone();
+            let mut shutdown = self.shutdown.clone();
+            tokio::spawn(async move {
+                let command = match inbound.message().await {
+                    Ok(Some(command)) => command,
+                    Ok(None) => return,
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                };
+                connections.fetch_add(1, Ordering::Relaxed);
+                let ack = proto::SubscriptionAck {
+                    revision: command.revision,
+                    accepted: command.products.clone(),
+                    rejected: Vec::new(),
+                    acknowledged_at_micros: Utc::now().timestamp_micros(),
+                };
+                if sender
+                    .send(Ok(proto::MarketDataMessage {
+                        message: Some(Message::SubscriptionAck(ack)),
+                    }))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                for product in command.products {
+                    if sender
+                        .send(Ok(proto::MarketDataMessage {
+                            message: Some(Message::Health(proto::ProductHealth {
+                                product_key: product.key,
+                                contract_version: product.contract_version,
+                                worker_id: worker_id.clone(),
+                                publisher_epoch: Uuid::new_v4().to_string(),
+                                ready: true,
+                                last_event_at_micros: Utc::now().timestamp_micros(),
+                                detail: "ready".to_owned(),
+                            })),
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => {}
+                    _ = async { while matches!(inbound.message().await, Ok(Some(_))) {} } => {}
+                }
+            });
+            Ok(Response::new(ReceiverStream::new(receiver)))
+        }
+    }
+
+    async fn start_recovery_stream_fixture(
+        worker_id: &'static str,
+        connections: Arc<AtomicUsize>,
+    ) -> (String, watch::Sender<bool>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind recovery gRPC fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let (stream_shutdown, shutdown_receiver) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(
+                    proto::market_data_stream_server::MarketDataStreamServer::new(
+                        RecoveryStreamFixture {
+                            worker_id,
+                            connections,
+                            shutdown: shutdown_receiver,
+                        },
+                    ),
+                )
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .expect("recovery gRPC fixture");
+        });
+        (format!("http://{address}"), stream_shutdown, task)
+    }
+
+    async fn wait_for_condition(
+        description: &str,
+        timeout: Duration,
+        condition: impl Fn() -> bool,
+    ) {
+        tokio::time::timeout(timeout, async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {description}"));
+    }
 
     fn market(
         market_id: &str,
@@ -1620,5 +1740,135 @@ mod tests {
         let readiness = metrics.product_ready.lock().expect("readiness lock");
         assert_eq!(readiness.get(PRODUCT_BINANCE_1S), Some(&false));
         assert_eq!(readiness.get(PRODUCT_BOOKS), Some(&true));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn route_runtime_recovers_across_worker_identity_replacement_and_outage() {
+        let first_connections = Arc::new(AtomicUsize::new(0));
+        let second_connections = Arc::new(AtomicUsize::new(0));
+        let third_connections = Arc::new(AtomicUsize::new(0));
+        let (first_endpoint, _first_stream_shutdown, first_server) =
+            start_recovery_stream_fixture("worker-a", first_connections.clone()).await;
+        let (second_endpoint, second_stream_shutdown, second_server) =
+            start_recovery_stream_fixture("worker-b", second_connections.clone()).await;
+        let (third_endpoint, _third_stream_shutdown, third_server) =
+            start_recovery_stream_fixture("worker-c", third_connections.clone()).await;
+        let topology = Arc::new(AtomicU8::new(0));
+        let route_topology = topology.clone();
+        let endpoints = Arc::new([first_endpoint, second_endpoint, third_endpoint]);
+        let route_endpoints = endpoints.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind route fixture");
+        let master_address = listener.local_addr().expect("route fixture address");
+        let route_server = tokio::spawn(async move {
+            let app = Router::new().route(
+                "/stream/routes",
+                post(move || {
+                    let selected = usize::from(route_topology.load(Ordering::Relaxed));
+                    let endpoint = route_endpoints[selected].clone();
+                    async move {
+                        Json(serde_json::json!({
+                            "routes": [{
+                                "worker_id": format!("worker-{}", char::from(b'a' + selected as u8)),
+                                "endpoint": endpoint,
+                                "source_revision": format!("revision-{selected}"),
+                                "products": [{
+                                    "key": PRODUCT_TWAP,
+                                    "contract_version": CONTRACT_VERSION
+                                }]
+                            }],
+                            "unresolved": []
+                        }))
+                    }
+                }),
+            );
+            axum::serve(listener, app).await.expect("route fixture");
+        });
+
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://recovery:recovery@127.0.0.1/recovery")
+            .expect("lazy recovery pool");
+        let metrics = Arc::new(StreamMetrics::default());
+        let runtime = MarketDataStreamRuntime::new(
+            format!("http://{master_address}"),
+            "recovery-token".to_owned(),
+            "recovery-consumer".to_owned(),
+            BtcRepository::from_pool(pool),
+            Arc::new(RwLock::new(RealtimeState::default())),
+            Arc::new(RwLock::new(BookRegistry::new(Uuid::new_v4()))),
+            metrics.clone(),
+        )
+        .expect("recovery runtime");
+        let (_selector_sender, selector_receiver) = watch::channel(vec![SourceSelector {
+            key: PRODUCT_TWAP.to_owned(),
+            contract_version: CONTRACT_VERSION,
+            required: true,
+            maximum_age_ms: Some(120_000),
+            require_sequence_integrity: true,
+        }]);
+        let shutdown = CancellationToken::new();
+        let runtime_shutdown = shutdown.clone();
+        let runtime_task = tokio::spawn(runtime.run(selector_receiver, runtime_shutdown));
+
+        wait_for_condition("initial worker connection", Duration::from_secs(5), || {
+            first_connections.load(Ordering::Relaxed) > 0
+                && metrics
+                    .product_ready
+                    .lock()
+                    .expect("readiness lock")
+                    .get(PRODUCT_TWAP)
+                    == Some(&true)
+        })
+        .await;
+
+        topology.store(1, Ordering::Relaxed);
+        wait_for_condition(
+            "replacement worker topology refresh",
+            Duration::from_secs(8),
+            || second_connections.load(Ordering::Relaxed) > 0,
+        )
+        .await;
+
+        second_stream_shutdown
+            .send(true)
+            .expect("disconnect replacement worker stream");
+        wait_for_condition(
+            "failed route to become unready",
+            Duration::from_secs(5),
+            || {
+                metrics
+                    .product_ready
+                    .lock()
+                    .expect("readiness lock")
+                    .get(PRODUCT_TWAP)
+                    == Some(&false)
+            },
+        )
+        .await;
+        topology.store(2, Ordering::Relaxed);
+        wait_for_condition(
+            "post-outage worker recovery",
+            Duration::from_secs(8),
+            || {
+                third_connections.load(Ordering::Relaxed) > 0
+                    && metrics
+                        .product_ready
+                        .lock()
+                        .expect("readiness lock")
+                        .get(PRODUCT_TWAP)
+                        == Some(&true)
+            },
+        )
+        .await;
+
+        assert!(metrics.reconnects.load(Ordering::Relaxed) > 0);
+        assert_eq!(metrics.desired_connections.load(Ordering::Relaxed), 1);
+        shutdown.cancel();
+        runtime_task.await.expect("runtime task");
+        first_server.abort();
+        second_server.abort();
+        third_server.abort();
+        route_server.abort();
     }
 }

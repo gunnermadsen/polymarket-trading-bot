@@ -58,6 +58,7 @@ zstd = "0.13"
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net"] }
 tower = { version = "0.5", features = ["util"] }
 
 [build-dependencies]
