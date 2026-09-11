@@ -213,12 +213,21 @@ jobs:
             | map(select(.key | startswith("CLOUDFLARE_") | not))
             | map(select(.key | startswith("CLOUDFLARED_") | not))
             | map(select(.key | startswith("COLOUDFLARED_") | not))
+            | map(select(.key | startswith("CAPITONIC_") | not))
+            | map(select(.key != "POSTGRES_PASSWORD"))
             | map(select(.key != "RDP_PASSWORD"))
             | map(select(.key != "SSH_AUTHORIZED_KEYS"))
             | .[]
             | "\(.key)=\(.value | tostring)"
           ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
           chmod 0600 "$APP_DIRECTORY/.env"
+          TRADING_POSTGRES_PASSWORD="$(jq -r '.CAPITONIC_TRADING_POSTGRES_PASSWORD // empty' "$SECRET_PATH")"
+          if [ -z "$TRADING_POSTGRES_PASSWORD" ]; then
+            echo "Missing CAPITONIC_TRADING_POSTGRES_PASSWORD in $SECRET_PATH." >&2
+            exit 1
+          fi
+          printf 'POSTGRES_PASSWORD=%s\n' "$TRADING_POSTGRES_PASSWORD" > "$APP_DIRECTORY/.env.postgres.polymarket-bot"
+          chmod 0600 "$APP_DIRECTORY/.env.postgres.polymarket-bot"
           docker compose -f "$COMPOSE_FILE" up -d --no-build polymarket-bot
 
           for attempt in $(seq 1 60); do

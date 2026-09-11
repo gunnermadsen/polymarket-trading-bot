@@ -4,8 +4,18 @@ The Docker Compose environments route application connections through PgBouncer 
 `6432`. Database migrations remain connected directly to TimescaleDB on port `5432` so
 migration sessions retain normal PostgreSQL semantics.
 
-PgBouncer uses session pooling for the `polymarket` database. Do not change it to transaction
-pooling without first redesigning and verifying the SQLx queries described below.
+PgBouncer exposes bounded aliases for each service identity while retaining the legacy
+`polymarket` route for rollback:
+
+- `polymarket_trading` for `capitonic_trading`
+- `polymarket_ingester_master` for `capitonic_ingester_master`
+- `polymarket_ingester_worker` for `capitonic_ingester_worker`
+- `polymarket_observe` for the read-only `capitonic_grafana`
+
+The aliases isolate connection budgets; they do not substitute PostgreSQL users. PgBouncer
+authenticates each dedicated login and PostgreSQL enforces that role's grants. All routes use
+session pooling. Do not change them to transaction pooling without first redesigning and
+verifying the SQLx queries described below.
 
 ## Why session affinity is required
 
@@ -33,18 +43,20 @@ preserves both the custom-plan optimization and SQLx's protocol assumptions.
 
 ## Connection budget
 
-Session pooling does not multiplex connected clients across fewer PostgreSQL backends. The
-PgBouncer server ceiling therefore matches the complete declared application budget:
+Session pooling does not multiplex active connected clients across fewer PostgreSQL backends.
+The per-alias ceilings divide the 24-server-connection application budget as follows:
 
+- legacy rollback route: 2
 - polymarket bot: 8
-- market-data ingester strategy and control pools: 5
+- ingester master: 2
+- dynamically scaled ingester workers: 10
 - Grafana: 2
-- six backfill workers: 9
 
-PgBouncer accepts at most 24 server connections for `polymarket`. PostgreSQL accepts 32 total
-connections, reserving eight slots outside the PgBouncer ceiling for `db-migrate`, emergency
-administration, and exceptional direct connections. Additional clients may connect to
-PgBouncer up to `max_client_conn`, but wait at the gateway instead of exhausting PostgreSQL.
+PostgreSQL accepts 32 total connections, reserving eight slots outside PgBouncer for
+`db-migrate`, emergency administration, and exceptional direct connections. Each ingester
+container is configured with one strategy connection and one control connection. Additional
+worker clients wait behind the bounded worker pool instead of consuming unbounded PostgreSQL
+backends.
 
 ## How a database error fails a trading process
 

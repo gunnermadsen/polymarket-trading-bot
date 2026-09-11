@@ -376,6 +376,7 @@ write_app_env() {
     | map(select(.key | startswith("COLOUDFLARED_") | not))
     | map(select(.key | startswith("GF_") | not))
     | map(select(.key | startswith("GRAFANA_") | not))
+    | map(select(.key | startswith("CAPITONIC_") | not))
     | map(select(.key != "POSTGRES_PASSWORD"))
     | map(select(.key != "RDP_PASSWORD"))
     | map(select(.key != "SSH_AUTHORIZED_KEYS"))
@@ -386,15 +387,40 @@ write_app_env() {
 }
 
 write_postgres_env() {
-  local postgres_password
+  local postgres_password trading_password master_password worker_password grafana_password
   postgres_password="$(json_value POSTGRES_PASSWORD)"
+  trading_password="$(json_value CAPITONIC_TRADING_POSTGRES_PASSWORD)"
+  master_password="$(json_value CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD)"
+  worker_password="$(json_value CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD)"
+  grafana_password="$(json_value CAPITONIC_GRAFANA_POSTGRES_PASSWORD)"
   if [ -z "$postgres_password" ]; then
     echo "Missing POSTGRES_PASSWORD in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
     exit 1
   fi
+  if [ -z "$trading_password" ] || [ -z "$master_password" ] || [ -z "$worker_password" ] || [ -z "$grafana_password" ]; then
+    echo "Missing one or more CAPITONIC_*_POSTGRES_PASSWORD values in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+    exit 1
+  fi
 
   printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password" > "$APP_DIRECTORY/.env.postgres"
-  chmod 0600 "$APP_DIRECTORY/.env.postgres"
+  {
+    printf 'CAPITONIC_TRADING_POSTGRES_PASSWORD=%s\n' "$trading_password"
+    printf 'CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD=%s\n' "$master_password"
+    printf 'CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD=%s\n' "$worker_password"
+    printf 'CAPITONIC_GRAFANA_POSTGRES_PASSWORD=%s\n' "$grafana_password"
+  } > "$APP_DIRECTORY/.env.postgres.roles"
+  cp "$APP_DIRECTORY/.env.postgres.roles" "$APP_DIRECTORY/.env.postgres.pgbouncer"
+  printf 'POSTGRES_PASSWORD=%s\n' "$trading_password" > "$APP_DIRECTORY/.env.postgres.polymarket-bot"
+  printf 'POSTGRES_PASSWORD=%s\n' "$master_password" > "$APP_DIRECTORY/.env.postgres.ingester-master"
+  printf 'POSTGRES_PASSWORD=%s\n' "$worker_password" > "$APP_DIRECTORY/.env.postgres.ingester-worker"
+  printf 'POSTGRES_PASSWORD=%s\n' "$grafana_password" > "$APP_DIRECTORY/.env.postgres.grafana"
+  chmod 0600 "$APP_DIRECTORY/.env.postgres" \
+    "$APP_DIRECTORY/.env.postgres.roles" \
+    "$APP_DIRECTORY/.env.postgres.pgbouncer" \
+    "$APP_DIRECTORY/.env.postgres.polymarket-bot" \
+    "$APP_DIRECTORY/.env.postgres.ingester-master" \
+    "$APP_DIRECTORY/.env.postgres.ingester-worker" \
+    "$APP_DIRECTORY/.env.postgres.grafana"
 }
 
 grafana_value() {

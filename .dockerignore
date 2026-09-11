@@ -6,6 +6,7 @@
 !.env.example
 !.env.grafana.example
 !.env.postgres.example
+!.env.postgres.roles.example
 **/target
 **/node_modules
 **/dist

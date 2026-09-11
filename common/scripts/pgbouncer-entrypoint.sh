@@ -2,11 +2,26 @@
 set -eu
 
 : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+: "${CAPITONIC_TRADING_POSTGRES_PASSWORD:?CAPITONIC_TRADING_POSTGRES_PASSWORD is required}"
+: "${CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD:?CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD is required}"
+: "${CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD:?CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD is required}"
+: "${CAPITONIC_GRAFANA_POSTGRES_PASSWORD:?CAPITONIC_GRAFANA_POSTGRES_PASSWORD is required}"
 
-export DB_USER="${POSTGRES_USER:-postgres}"
-export DB_PASSWORD="${POSTGRES_PASSWORD}"
-export AUTH_TYPE="scram-sha-256"
-export AUTH_FILE="/tmp/pgbouncer/userlist.txt"
+auth_file="/tmp/pgbouncer/userlist.txt"
 
 mkdir -p /tmp/pgbouncer
-exec /entrypoint.sh "$@"
+
+escape_password() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+{
+  printf '"postgres" "%s"\n' "$(escape_password "$POSTGRES_PASSWORD")"
+  printf '"capitonic_trading" "%s"\n' "$(escape_password "$CAPITONIC_TRADING_POSTGRES_PASSWORD")"
+  printf '"capitonic_ingester_master" "%s"\n' "$(escape_password "$CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD")"
+  printf '"capitonic_ingester_worker" "%s"\n' "$(escape_password "$CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD")"
+  printf '"capitonic_grafana" "%s"\n' "$(escape_password "$CAPITONIC_GRAFANA_POSTGRES_PASSWORD")"
+} > "$auth_file"
+chmod 0600 "$auth_file"
+
+exec "$@"
