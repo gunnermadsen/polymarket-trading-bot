@@ -13,6 +13,8 @@ RTDS candle coverage/readiness metrics and existing hydration logs are supplied 
 | Family | Meaning |
 | --- | --- |
 | `model_info` | Immutable selected model, feature schema, process configuration and execution mode |
+| `risk_model_info`, `risk_score`, `risk_threshold` | Optional immutable risk identity and latest approved-candidate loss-risk comparison |
+| `risk_disposition_total` | Risk allow/defer/inference-error outcomes; candidates, not settled trades |
 | `enabled`, `runtime_ready` | Active instrumentation registration and latest action readiness |
 | `last_observation_timestamp_seconds`, `last_success_timestamp_seconds` | Runtime activity and last successful inference clocks |
 | `observations_total`, `markets_total` | Repeated callbacks and distinct observed/inferred/admitted markets |
@@ -38,6 +40,8 @@ Funnel stages are transitions, not a partition to sum. Market coverage is distin
 ## Durable evidence
 
 The existing strategy decision metadata includes a versioned `model_evaluation` envelope carrying process/run/config/model identity, probability, confidence, admission result, feature timestamp, input hash and inference timing. Existing feature snapshots retain the feature vector and lineage; a hash alone is not replay data. Existing order-plan/fill/settlement references connect decisions to economics. No duplicate ledger is introduced.
+
+When configured, the same decision metadata's `entry_admission.risk_strategy` object records the single risk evaluation. It is the audit receipt for how a risk model affected its trading strategy candidate; risk PnL, profit factor and coverage remain derived comparisons against that strategy's no-risk baseline rather than properties of the risk model alone.
 
 Historical analytical exports remain Parquet on the external SSD using the existing infrastructure. Grafana must not run broad scans of these durable decision tables. If a future visual needs PostgreSQL, scope by process and time, inspect the plan, run bounded `EXPLAIN ANALYZE`, record planning/execution/buffer evidence and verify index pruning before provisioning it. Any required schema/index migration needs explicit authorization.
 

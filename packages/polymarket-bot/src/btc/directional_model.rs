@@ -3436,7 +3436,7 @@ mod tests {
         let mut model_directories = fs::read_dir(&root)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.is_dir())
+            .filter(|path| path.is_dir() && path.join("manifest.json").is_file())
             .collect::<Vec<_>>();
         model_directories.sort();
         assert!(

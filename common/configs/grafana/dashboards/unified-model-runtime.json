@@ -3043,7 +3043,7 @@
     {
       "id": 50,
       "type": "row",
-      "title": "Resolved prediction quality \u00b7 evaluation weighted",
+      "title": "Risk strategy \u00b7 approved-candidate veto",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -3055,6 +3055,440 @@
     },
     {
       "id": 51,
+      "title": "Selected risk models",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "A row exists only when the process explicitly selects an active immutable risk package.",
+      "gridPos": {
+        "x": 0,
+        "y": 176,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "polymarket_umr_risk_model_info{process_id=~\"$process\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "job": true,
+              "instance": true
+            },
+            "renameByName": {
+              "process_id": "Process",
+              "model_key": "Risk model",
+              "artifact_sha256": "Risk artifact SHA-256",
+              "config_hash": "Configuration SHA-256"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 52,
+      "title": "Risk dispositions",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Allow and defer decisions made after the trading strategy approves an entry candidate.",
+      "gridPos": {
+        "x": 0,
+        "y": 184,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(process_id,reason)(rate(polymarket_umr_risk_disposition_total{process_id=~\"$process\"}[$__rate_interval]))) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}} \u00b7 {{reason}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 53,
+      "title": "Latest predicted loss risk",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The latest predicted loss risk for an approved entry candidate.",
+      "gridPos": {
+        "x": 12,
+        "y": 184,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(polymarket_umr_risk_score{process_id=~\"$process\"}) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 54,
+      "title": "Risk inference latency \u00b7 p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Risk adapter inference latency on approved entry candidates.",
+      "gridPos": {
+        "x": 0,
+        "y": 192,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(histogram_quantile(0.95, sum by(process_id,le)(rate(polymarket_umr_stage_duration_seconds_bucket{process_id=~\"$process\",stage=\"risk_inference\"}[$__rate_interval])))) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 55,
+      "title": "Immutable risk threshold",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "The selected package threshold used inside its qualified bucket.",
+      "gridPos": {
+        "x": 12,
+        "y": 192,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(polymarket_umr_risk_threshold{process_id=~\"$process\"}) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 56,
+      "title": "Risk inference failures",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Bounded failures defer only the affected entry candidate and recover automatically on the next healthy evaluation.",
+      "gridPos": {
+        "x": 0,
+        "y": 200,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(process_id,reason)(rate(polymarket_umr_inference_failures_total{process_id=~\"$process\"}[$__rate_interval]))) * on(process_id) group_left(model_key) polymarket_umr_model_info{process_id=~\"$process\"}",
+          "legendFormat": "{{model_key}} \u00b7 {{reason}}",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "Awaiting evidence",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 57,
+      "type": "row",
+      "title": "Resolved prediction quality \u00b7 evaluation weighted",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 208,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 58,
       "title": "Brier score",
       "type": "timeseries",
       "datasource": {
@@ -3064,7 +3498,7 @@
       "description": "Mean squared probability error over resolved inference opportunities, including rejected trades. Multiple predictions per market are correlated.",
       "gridPos": {
         "x": 0,
-        "y": 176,
+        "y": 209,
         "w": 12,
         "h": 8
       },
@@ -3124,7 +3558,7 @@
       }
     },
     {
-      "id": 52,
+      "id": 59,
       "title": "Directional correctness",
       "type": "timeseries",
       "datasource": {
@@ -3134,7 +3568,7 @@
       "description": "Correct resolved predictions / all resolved predictions. Not the executed-trade win rate.",
       "gridPos": {
         "x": 12,
-        "y": 176,
+        "y": 209,
         "w": 12,
         "h": 8
       },
@@ -3194,7 +3628,7 @@
       }
     },
     {
-      "id": 53,
+      "id": 60,
       "title": "Calibration by probability bin",
       "type": "table",
       "datasource": {
@@ -3204,7 +3638,7 @@
       "description": "Observed UP frequency for each decile. Compare with mean predicted probability; bins with no outcomes remain undefined.",
       "gridPos": {
         "x": 0,
-        "y": 184,
+        "y": 217,
         "w": 12,
         "h": 8
       },
@@ -3247,7 +3681,7 @@
       }
     },
     {
-      "id": 54,
+      "id": 61,
       "title": "Unresolved prediction records",
       "type": "timeseries",
       "datasource": {
@@ -3257,7 +3691,7 @@
       "description": "Pending official outcomes retained in bounded memory. Restarts reset this operational buffer; durable feature/decision records remain.",
       "gridPos": {
         "x": 12,
-        "y": 184,
+        "y": 217,
         "w": 12,
         "h": 8
       },
@@ -3317,7 +3751,7 @@
       }
     },
     {
-      "id": 55,
+      "id": 62,
       "title": "Calibration mean prediction",
       "type": "table",
       "datasource": {
@@ -3327,7 +3761,7 @@
       "description": "Mean forecast probability in each resolved decile; compare with observed UP frequency.",
       "gridPos": {
         "x": 0,
-        "y": 192,
+        "y": 225,
         "w": 12,
         "h": 8
       },
@@ -3370,7 +3804,7 @@
       }
     },
     {
-      "id": 56,
+      "id": 63,
       "title": "Calibration sample counts",
       "type": "table",
       "datasource": {
@@ -3380,7 +3814,7 @@
       "description": "Number of resolved inference opportunities in each decile. A sparse bin cannot support a calibration conclusion.",
       "gridPos": {
         "x": 12,
-        "y": 192,
+        "y": 225,
         "w": 12,
         "h": 8
       },
@@ -3423,7 +3857,7 @@
       }
     },
     {
-      "id": 57,
+      "id": 64,
       "title": "Resolved prediction sample count",
       "type": "timeseries",
       "datasource": {
@@ -3433,7 +3867,7 @@
       "description": "Evaluation-weighted denominator for Brier and correctness.",
       "gridPos": {
         "x": 0,
-        "y": 200,
+        "y": 233,
         "w": 12,
         "h": 8
       },
@@ -3493,7 +3927,7 @@
       }
     },
     {
-      "id": 58,
+      "id": 65,
       "title": "Settled trade win rate",
       "type": "timeseries",
       "datasource": {
@@ -3503,7 +3937,7 @@
       "description": "Winning settlements / win-or-loss settlements; sample counts are displayed below.",
       "gridPos": {
         "x": 12,
-        "y": 200,
+        "y": 233,
         "w": 12,
         "h": 8
       },
@@ -3563,20 +3997,20 @@
       }
     },
     {
-      "id": 59,
+      "id": 66,
       "type": "row",
       "title": "Execution and economics \u00b7 current session",
       "collapsed": false,
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 208,
+        "y": 241,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 60,
+      "id": 67,
       "title": "Expectancy / trade",
       "type": "stat",
       "datasource": {
@@ -3586,7 +4020,7 @@
       "description": "Recognized net PnL / settled trades.",
       "gridPos": {
         "x": 0,
-        "y": 209,
+        "y": 242,
         "w": 12,
         "h": 8
       },
@@ -3636,7 +4070,7 @@
       }
     },
     {
-      "id": 61,
+      "id": 68,
       "title": "Profit factor",
       "type": "stat",
       "datasource": {
@@ -3646,7 +4080,7 @@
       "description": "Gross positive settled PnL / absolute gross negative settled PnL.",
       "gridPos": {
         "x": 12,
-        "y": 209,
+        "y": 242,
         "w": 12,
         "h": 8
       },
@@ -3696,7 +4130,7 @@
       }
     },
     {
-      "id": 62,
+      "id": 69,
       "title": "Wins to recover one loss",
       "type": "stat",
       "datasource": {
@@ -3706,7 +4140,7 @@
       "description": "Average absolute losing trade / average winning trade. Undefined until both exist.",
       "gridPos": {
         "x": 0,
-        "y": 217,
+        "y": 250,
         "w": 12,
         "h": 8
       },
@@ -3756,7 +4190,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 70,
       "title": "Maximum drawdown",
       "type": "stat",
       "datasource": {
@@ -3766,7 +4200,7 @@
       "description": "Peak-to-trough recognized net PnL within the current instrumentation session.",
       "gridPos": {
         "x": 12,
-        "y": 217,
+        "y": 250,
         "w": 12,
         "h": 8
       },
@@ -3816,7 +4250,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 71,
       "title": "Realized net PnL",
       "type": "timeseries",
       "datasource": {
@@ -3826,7 +4260,7 @@
       "description": "Net PnL from successfully recognized settlements; excludes unresolved positions.",
       "gridPos": {
         "x": 0,
-        "y": 225,
+        "y": 258,
         "w": 12,
         "h": 8
       },
@@ -3886,7 +4320,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 72,
       "title": "Settled trade outcomes",
       "type": "timeseries",
       "datasource": {
@@ -3896,7 +4330,7 @@
       "description": "Economic win/loss/push classification by realized net PnL.",
       "gridPos": {
         "x": 12,
-        "y": 225,
+        "y": 258,
         "w": 12,
         "h": 8
       },
@@ -3956,7 +4390,7 @@
       }
     },
     {
-      "id": 66,
+      "id": 73,
       "title": "Average entry share price",
       "type": "timeseries",
       "datasource": {
@@ -3966,7 +4400,7 @@
       "description": "Actual fill notional / actual shares filled. Fees are displayed separately.",
       "gridPos": {
         "x": 0,
-        "y": 233,
+        "y": 266,
         "w": 12,
         "h": 8
       },
@@ -4026,7 +4460,7 @@
       }
     },
     {
-      "id": 67,
+      "id": 74,
       "title": "Average entry second",
       "type": "timeseries",
       "datasource": {
@@ -4036,7 +4470,7 @@
       "description": "Average market age of filled entry decisions. Fill-event weighted.",
       "gridPos": {
         "x": 12,
-        "y": 233,
+        "y": 266,
         "w": 12,
         "h": 8
       },
@@ -4096,7 +4530,7 @@
       }
     },
     {
-      "id": 68,
+      "id": 75,
       "title": "Quote-to-fill slippage / share",
       "type": "timeseries",
       "datasource": {
@@ -4106,7 +4540,7 @@
       "description": "Actual fill minus executable quote at decision time, weighted by shares. Positive is adverse.",
       "gridPos": {
         "x": 0,
-        "y": 241,
+        "y": 274,
         "w": 12,
         "h": 8
       },
@@ -4166,7 +4600,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 76,
       "title": "Actual fill fees",
       "type": "timeseries",
       "datasource": {
@@ -4176,7 +4610,7 @@
       "description": "Fees reported by fills in the current session.",
       "gridPos": {
         "x": 12,
-        "y": 241,
+        "y": 274,
         "w": 12,
         "h": 8
       },
@@ -4236,7 +4670,7 @@
       }
     },
     {
-      "id": 70,
+      "id": 77,
       "title": "Settled fees",
       "type": "timeseries",
       "datasource": {
@@ -4246,7 +4680,7 @@
       "description": "Entry fees associated with settlements recognized during this session; differs from fees on still-open fills.",
       "gridPos": {
         "x": 0,
-        "y": 249,
+        "y": 282,
         "w": 12,
         "h": 8
       },
@@ -4306,7 +4740,7 @@
       }
     },
     {
-      "id": 71,
+      "id": 78,
       "title": "Registered telemetry capacity drops",
       "type": "timeseries",
       "datasource": {
@@ -4316,7 +4750,7 @@
       "description": "Global registration capacity losses, repeated per selected process for visibility. Capacity losses never authorize or block orders.",
       "gridPos": {
         "x": 12,
-        "y": 249,
+        "y": 282,
         "w": 12,
         "h": 8
       },
@@ -4376,20 +4810,20 @@
       }
     },
     {
-      "id": 72,
+      "id": 79,
       "type": "row",
       "title": "Orderbook observation diagnostics",
       "collapsed": false,
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 257,
+        "y": 290,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 73,
+      "id": 80,
       "title": "Observation book failure causes",
       "type": "timeseries",
       "datasource": {
@@ -4399,7 +4833,7 @@
       "description": "Book selection failures per side at the immutable observation boundary. Distinguishes timestamp, identity, epoch and integrity failures; these counts are not model admission rejections.",
       "gridPos": {
         "x": 0,
-        "y": 258,
+        "y": 291,
         "w": 24,
         "h": 8
       },
@@ -4459,20 +4893,20 @@
       }
     },
     {
-      "id": 74,
+      "id": 81,
       "type": "row",
       "title": "Investigation",
       "collapsed": false,
       "panels": [],
       "gridPos": {
         "x": 0,
-        "y": 266,
+        "y": 299,
         "w": 24,
         "h": 1
       }
     },
     {
-      "id": 75,
+      "id": 82,
       "title": "Process lifecycle and diagnostics",
       "type": "logs",
       "datasource": {
@@ -4481,7 +4915,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 267,
+        "y": 300,
         "w": 24,
         "h": 12
       },

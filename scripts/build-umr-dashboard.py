@@ -88,6 +88,15 @@ for i,(name,title) in enumerate([('probability_bin','UP probability distribution
 Y+=8
 panel('Strategy rejection reasons','sum by(process_id,reason)(rate(polymarket_umr_strategy_rejections_total{'+S+'}[$__rate_interval]))','Existing strategy guards may reject an admitted model prediction.','ops',x=0,legend='{{model_key}} · {{reason}}')
 panel('Failed observation callbacks','sum by(process_id)(rate(polymarket_umr_observations_failed_total{'+S+'}[$__rate_interval]))','Unhandled observation errors, including persistence and execution failures, retain existing recovery behavior.','ops',x=12);Y+=8
+row('Risk strategy · approved-candidate veto')
+p=panel('Selected risk models','polymarket_umr_risk_model_info{'+S+'}','A row exists only when the process explicitly selects an active immutable risk package.','short','table',0,24,8,aggregate=True)
+p['targets']=[dict(refId='A',expr='polymarket_umr_risk_model_info{'+S+'}',format='table',instant=True)]
+p['transformations']=[dict(id='organize',options=dict(excludeByName={'Time':True,'Value':True,'__name__':True,'job':True,'instance':True},renameByName={'process_id':'Process','model_key':'Risk model','artifact_sha256':'Risk artifact SHA-256','config_hash':'Configuration SHA-256'}))];Y+=8
+panel('Risk dispositions','sum by(process_id,reason)(rate(polymarket_umr_risk_disposition_total{'+S+'}[$__rate_interval]))','Allow and defer decisions made after the trading strategy approves an entry candidate.','ops',x=0,legend='{{model_key}} · {{reason}}')
+panel('Latest predicted loss risk',metric('risk_score'),'The latest predicted loss risk for an approved entry candidate.','percentunit',x=12);Y+=8
+panel('Risk inference latency · p95','histogram_quantile(0.95, sum by(process_id,le)(rate(polymarket_umr_stage_duration_seconds_bucket{'+S+',stage="risk_inference"}[$__rate_interval])))','Risk adapter inference latency on approved entry candidates.','s',x=0)
+panel('Immutable risk threshold',metric('risk_threshold'),'The selected package threshold used inside its qualified bucket.','percentunit',x=12);Y+=8
+panel('Risk inference failures','sum by(process_id,reason)(rate(polymarket_umr_inference_failures_total{'+S+'}[$__rate_interval]))','Bounded failures defer only the affected entry candidate and recover automatically on the next healthy evaluation.','ops',x=0,w=24,legend='{{model_key}} · {{reason}}');Y+=8
 row('Resolved prediction quality · evaluation weighted')
 panel('Brier score',metric('brier_sum')+' / '+metric('brier_count'),'Mean squared probability error over resolved inference opportunities, including rejected trades. Multiple predictions per market are correlated.','short',x=0)
 panel('Directional correctness',count('prediction_outcomes','correct')+' / '+count('prediction_outcomes'),'Correct resolved predictions / all resolved predictions. Not the executed-trade win rate.','percentunit',x=12);Y+=8
