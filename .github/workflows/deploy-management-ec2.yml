@@ -72,6 +72,47 @@ jobs:
           EOF
           terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
 
+      - name: Reconcile dedicated Cloudflare tunnel
+        run: |
+          set -euo pipefail
+          set +x
+          resource_address="cloudflare_zero_trust_tunnel_cloudflared.management"
+          tunnel_name="capitonic-polymarket-bot-management-rdp"
+
+          if terraform -chdir="$TF_DIR" state show "$resource_address" >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          find_tunnel() {
+            curl -fsS \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/cfd_tunnel?is_deleted=false&per_page=100" \
+              | jq -r --arg name "$tunnel_name" \
+                '[.result[] | select(.name == $name)] | if length == 1 then .[0].id else empty end'
+          }
+
+          tunnel_id="$(find_tunnel)"
+          if [ -z "$tunnel_id" ]; then
+            request_body="$(jq -n --arg name "$tunnel_name" '{name:$name,config_src:"cloudflare"}')"
+            curl --max-time 30 -sS \
+              -X POST \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$request_body" \
+              "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/cfd_tunnel" \
+              >/dev/null || true
+
+            for attempt in $(seq 1 60); do
+              tunnel_id="$(find_tunnel)"
+              [ -n "$tunnel_id" ] && break
+              sleep 10
+            done
+          fi
+
+          [ -n "$tunnel_id" ] || { echo "Dedicated Cloudflare tunnel did not become visible." >&2; exit 1; }
+          terraform -chdir="$TF_DIR" import -input=false \
+            "$resource_address" "$TF_VAR_cloudflare_account_id/$tunnel_id"
+
       - name: Validate management infrastructure
         run: |
           terraform -chdir="$TF_DIR" fmt -check -recursive
