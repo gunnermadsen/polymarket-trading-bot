@@ -87,6 +87,10 @@ metric_is() {
     | grep -Eq "^${metric}[[:space:]]+${expected}(\\.0)?$"
 }
 
+run_migrations() {
+  compose run --rm db-migrate
+}
+
 echo "Building isolated recovery-test services"
 compose build db-migrate ingester-master ingester-worker
 compose up --detach probe
@@ -99,7 +103,7 @@ service_running ingester-worker || fail "worker exited while PostgreSQL was unav
 
 compose up --detach postgres
 wait_until "PostgreSQL healthcheck" 60 service_healthy postgres
-compose run --rm db-migrate
+wait_until "database migrations" 30 run_migrations
 
 echo "Verifying master registration retry without process loss"
 wait_until "worker telemetry endpoint" 45 status_is 200 http://ingester-worker:8099/health/live
