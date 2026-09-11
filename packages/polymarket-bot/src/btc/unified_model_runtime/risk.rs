@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::btc::{
-    directional_model::{compile_submodel, RuntimeSubmodel, RuntimeSubmodelFile},
+    directional_model::{
+        compile_submodel, RuntimeSubmodel, RuntimeSubmodelFile, BTC_DIRECTIONAL_MODEL_DIR_ENV,
+        DEFAULT_BTC_DIRECTIONAL_MODEL_DIR,
+    },
     strategy::{BtcDecision, BtcStrategyPrediction},
     BtcFeatureSnapshot, BtcOutcome,
 };
@@ -202,9 +205,9 @@ impl RuntimeRiskModel {
 
 pub fn load(selection: &RiskStrategySelection) -> Result<Arc<RuntimeRiskModel>> {
     selection.validate()?;
-    let root = std::env::var("BTC_DIRECTIONAL_MODEL_DIR")
+    let root = std::env::var(BTC_DIRECTIONAL_MODEL_DIR_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("packages/btc-directional-model/runtime-models"));
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_BTC_DIRECTIONAL_MODEL_DIR));
     load_from_root(selection, &root)
 }
 
