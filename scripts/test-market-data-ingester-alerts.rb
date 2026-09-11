@@ -4,7 +4,12 @@ require 'open3'
 
 root = File.expand_path('..', __dir__)
 path = "#{root}/common/configs/grafana/provisioning/alerting/rules-market-data-ingester.yml"
-rule = YAML.load_file(path).fetch('groups').flat_map { |group| group.fetch('rules') }
+rules_document = if YAML.respond_to?(:unsafe_load_file)
+                   YAML.unsafe_load_file(path)
+                 else
+                   YAML.load_file(path)
+                 end
+rule = rules_document.fetch('groups').flat_map { |group| group.fetch('rules') }
   .find { |candidate| candidate['uid'] == 'mdi_binance_l2_persistence_stale' }
 raise 'missing Binance L2 persistence alert' unless rule
 raise 'unexpected no-data behavior' unless rule['noDataState'] == 'OK'
@@ -38,10 +43,14 @@ fixture = {
   ]
 }
 
-output, status = Open3.capture2e(
-  'docker', 'exec', '-i', 'prometheus', 'promtool', 'test', 'rules', '/dev/stdin',
-  stdin_data: YAML.dump(fixture)
-)
+promtool_image = ENV['PROMTOOL_DOCKER_IMAGE']
+command = if promtool_image && !promtool_image.empty?
+            ['docker', 'run', '--rm', '-i', '--entrypoint', 'promtool', promtool_image,
+             'test', 'rules', '/dev/stdin']
+          else
+            ['docker', 'exec', '-i', 'prometheus', 'promtool', 'test', 'rules', '/dev/stdin']
+          end
+output, status = Open3.capture2e(*command, stdin_data: YAML.dump(fixture))
 puts output
 abort 'Prometheus expression tests failed' unless status.success?
 puts 'PASS Binance L2 persistence alert fixtures'
