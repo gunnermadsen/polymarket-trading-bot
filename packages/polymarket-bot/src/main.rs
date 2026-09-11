@@ -10,6 +10,9 @@ use std::{
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+use polymarket_bot::btc::unified_model_runtime::risk::{
+    self as risk_runtime, RiskStrategySelection,
+};
 use polymarket_bot::grafana_live::MarketPathPublicationState;
 use polymarket_bot::{
     btc::{
@@ -201,6 +204,8 @@ struct BtcRealtimePaperControlConfig {
     preregistration_sha256: String,
     strategy: serde_json::Value,
     entry_admission: Option<BtcEntryAdmissionConfig>,
+    #[serde(default)]
+    risk_strategies: Vec<RiskStrategySelection>,
     runtime: BtcProcessRuntimeControl,
     paper: BtcProcessPaperControl,
 }
@@ -215,6 +220,7 @@ impl Default for BtcRealtimePaperControlConfig {
             preregistration_sha256: String::new(),
             strategy: serde_json::json!({}),
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcProcessRuntimeControl::default(),
             paper: BtcProcessPaperControl::default(),
         }
@@ -575,6 +581,7 @@ struct ResolvedBtcProcessDefinition {
     control: BtcRealtimePaperControlConfig,
     strategy: BtcStrategyConfig,
     entry_admission: Option<BtcEntryAdmissionConfig>,
+    risk_strategies: Vec<RiskStrategySelection>,
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
     paper_stress_previews: Vec<PaperPreviewConfig>,
@@ -587,6 +594,7 @@ struct PreparedBtcStartDefinition {
     strategy: BtcStrategyConfig,
     sources: Vec<SourceSelector>,
     entry_admission: Option<BtcEntryAdmissionConfig>,
+    risk_strategies: Vec<RiskStrategySelection>,
     directional_model_entry_policy: BtcDirectionalModelEntryPolicy,
     runtime: BtcRuntimeConfig,
     paper_venue: PaperVenueConfig,
@@ -836,12 +844,15 @@ fn prepare_btc_start_definition_for_execution(
         control,
         strategy,
         entry_admission,
+        risk_strategies,
         runtime,
         paper_venue,
         paper_stress_previews,
     } = resolved;
     let directional_model_entry_policy = control.paper.directional_model_entry_policy;
     let sources = control.sources.clone();
+    risk_runtime::validate_selections(&risk_strategies)
+        .map_err(|error| HttpError::bad_request(error.to_string()))?;
     if let Some(binding) = &strategy.unified_model {
         for input in &binding.sources {
             if !sources.iter().any(|source| source.key == input.product) {
@@ -924,6 +935,16 @@ fn prepare_btc_start_definition_for_execution(
                     .map_err(|error| HttpError::internal(error.to_string()))?,
             );
     }
+    if !risk_strategies.is_empty() {
+        frozen_raw
+            .as_object_mut()
+            .expect("BTC frozen process config is an object")
+            .insert(
+                "risk_strategies".to_string(),
+                serde_json::to_value(&risk_strategies)
+                    .map_err(|error| HttpError::internal(error.to_string()))?,
+            );
+    }
     if execution_mode == BtcExecutionMode::Live {
         frozen_raw["paper"]["execution_enabled"] = serde_json::Value::Bool(false);
         frozen_raw
@@ -961,6 +982,7 @@ fn prepare_btc_start_definition_for_execution(
         strategy,
         sources,
         entry_admission,
+        risk_strategies,
         directional_model_entry_policy,
         runtime,
         paper_venue,
@@ -1574,6 +1596,8 @@ impl BtcProcessManager {
                 .validate()
                 .map_err(|error| HttpError::bad_request(error.to_string()))?;
         }
+        risk_runtime::validate_selections(&control.risk_strategies)
+            .map_err(|error| HttpError::bad_request(error.to_string()))?;
         validate_btc_entry_timing(&strategy)?;
         if !(1..=60_000).contains(&control.runtime.strategy_interval_ms) {
             return Err(HttpError::bad_request(
@@ -1642,6 +1666,7 @@ impl BtcProcessManager {
         }
         Ok(ResolvedBtcProcessDefinition {
             entry_admission: control.entry_admission.clone(),
+            risk_strategies: control.risk_strategies.clone(),
             control,
             strategy,
             runtime,
@@ -2147,6 +2172,7 @@ impl BtcProcessManager {
             strategy,
             sources,
             entry_admission,
+            risk_strategies,
             directional_model_entry_policy,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
@@ -2210,6 +2236,7 @@ impl BtcProcessManager {
                         frozen_process_config: frozen_process_config_value,
                         strategy,
                         entry_admission,
+                        risk_strategies,
                         directional_model_entry_policy,
                         execution_enabled: true,
                         paper_stress_previews,
@@ -2292,6 +2319,7 @@ impl BtcProcessManager {
             strategy,
             sources,
             entry_admission,
+            risk_strategies,
             directional_model_entry_policy,
             runtime: runtime_config,
             paper_venue: paper_venue_config,
@@ -2381,6 +2409,7 @@ impl BtcProcessManager {
                         frozen_process_config: frozen_process_config_value,
                         strategy: strategy.clone(),
                         entry_admission: entry_admission.clone(),
+                        risk_strategies: risk_strategies.clone(),
                         directional_model_entry_policy,
                         execution_enabled: true,
                         paper_stress_previews: paper_stress_previews.clone(),
@@ -4388,6 +4417,7 @@ mod lifecycle_tests {
             },
             strategy: BtcStrategyConfig::default(),
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -4417,6 +4447,26 @@ mod lifecycle_tests {
             BtcDirectionalModelEntryPolicy::RequirePositiveDirectEdge
         );
         assert!(control.entry_admission.is_none());
+        assert!(control.risk_strategies.is_empty());
+    }
+
+    #[test]
+    fn btc_process_control_accepts_one_explicit_risk_strategy() {
+        let control: BtcRealtimePaperControlConfig = serde_json::from_value(serde_json::json!({
+            "schema_version": BTC_PROCESS_SCHEMA_VERSION,
+            "next_experiment_key": "btc-5m-risk-contract",
+            "preregistration_sha256": "a".repeat(64),
+            "risk_strategies": [{
+                "version": "capitonic-risk-strategy-v1",
+                "model_key": "risk-model",
+                "artifact_sha256": "b".repeat(64)
+            }]
+        }))
+        .unwrap();
+        risk_runtime::validate_selections(&control.risk_strategies).unwrap();
+        let mut duplicated = control.risk_strategies.clone();
+        duplicated.push(duplicated[0].clone());
+        assert!(risk_runtime::validate_selections(&duplicated).is_err());
     }
 
     #[test]
@@ -4631,6 +4681,7 @@ mod lifecycle_tests {
             control,
             strategy: strategy.clone(),
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -4771,6 +4822,7 @@ mod lifecycle_tests {
             },
             strategy: BtcStrategyConfig::default(),
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -4842,6 +4894,7 @@ mod lifecycle_tests {
             },
             strategy,
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -4889,6 +4942,7 @@ mod lifecycle_tests {
             },
             strategy: BtcStrategyConfig::default(),
             entry_admission: None,
+            risk_strategies: Vec::new(),
             runtime: BtcRuntimeConfig {
                 enabled: true,
                 ..BtcRuntimeConfig::default()
@@ -5189,6 +5243,7 @@ mod lifecycle_tests {
                 control,
                 strategy,
                 entry_admission: None,
+                risk_strategies: Vec::new(),
                 runtime: BtcRuntimeConfig {
                     enabled: true,
                     ..BtcRuntimeConfig::default()
