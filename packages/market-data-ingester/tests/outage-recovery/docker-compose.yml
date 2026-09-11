@@ -30,6 +30,7 @@ services:
       - database
 
   db-migrate:
+    image: ${RECOVERY_TEST_DB_MIGRATE_IMAGE:?RECOVERY_TEST_DB_MIGRATE_IMAGE is required}
     build:
       context: ../../../..
       dockerfile: packages/db-migrate/Dockerfile.production
@@ -47,6 +48,7 @@ services:
       - database
 
   ingester-master:
+    image: ${RECOVERY_TEST_INGESTER_IMAGE:?RECOVERY_TEST_INGESTER_IMAGE is required}
     build:
       context: ../../../..
       dockerfile: packages/market-data-ingester/Dockerfile.production
@@ -62,6 +64,7 @@ services:
       - database
 
   ingester-worker:
+    image: ${RECOVERY_TEST_INGESTER_IMAGE:?RECOVERY_TEST_INGESTER_IMAGE is required}
     build:
       context: ../../../..
       dockerfile: packages/market-data-ingester/Dockerfile.production

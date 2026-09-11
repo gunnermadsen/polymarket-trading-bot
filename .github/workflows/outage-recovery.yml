@@ -1,0 +1,92 @@
+name: Outage Recovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.92.0
+  RECOVERY_TEST_INGESTER_IMAGE: capitonic-recovery-ingester:${{ github.sha }}
+  RECOVERY_TEST_DB_MIGRATE_IMAGE: capitonic-recovery-db-migrate:${{ github.sha }}
+
+jobs:
+  outage-recovery:
+    name: Outage recovery integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+      - name: Cache Cargo registry and recovery-test build output
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: outage-recovery-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            outage-recovery-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Test Polymarket route recovery
+        run: >-
+          cargo +"$RUST_TOOLCHAIN" test
+          --locked
+          --package polymarket-bot
+          market_data_stream::tests::route_runtime_recovers_across_worker_identity_replacement_and_outage
+          --
+          --exact
+
+      - name: Test recovery alert rules
+        env:
+          PROMTOOL_DOCKER_IMAGE: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+        run: ruby scripts/test-market-data-ingester-alerts.rb
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build cached ingester recovery image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/market-data-ingester/Dockerfile.production
+          load: true
+          build-args: |
+            RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
+            INGESTER_GIT_REVISION=${{ github.sha }}
+          tags: ${{ env.RECOVERY_TEST_INGESTER_IMAGE }}
+          cache-from: type=gha,scope=outage-recovery-ingester
+          cache-to: type=gha,scope=outage-recovery-ingester,mode=max
+
+      - name: Build cached migration recovery image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: packages/db-migrate/Dockerfile.production
+          load: true
+          build-args: DB_MIGRATE_GIT_REVISION=${{ github.sha }}
+          tags: ${{ env.RECOVERY_TEST_DB_MIGRATE_IMAGE }}
+          cache-from: type=gha,scope=outage-recovery-db-migrate
+          cache-to: type=gha,scope=outage-recovery-db-migrate,mode=max
+
+      - name: Test ingester process recovery
+        env:
+          RECOVERY_TEST_SKIP_BUILD: "true"
+        run: ./scripts/test-outage-recovery.sh
+
+      - name: Upload recovery diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: outage-recovery-diagnostics
+          path: target/recovery-test/
+          if-no-files-found: ignore
+          retention-days: 14

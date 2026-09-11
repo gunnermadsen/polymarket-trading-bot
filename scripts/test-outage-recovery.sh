@@ -9,6 +9,8 @@ readonly artifact_directory="$repository_root/target/recovery-test/$project_name
 readonly database_network="${project_name}_database"
 export RECOVERY_TEST_GIT_REVISION="$git_revision"
 export COMPOSE_PROJECT_NAME="$project_name"
+export RECOVERY_TEST_DB_MIGRATE_IMAGE="${RECOVERY_TEST_DB_MIGRATE_IMAGE:-${project_name}-db-migrate}"
+export RECOVERY_TEST_INGESTER_IMAGE="${RECOVERY_TEST_INGESTER_IMAGE:-${project_name}-ingester}"
 
 compose() {
   docker compose --file "$compose_file" --project-name "$project_name" "$@"
@@ -91,8 +93,10 @@ run_migrations() {
   compose run --rm db-migrate
 }
 
-echo "Building isolated recovery-test services"
-compose build db-migrate ingester-master ingester-worker
+if [[ "${RECOVERY_TEST_SKIP_BUILD:-false}" != "true" ]]; then
+  echo "Building isolated recovery-test services"
+  compose build db-migrate ingester-master
+fi
 compose up --detach probe
 
 echo "Verifying database bootstrap retry"

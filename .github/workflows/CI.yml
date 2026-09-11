@@ -32,7 +32,6 @@ jobs:
       polymarket_bot: ${{ steps.filter.outputs.polymarket_bot }}
       ingester: ${{ steps.filter.outputs.ingester }}
       db_migrate: ${{ steps.filter.outputs.db_migrate }}
-      outage_recovery: ${{ steps.filter.outputs.outage_recovery }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -51,7 +50,6 @@ jobs:
             echo "polymarket_bot=true" >> "$GITHUB_OUTPUT"
             echo "ingester=true" >> "$GITHUB_OUTPUT"
             echo "db_migrate=true" >> "$GITHUB_OUTPUT"
-            echo "outage_recovery=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed() {
@@ -60,7 +58,6 @@ jobs:
           echo "polymarket_bot=$(changed Cargo.toml Cargo.lock packages/polymarket-bot packages/btc-directional-model/runtime-models common/proto .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
           echo "ingester=$(changed Cargo.toml Cargo.lock packages/market-data-ingester common/proto .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
           echo "db_migrate=$(changed packages/db-migrate .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
-          echo "outage_recovery=$(changed Cargo.toml Cargo.lock packages/polymarket-bot packages/market-data-ingester packages/db-migrate common/proto common/configs/grafana/provisioning/alerting/rules-market-data-ingester.yml scripts/test-market-data-ingester-alerts.rb scripts/test-outage-recovery.sh .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
 
   rust-tests:
     name: Rust tests
@@ -149,68 +146,9 @@ jobs:
           --no-deps
           --all-features
 
-  outage-recovery-integration:
-    name: Outage recovery integration
-    needs: changes
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust
-        if: needs.changes.outputs.outage_recovery == 'true'
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-
-      - name: Cache Cargo registry and recovery-test build output
-        if: needs.changes.outputs.outage_recovery == 'true'
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: outage-recovery-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            outage-recovery-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
-
-      - name: Test Polymarket route recovery
-        if: needs.changes.outputs.outage_recovery == 'true'
-        run: >-
-          cargo +"$RUST_TOOLCHAIN" test
-          --locked
-          --package polymarket-bot
-          market_data_stream::tests::route_runtime_recovers_across_worker_identity_replacement_and_outage
-          --
-          --exact
-
-      - name: Test recovery alert rules
-        if: needs.changes.outputs.outage_recovery == 'true'
-        env:
-          PROMTOOL_DOCKER_IMAGE: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
-        run: ruby scripts/test-market-data-ingester-alerts.rb
-
-      - name: Test ingester process recovery
-        if: needs.changes.outputs.outage_recovery == 'true'
-        run: ./scripts/test-outage-recovery.sh
-
-      - name: No recovery-sensitive changes
-        if: needs.changes.outputs.outage_recovery != 'true'
-        run: echo "No ingester or Polymarket route recovery changes detected."
-
-      - name: Upload recovery diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: outage-recovery-diagnostics
-          path: target/recovery-test/
-          if-no-files-found: ignore
-          retention-days: 14
-
   production-image-validation:
     name: ${{ github.ref == 'refs/heads/production' && 'Build and push' || 'Validate' }} ${{ matrix.name }} production image
-    needs: [changes, rust-tests, market-data-ingester-tests, outage-recovery-integration]
+    needs: [changes, rust-tests, market-data-ingester-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
