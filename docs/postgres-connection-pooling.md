@@ -8,16 +8,24 @@ PgBouncer exposes bounded aliases for each service identity while retaining the 
 `polymarket` route for rollback:
 
 - `polymarket_trading` for `capitonic_trading`
-- `polymarket_ingester_master` for `capitonic_ingester_master`
-- `polymarket_ingester_worker` for `capitonic_ingester_worker`
-- `polymarket_observe` for the read-only `capitonic_grafana`
+- `polymarket_ingester_master_tx` for `capitonic_ingester_master`
+- `polymarket_ingester_worker_tx` for `capitonic_ingester_worker`
+- `polymarket_observe_tx` for the read-only `capitonic_grafana`
 
 The aliases isolate connection budgets; they do not substitute PostgreSQL users. PgBouncer
-authenticates each dedicated login and PostgreSQL enforces that role's grants. All routes use
-session pooling. Do not change them to transaction pooling without first redesigning and
-verifying the SQLx queries described below.
+authenticates each dedicated login and PostgreSQL enforces that role's grants. Trading remains
+session-pooled. Ingester master, dynamically scaled workers, and Grafana use transaction-pooled
+routes. Their prior session-pooled aliases remain available during rollout and rollback:
 
-## Why session affinity is required
+- `polymarket_ingester_master`
+- `polymarket_ingester_worker`
+- `polymarket_observe`
+
+Compose defaults to the transaction aliases. Set `INGESTER_MASTER_POSTGRES_ALIAS`,
+`INGESTER_WORKER_POSTGRES_ALIAS`, or `GRAFANA_POSTGRES_ALIAS` to the corresponding session alias
+to roll back one workload without changing credentials or database grants.
+
+## Why trading session affinity is required
 
 Two BTC repository queries call SQLx `.persistent(false)`:
 
@@ -41,22 +49,29 @@ unnamed prepared statement does not exist
 Session pooling preserves the physical backend for the client connection and therefore
 preserves both the custom-plan optimization and SQLx's protocol assumptions.
 
+The ingester does not use `.persistent(false)`, session advisory locks, PostgreSQL
+`LISTEN`/`NOTIFY`, temporary tables, or session-level `SET`. Its advisory locks are
+`pg_advisory_xact_lock` calls made inside explicit transactions, so their required affinity ends
+at transaction commit. PgBouncer's `max_prepared_statements` support preserves named prepared
+statements across transaction-pooled backend changes. Grafana's PostgreSQL datasource does not
+depend on backend session state and uses the same transaction-pooled route safely.
+
 ## Connection budget
 
-Session pooling does not multiplex active connected clients across fewer PostgreSQL backends.
-The per-alias ceilings divide the 30-server-connection application budget as follows:
+The global PgBouncer ceiling remains 30 server connections while both route sets coexist,
+leaving ten PostgreSQL slots for migration, administration, and exceptional direct access. The
+transaction-pooled steady-state budgets are:
 
-- legacy rollback route: 2
-- polymarket bot: 8
-- ingester master: 2
-- dynamically scaled ingester workers: 16 (eight replicas with two pools each)
-- Grafana: 2
+- trading: 8 session-pooled backends
+- ingester master: 2 transaction-pooled backends
+- dynamically scaled ingester workers: 8 transaction-pooled backends for up to 96 clients
+- Grafana: 2 transaction-pooled backends
 
-PostgreSQL accepts 40 total connections, reserving ten slots outside PgBouncer for
-`db-migrate`, emergency administration, and exceptional direct connections. Each ingester
-container is configured with one strategy connection and one control connection. Additional
-worker clients wait behind the bounded worker pool instead of consuming unbounded PostgreSQL
-backends.
+The legacy route and three session-pooled service aliases remain configured as rollback paths,
+but idle aliases do not reserve servers. PostgreSQL continues to accept 40 total connections.
+Each ingester container has one strategy client and one control client; transaction pooling
+multiplexes those clients across the bounded backend pool rather than reserving two PostgreSQL
+sessions for every worker replica. Additional clients wait behind PgBouncer's bounded pool.
 
 ## How a database error fails a trading process
 

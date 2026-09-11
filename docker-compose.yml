@@ -204,7 +204,7 @@ services:
     environment:
       <<: *ingester-environment
       POSTGRES_USER: "capitonic_ingester_master"
-      POSTGRES_DB: "polymarket_ingester_master"
+      POSTGRES_DB: "${INGESTER_MASTER_POSTGRES_ALIAS:-polymarket_ingester_master_tx}"
       INGESTER_MODE: "master"
       INGESTER_INSTANCE: "ingester-master"
       INGESTER_API_BIND: "0.0.0.0:8098"
@@ -238,7 +238,7 @@ services:
     environment:
       <<: *ingester-environment
       POSTGRES_USER: "capitonic_ingester_worker"
-      POSTGRES_DB: "polymarket_ingester_worker"
+      POSTGRES_DB: "${INGESTER_WORKER_POSTGRES_ALIAS:-polymarket_ingester_worker_tx}"
       INGESTER_MODE: "worker"
       INGESTER_GRPC_BIND: "0.0.0.0:50051"
       INGESTER_WORKER_METRICS_BIND: "0.0.0.0:8099"
@@ -470,7 +470,7 @@ services:
       GF_DATE_FORMATS_DEFAULT_TIMEZONE: "browser"
       GRAFANA_POSTGRES_HOST: "pgbouncer"
       GRAFANA_POSTGRES_PORT: "6432"
-      GRAFANA_POSTGRES_DATABASE: "polymarket_observe"
+      GRAFANA_POSTGRES_DATABASE: "${GRAFANA_POSTGRES_ALIAS:-polymarket_observe_tx}"
       GRAFANA_POSTGRES_USER: "capitonic_grafana"
       GRAFANA_POSTGRES_MAX_OPEN_CONNS: "2"
       GRAFANA_POSTGRES_MAX_IDLE_CONNS: "1"
