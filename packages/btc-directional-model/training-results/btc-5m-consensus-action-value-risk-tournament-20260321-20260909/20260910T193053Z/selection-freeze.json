@@ -1,0 +1,11 @@
+{
+  "bucket_champions": {
+    "120_149": "conformal_action_value",
+    "150_179": "pairwise_optimal_stopping",
+    "180_240": "conformal_action_value",
+    "60_89": "conformal_action_value",
+    "90_119": "consensus_disagreement_value"
+  },
+  "primary_coverage": 0.85,
+  "selected_on": "chronological historical walk-forward only"
+}
