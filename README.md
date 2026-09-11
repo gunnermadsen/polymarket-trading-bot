@@ -16,8 +16,20 @@ Kafka and pgbouncer are intentionally omitted.
 Create local env files from the examples and fill in the secret values:
 
 - `.env`: app and Polymarket secrets.
-- `.env.postgres`: canonical source for `POSTGRES_PASSWORD`.
+- `.env.postgres`: canonical source for the PostgreSQL administrator password.
+- `.env.postgres.roles`: canonical source for application database-role passwords.
+- `.env.postgres.<service>`: generated least-privilege credential mounted into one service.
 - `.env.grafana`: Grafana admin credentials and datasource settings.
+
+Generate the application database credentials from the primary checkout without printing
+their values:
+
+```bash
+./scripts/bootstrap-postgres-service-credentials.sh
+```
+
+The generator refuses to overwrite an existing credential set. Keep the generated files out
+of linked worktrees and do not commit them.
 
 Generate a local Grafana admin password with:
 

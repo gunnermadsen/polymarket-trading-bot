@@ -41,8 +41,8 @@ Do not duplicate durable business truth into metrics or logs and then treat the 
 
 | Component | Declared configuration |
 |---|---|
-| PostgreSQL | TimescaleDB 2.14.2 on PostgreSQL 14, persistent volume, 2 GB memory, 32 connections, loopback host port `55432` |
-| PgBouncer | Session-pooled application and Grafana access on internal port `6432` |
+| PostgreSQL | TimescaleDB 2.14.2 on PostgreSQL 14, persistent volume, 2 GB memory, 40 connections, loopback host port `55432` |
+| PgBouncer | Session-pooled trading plus transaction-pooled ingester and Grafana access on internal port `6432` |
 | Prometheus | Version 3.13.2 pinned by digest, 384 MB, 0.20 CPU, persistent volume, 15-day or 5 GB retention |
 | Loki | Version 3.7.6 pinned by digest, 384 MB, 0.20 CPU, local filesystem TSDB, 30-day retention, replication factor 1 |
 | Grafana | Version 12.4.2 by default, 256 MB, 0.20 CPU, persistent volume, loopback host port `3000` |
@@ -51,7 +51,7 @@ Prometheus scrapes itself and `polymarket-bot:8097/prometheus/metrics` every 20 
 
 Grafana provisions four data sources at startup:
 
-- PostgreSQL/TimescaleDB through PgBouncer, with two open and one idle connection in production.
+- PostgreSQL/TimescaleDB through Grafana's transaction-pooled PgBouncer alias, with two open and one idle client connection in production.
 - Prometheus through server-side proxy access and basic authentication.
 - Loki through server-side proxy access.
 - The bot's authenticated runtime HTTP API through the Infinity data-source plugin for selected readiness alerts.

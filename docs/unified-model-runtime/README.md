@@ -21,6 +21,7 @@ Code lives in `packages/polymarket-bot/src/btc/unified_model_runtime/`:
 | `adapters/data.rs` | Bounded causal book history using immutable shared observations |
 | `adapters/history.rs` | Process-owned, market-local probability history |
 | `telemetry.rs` | Stable process-scoped metrics and prediction evidence |
+| `risk.rs` | Immutable risk-package loading, causal candidate features and veto evaluation |
 | `tests.rs` | Contract, parity, causal input and recovery checks |
 
 Existing directional, payoff and asymmetric implementations remain supported through the existing loader and scoring interface. Their artifacts, feature definitions, thresholds and process identities are not rewritten. The common process lifecycle instruments them too.
@@ -34,6 +35,12 @@ A new package embeds its UMR contract in the checksummed model payload. It decla
 `strategy.unified_model` supplies the version, source bindings and effective policy in the process playbook. For the frozen champions the policy must equal the exported qualification policy exactly, and size must equal five shares. Process configuration cannot silently reinterpret an input, change an estimator, or alter thresholds. Unknown adapters, versions, slots or unsupported bindings fail compatibility validation. Existing processes omit this additive field and preserve their legacy path.
 
 Global credentials and stream connections remain infrastructure configuration. A binding consumes shared gRPC state; it does not create a socket or database poller. All required source history and integrity must be available before the dependent action is eligible.
+
+### Risk strategy contract
+
+`risk_strategies` is an optional top-level BTC playbook array. Version 1 accepts zero or one `{version, model_key, artifact_sha256}` selector. Absence means the risk stage is not invoked; presence means it is active, with no shadow or canary mode. It does not contain another `sources` list or entry schedule. The trading strategy remains responsible for producing an approved candidate and controlling candidate timing. Risk packages consume the already-causal candidate and snapshot fields supplied by that path.
+
+The risk stage runs after strategy approval and before order planning. It returns one `capitonic-risk-evaluation-v1` Rust value with immutable model identity, score, threshold, allow/defer disposition, bounded reason, feature timestamp, input hash and inference latency. That value is nested as `risk_strategy` in the existing `entry_admission` decision evidence; it is not a trade intent, array, table or new ledger. A defer affects only that candidate. An inference failure also defers only that candidate and is retried naturally on the next eligible evaluation. Existing processes without `risk_strategies` retain their established execution path.
 
 ## Model adapter standard
 

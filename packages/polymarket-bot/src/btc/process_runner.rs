@@ -1,3 +1,6 @@
+use super::unified_model_runtime::risk::{
+    self, RiskDisposition, RiskStrategySelection, RuntimeRiskModel,
+};
 use super::unified_model_runtime::telemetry as umr_telemetry;
 use std::{
     collections::HashSet,
@@ -75,6 +78,8 @@ pub struct BtcProcessConfig {
     pub strategy: BtcStrategyConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_admission: Option<BtcEntryAdmissionConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub risk_strategies: Vec<RiskStrategySelection>,
     #[serde(
         default,
         skip_serializing_if = "BtcDirectionalModelEntryPolicy::is_default"
@@ -426,6 +431,7 @@ pub struct BtcProcessRunner {
     directional_model_runtime: StdMutex<DirectionalModelProcessRuntime>,
     unified_session:
         StdMutex<Option<Box<dyn super::unified_model_runtime::adapters::FeatureSession>>>,
+    risk_model: Option<Arc<RuntimeRiskModel>>,
     primary_persistence_state: Option<Arc<RwLock<RealtimeState>>>,
 }
 
@@ -497,6 +503,8 @@ impl BtcProcessRunner {
         if let Some(entry_admission) = config.entry_admission.as_ref() {
             entry_admission.validate()?;
         }
+        risk::validate_selections(&config.risk_strategies)?;
+        let risk_model = config.risk_strategies.first().map(risk::load).transpose()?;
         let mut preview_keys = HashSet::new();
         for preview in &config.paper_stress_previews {
             preview.validate()?;
@@ -518,6 +526,7 @@ impl BtcProcessRunner {
             execution_lifecycle.mode().as_str(),
             directional_model_selection(&config.strategy).as_ref(),
         );
+        umr_telemetry::register_risk(config.process_id, config.risk_strategies.first());
         Ok(Self {
             repository,
             store,
@@ -537,6 +546,7 @@ impl BtcProcessRunner {
             execution_reconcile_started_at: Mutex::new(None),
             directional_model_runtime: StdMutex::new(DirectionalModelProcessRuntime::default()),
             unified_session: StdMutex::new(unified_session),
+            risk_model,
             primary_persistence_state: None,
         })
     }
@@ -1403,9 +1413,41 @@ impl BtcProcessRunner {
                 snapshot.fee_rate.unwrap_or_default(),
             )
             .await?;
-        let entry_admission_evidence = entry_admission
-            .as_ref()
-            .map(|evaluation| &evaluation.evidence);
+        let risk_evaluation = match self.risk_model.as_ref() {
+            None => None,
+            Some(model) => match model.evaluate(&snapshot, &decision) {
+                Ok(evaluation) => {
+                    umr_telemetry::risk_evaluation(self.config.process_id, &evaluation);
+                    Some(evaluation)
+                }
+                Err(error) => {
+                    umr_telemetry::failure(self.config.process_id, "risk", &error.to_string());
+                    umr_telemetry::event(
+                        self.config.process_id,
+                        "risk_disposition",
+                        "inference_error",
+                    );
+                    let evidence = merge_risk_evidence(
+                        entry_admission.as_ref(),
+                        None,
+                        Some(error.to_string()),
+                    );
+                    self.insert_process_strategy_decision(
+                        &snapshot.market_id,
+                        &decision,
+                        Some(&evidence),
+                        None,
+                        "risk_blocked",
+                    )
+                    .await?;
+                    complete_directional_model_candidate(&mut directional_candidate, false)?;
+                    return Ok(());
+                }
+            },
+        };
+        let combined_evidence =
+            merge_risk_evidence(entry_admission.as_ref(), risk_evaluation.as_ref(), None);
+        let entry_admission_evidence = (!combined_evidence.is_null()).then_some(&combined_evidence);
         if entry_admission
             .as_ref()
             .is_some_and(|evaluation| evaluation.disposition == AdmissionDisposition::Defer)
@@ -1416,6 +1458,21 @@ impl BtcProcessRunner {
                 entry_admission_evidence,
                 None,
                 "admission_blocked",
+            )
+            .await?;
+            complete_directional_model_candidate(&mut directional_candidate, false)?;
+            return Ok(());
+        }
+        if risk_evaluation
+            .as_ref()
+            .is_some_and(|evaluation| evaluation.disposition == RiskDisposition::Defer)
+        {
+            self.insert_process_strategy_decision(
+                &snapshot.market_id,
+                &decision,
+                entry_admission_evidence,
+                None,
+                "risk_blocked",
             )
             .await?;
             complete_directional_model_candidate(&mut directional_candidate, false)?;
@@ -1726,6 +1783,63 @@ fn combine_entry_admission_evaluations(
         disposition,
         evidence,
     })
+}
+
+fn merge_risk_evidence(
+    admission: Option<&EntryAdmissionEvaluation>,
+    risk_evaluation: Option<&risk::RiskEvaluation>,
+    risk_error: Option<String>,
+) -> serde_json::Value {
+    if admission.is_none() && risk_evaluation.is_none() && risk_error.is_none() {
+        return serde_json::Value::Null;
+    }
+    let mut evidence = admission
+        .map(|value| value.evidence.clone())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "evidence_version": "btc_entry_admission_v2",
+                "disposition": "allow",
+                "blocking_policies": [],
+            })
+        });
+    if !evidence.is_object() {
+        evidence = serde_json::json!({"existing_admission": evidence});
+    }
+    let object = evidence
+        .as_object_mut()
+        .expect("entry admission evidence object");
+    if let Some(value) = risk_evaluation {
+        object.insert(
+            "risk_strategy".into(),
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        );
+        if value.disposition == RiskDisposition::Defer {
+            object.insert("disposition".into(), serde_json::json!("defer"));
+            object
+                .entry("blocking_policies")
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+                .expect("blocking policies array")
+                .push(serde_json::json!("risk_strategy"));
+        }
+    }
+    if let Some(error) = risk_error {
+        object.insert(
+            "risk_strategy".into(),
+            serde_json::json!({
+                "version": risk::RISK_EVALUATION_VERSION,
+                "disposition": "defer", "reason": "inference_unavailable", "error": error,
+            }),
+        );
+        object.insert("disposition".into(), serde_json::json!("defer"));
+        object
+            .entry("blocking_policies")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .expect("blocking policies array")
+            .push(serde_json::json!("risk_strategy"));
+    }
+    evidence
 }
 
 fn btc_entry_order_metadata(

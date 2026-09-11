@@ -1,5 +1,6 @@
 //! Stable, bounded process-scoped operational telemetry. No database reads on scrape.
 use super::contract::EVALUATION_VERSION;
+use super::risk::{RiskDisposition, RiskEvaluation, RiskStrategySelection};
 use crate::btc::directional_model::{RuntimeModelScore, RuntimeModelSelection};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -56,6 +57,7 @@ struct Pending {
 #[derive(Clone, Default)]
 struct Process {
     identity: Option<RuntimeModelSelection>,
+    risk_identity: Option<RiskStrategySelection>,
     run_id: Option<Uuid>,
     config_hash: String,
     mode: String,
@@ -147,6 +149,35 @@ pub fn register(
         }
     });
     tracing::info!(event="umr_model_registered",process_id=%id,run_id=%run,config_hash=config,model_key=selection.map(|v|v.model_key.as_str()),"UMR process model registered");
+}
+pub fn register_risk(id: Uuid, selection: Option<&RiskStrategySelection>) {
+    update(id, |p| {
+        p.risk_identity = selection.cloned();
+        for reason in ["allow", "defer", "inference_error"] {
+            p.counters
+                .entry(("risk_disposition", reason.into()))
+                .or_default();
+        }
+    });
+}
+pub fn risk_evaluation(id: Uuid, evaluation: &RiskEvaluation) {
+    update(id, |p| {
+        increment(
+            p,
+            "risk_disposition",
+            if evaluation.disposition == RiskDisposition::Defer {
+                "defer"
+            } else {
+                "allow"
+            },
+        );
+        p.gauges.insert("risk_score", evaluation.score);
+        p.gauges.insert("risk_threshold", evaluation.threshold);
+        p.histograms
+            .entry("risk_inference")
+            .or_default()
+            .observe(evaluation.inference_seconds);
+    });
 }
 pub fn enabled(id: Uuid, value: bool) {
     update(id, |p| {
@@ -482,6 +513,7 @@ pub fn prometheus_metrics() -> String {
                 *id,
                 Process {
                     identity: p.identity.clone(),
+                    risk_identity: p.risk_identity.clone(),
                     run_id: p.run_id,
                     config_hash: p.config_hash.clone(),
                     mode: p.mode.clone(),
@@ -526,6 +558,12 @@ pub fn prometheus_metrics() -> String {
                 out.push_str("# HELP polymarket_umr_model_info Immutable active model and process configuration identity.\n# TYPE polymarket_umr_model_info gauge\n");
             }
             let _=writeln!(out,"polymarket_umr_model_info{{{labels},model_key=\"{}\",artifact_sha256=\"{}\",feature_schema_sha256=\"{}\",execution_mode=\"{}\",config_hash=\"{}\"}} 1",escaped(&m.model_key),escaped(&m.artifact_sha256),escaped(&m.feature_schema_sha256),escaped(&p.mode),escaped(&p.config_hash));
+        }
+        if let Some(m) = p.risk_identity {
+            if declared.insert("risk_model_info".into()) {
+                out.push_str("# HELP polymarket_umr_risk_model_info Immutable active risk model identity.\n# TYPE polymarket_umr_risk_model_info gauge\n");
+            }
+            let _=writeln!(out,"polymarket_umr_risk_model_info{{{labels},model_key=\"{}\",artifact_sha256=\"{}\",config_hash=\"{}\"}} 1",escaped(&m.model_key),escaped(&m.artifact_sha256),escaped(&p.config_hash));
         }
         for ((name, reason), value) in p.counters {
             if declared.insert(format!("{name}_total")) {

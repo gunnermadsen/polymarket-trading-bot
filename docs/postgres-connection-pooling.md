@@ -4,10 +4,28 @@ The Docker Compose environments route application connections through PgBouncer 
 `6432`. Database migrations remain connected directly to TimescaleDB on port `5432` so
 migration sessions retain normal PostgreSQL semantics.
 
-PgBouncer uses session pooling for the `polymarket` database. Do not change it to transaction
-pooling without first redesigning and verifying the SQLx queries described below.
+PgBouncer exposes bounded aliases for each service identity while retaining the legacy
+`polymarket` route for rollback:
 
-## Why session affinity is required
+- `polymarket_trading` for `capitonic_trading`
+- `polymarket_ingester_master_tx` for `capitonic_ingester_master`
+- `polymarket_ingester_worker_tx` for `capitonic_ingester_worker`
+- `polymarket_observe_tx` for the read-only `capitonic_grafana`
+
+The aliases isolate connection budgets; they do not substitute PostgreSQL users. PgBouncer
+authenticates each dedicated login and PostgreSQL enforces that role's grants. Trading remains
+session-pooled. Ingester master, dynamically scaled workers, and Grafana use transaction-pooled
+routes. Their prior session-pooled aliases remain available during rollout and rollback:
+
+- `polymarket_ingester_master`
+- `polymarket_ingester_worker`
+- `polymarket_observe`
+
+Compose defaults to the transaction aliases. Set `INGESTER_MASTER_POSTGRES_ALIAS`,
+`INGESTER_WORKER_POSTGRES_ALIAS`, or `GRAFANA_POSTGRES_ALIAS` to the corresponding session alias
+to roll back one workload without changing credentials or database grants.
+
+## Why trading session affinity is required
 
 Two BTC repository queries call SQLx `.persistent(false)`:
 
@@ -31,20 +49,29 @@ unnamed prepared statement does not exist
 Session pooling preserves the physical backend for the client connection and therefore
 preserves both the custom-plan optimization and SQLx's protocol assumptions.
 
+The ingester does not use `.persistent(false)`, session advisory locks, PostgreSQL
+`LISTEN`/`NOTIFY`, temporary tables, or session-level `SET`. Its advisory locks are
+`pg_advisory_xact_lock` calls made inside explicit transactions, so their required affinity ends
+at transaction commit. PgBouncer's `max_prepared_statements` support preserves named prepared
+statements across transaction-pooled backend changes. Grafana's PostgreSQL datasource does not
+depend on backend session state and uses the same transaction-pooled route safely.
+
 ## Connection budget
 
-Session pooling does not multiplex connected clients across fewer PostgreSQL backends. The
-PgBouncer server ceiling therefore matches the complete declared application budget:
+The global PgBouncer ceiling remains 30 server connections while both route sets coexist,
+leaving ten PostgreSQL slots for migration, administration, and exceptional direct access. The
+transaction-pooled steady-state budgets are:
 
-- polymarket bot: 8
-- market-data ingester strategy and control pools: 5
-- Grafana: 2
-- six backfill workers: 9
+- trading: 8 session-pooled backends
+- ingester master: 2 transaction-pooled backends
+- dynamically scaled ingester workers: 8 transaction-pooled backends for up to 96 clients
+- Grafana: 2 transaction-pooled backends
 
-PgBouncer accepts at most 24 server connections for `polymarket`. PostgreSQL accepts 32 total
-connections, reserving eight slots outside the PgBouncer ceiling for `db-migrate`, emergency
-administration, and exceptional direct connections. Additional clients may connect to
-PgBouncer up to `max_client_conn`, but wait at the gateway instead of exhausting PostgreSQL.
+The legacy route and three session-pooled service aliases remain configured as rollback paths,
+but idle aliases do not reserve servers. PostgreSQL continues to accept 40 total connections.
+Each ingester container has one strategy client and one control client; transaction pooling
+multiplexes those clients across the bounded backend pool rather than reserving two PostgreSQL
+sessions for every worker replica. Additional clients wait behind PgBouncer's bounded pool.
 
 ## How a database error fails a trading process
 

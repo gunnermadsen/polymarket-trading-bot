@@ -1,11 +1,14 @@
 //! Read-only discovery. A mounted package never activates a process by itself.
+use super::risk::{self, RiskStrategySelection};
 use crate::btc::directional_model::{runtime_model_registry, RuntimeModelSelection};
 use anyhow::{Context, Result};
 use serde::Serialize;
 #[derive(Serialize)]
 pub struct Entry {
+    pub kind: String,
     pub model_key: String,
     pub selection: Option<RuntimeModelSelection>,
+    pub risk_selection: Option<RiskStrategySelection>,
     pub compatible: bool,
     pub error: Option<String>,
     pub adapter: Option<String>,
@@ -31,8 +34,10 @@ pub fn discover() -> Result<Vec<Entry>> {
             continue;
         }
         let mut result = Entry {
+            kind: "trade_strategy".into(),
             model_key: key.clone(),
             selection: None,
+            risk_selection: None,
             compatible: false,
             error: None,
             adapter: None,
@@ -42,6 +47,41 @@ pub fn discover() -> Result<Vec<Entry>> {
             schedule: None,
             supported_products: Vec::new(),
         };
+        let risk_manifest_path = entry.path().join("risk-manifest.json");
+        if risk_manifest_path.exists() {
+            result.kind = "risk_strategy".into();
+            let loaded = (|| -> Result<RiskStrategySelection> {
+                if std::fs::metadata(&risk_manifest_path)?.len() > 1024 * 1024 {
+                    anyhow::bail!("UMR risk manifest exceeds size limit");
+                }
+                let manifest: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&risk_manifest_path)?)?;
+                let selection = RiskStrategySelection {
+                    version: manifest["version"]
+                        .as_str()
+                        .context("missing risk version")?
+                        .into(),
+                    model_key: key.clone(),
+                    artifact_sha256: manifest["model_sha256"]
+                        .as_str()
+                        .context("missing risk model checksum")?
+                        .into(),
+                };
+                risk::load(&selection)?;
+                Ok(selection)
+            })();
+            match loaded {
+                Ok(selection) => {
+                    result.risk_selection = Some(selection);
+                    result.compatible = true;
+                    result.adapter = Some("candidate_loss_risk".into());
+                    result.feature_schema_version = Some(risk::RISK_FEATURE_SCHEMA_VERSION.into());
+                }
+                Err(error) => result.error = Some(error.to_string()),
+            }
+            entries.push(result);
+            continue;
+        }
         let loaded = (|| -> Result<_> {
             let path = entry.path().join("manifest.json");
             if std::fs::metadata(&path)?.len() > 1024 * 1024 {
