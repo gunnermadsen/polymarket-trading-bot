@@ -23,7 +23,7 @@ env:
 
 jobs:
   teardown:
-    if: github.event_name == 'workflow_call' || inputs.confirm_destroy == 'teardown-management-ec2'
+    if: github.event_name != 'workflow_dispatch' || inputs.confirm_destroy == 'teardown-management-ec2'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -75,6 +75,7 @@ jobs:
         run: |
           echo "INSTANCE_ID=$(terraform -chdir="$TF_DIR" output -raw instance_id)" >> "$GITHUB_ENV"
           echo "TUNNEL_ID=$(terraform -chdir="$TF_DIR" output -raw tunnel_id)" >> "$GITHUB_ENV"
+          echo "RDP_HOSTNAME=$(terraform -chdir="$TF_DIR" output -raw rdp_hostname)" >> "$GITHUB_ENV"
 
       - name: Destroy only management resources
         run: terraform -chdir="$TF_DIR" destroy -auto-approve -input=false -lock-timeout=60s
@@ -93,6 +94,29 @@ jobs:
           [ "$(aws ec2 describe-security-groups --filters Name=group-name,Values=capitonic-polymarket-bot-management-sg \
             --query 'length(SecurityGroups)' --output text)" = "0" ]
           ! aws ssm get-parameter --name /capitonic/production/management/cloudflare-tunnel-token >/dev/null 2>&1
+
+          for attempt in $(seq 1 30); do
+            tunnel_count="$(curl -fsS \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/cfd_tunnel?is_deleted=false&name=capitonic-polymarket-bot-management-rdp" \
+              | jq '.result | length')"
+            dns_count="$(curl -fsS \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/zones/$TF_VAR_cloudflare_zone_id/dns_records?name=$RDP_HOSTNAME" \
+              | jq '.result | length')"
+            access_count="$(curl -fsS \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$TF_VAR_cloudflare_account_id/access/apps" \
+              | jq --arg domain "$RDP_HOSTNAME" '[.result[] | select(.domain == $domain)] | length')"
+            if [ "$tunnel_count" = "0" ] && [ "$dns_count" = "0" ] && [ "$access_count" = "0" ]; then
+              break
+            fi
+            [ "$attempt" -lt 30 ] || {
+              echo "Cloudflare teardown incomplete: tunnel=$tunnel_count dns=$dns_count access=$access_count" >&2
+              exit 1
+            }
+            sleep 10
+          done
 
           echo "Management EC2, EBS, IAM, security group, tunnel token, Cloudflare tunnel, DNS, and Access app were destroyed." \
             >> "$GITHUB_STEP_SUMMARY"
