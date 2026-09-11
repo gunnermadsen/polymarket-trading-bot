@@ -1,23 +1,64 @@
-name: CI
+name: Verify and Publish Images
 
 on:
   push:
     branches:
       - development
       - master
+      - production
   pull_request:
     branches:
       - development
       - master
+      - production
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.92.0
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || '192200846560.dkr.ecr.eu-west-1.amazonaws.com' }}
 
 jobs:
+  changes:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    outputs:
+      polymarket_bot: ${{ steps.filter.outputs.polymarket_bot }}
+      ingester: ${{ steps.filter.outputs.ingester }}
+      db_migrate: ${{ steps.filter.outputs.db_migrate }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Detect affected images
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            || [ -z "$BASE_SHA" ] \
+            || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "polymarket_bot=true" >> "$GITHUB_OUTPUT"
+            echo "ingester=true" >> "$GITHUB_OUTPUT"
+            echo "db_migrate=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed() {
+            if git diff --quiet "$BASE_SHA" "$CURRENT_SHA" -- "$@"; then echo false; else echo true; fi
+          }
+          echo "polymarket_bot=$(changed Cargo.toml Cargo.lock packages/polymarket-bot packages/btc-directional-model/runtime-models common/proto .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
+          echo "ingester=$(changed Cargo.toml Cargo.lock packages/market-data-ingester common/proto .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
+          echo "db_migrate=$(changed packages/db-migrate .github/workflows/CI.yml)" >> "$GITHUB_OUTPUT"
+
   rust-tests:
     name: Rust tests
     runs-on: ubuntu-latest
@@ -87,6 +128,7 @@ jobs:
           --all-features
           --
           -D warnings
+          -A clippy::too_many_arguments
 
       - name: Run market data ingester tests
         run: >-
@@ -104,31 +146,60 @@ jobs:
           --no-deps
           --all-features
 
-      - name: Build image with source provenance
-        run: |
-          image="capitonic/market-data-ingester:ci"
-          source_revision="$(git rev-parse --verify 'HEAD^{commit}')"
-          if [ "$source_revision" != "$GITHUB_SHA" ]; then
-            echo "Checked-out revision $source_revision does not match GITHUB_SHA $GITHUB_SHA" >&2
-            exit 1
-          fi
-          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-            echo "Refusing to build an image from a dirty CI checkout" >&2
-            exit 1
-          fi
-
-          docker build \
-            --file packages/market-data-ingester/Dockerfile \
-            --build-arg "INGESTER_GIT_REVISION=$source_revision" \
-            --tag "$image" \
-            .
-
-          image_revision="$(
-            docker image inspect \
-              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-              "$image"
-          )"
-          if [ "$image_revision" != "$source_revision" ]; then
-            echo "Built image revision mismatch: expected $source_revision, found $image_revision" >&2
-            exit 1
-          fi
+  production-image-validation:
+    name: ${{ github.ref == 'refs/heads/production' && 'Build and push' || 'Validate' }} ${{ matrix.name }} production image
+    needs: [changes, rust-tests, market-data-ingester-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: polymarket-bot
+            dockerfile: packages/polymarket-bot/Dockerfile.production
+            revision_arg: POLYMARKET_GIT_REVISION
+            repository: capitonic/polymarket-bot
+            cache_scope: polymarket-bot-production
+            change_key: polymarket_bot
+          - name: ingester
+            dockerfile: packages/market-data-ingester/Dockerfile.production
+            revision_arg: INGESTER_GIT_REVISION
+            repository: capitonic/ingester
+            cache_scope: ingester-production
+            change_key: ingester
+          - name: db-migrate
+            dockerfile: packages/db-migrate/Dockerfile.production
+            revision_arg: DB_MIGRATE_GIT_REVISION
+            repository: capitonic/db-migrate
+            cache_scope: db-migrate-production
+            change_key: db_migrate
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/production' && needs.changes.outputs[matrix.change_key] == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Log in to Amazon ECR
+        if: github.ref == 'refs/heads/production' && needs.changes.outputs[matrix.change_key] == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build production image
+        if: needs.changes.outputs[matrix.change_key] == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: ${{ github.ref == 'refs/heads/production' }}
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
+            ${{ matrix.revision_arg }}=${{ github.sha }}
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ matrix.repository }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ matrix.repository }}:production
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max

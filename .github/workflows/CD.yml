@@ -1,141 +1,34 @@
-name: CD
+name: Deploy Production
 
+# Image publication belongs to CI. Add the production deployment job here
+# after its runtime infrastructure has been provisioned.
 on:
-  push:
-    branches:
-      - production
+  workflow_dispatch:
+    inputs:
+      polymarket_bot_digest:
+        description: Immutable polymarket-bot image digest (sha256:...)
+        required: true
+        type: string
+      ingester_digest:
+        description: Immutable ingester image digest (sha256:...)
+        required: true
+        type: string
+      db_migrate_digest:
+        description: Immutable db-migrate image digest (sha256:...)
+        required: true
+        type: string
 
 permissions:
   contents: read
-  id-token: write
-
-env:
-  AWS_REGION: mx-central-1
-  AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
-  ECR_REGISTRY: 192200846560.dkr.ecr.mx-central-1.amazonaws.com
-  ECR_POLYMARKET_BOT_REPOSITORY: capitonic/polymarket-bot
-  ECR_DB_MIGRATE_REPOSITORY: capitonic/db-migrate
-  RUST_TOOLCHAIN: 1.92.0
 
 jobs:
-  publish-polymarket-bot:
-    name: Build and push polymarket-bot image
+  deployment-not-configured:
+    name: Deployment target not configured
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Resolve source revision
-        id: source-revision
+      - name: Stop before deployment
+        shell: bash
         run: |
-          revision="$(git rev-parse --verify 'HEAD^{commit}')"
-          if [ "$revision" != "$GITHUB_SHA" ]; then
-            echo "Checked-out revision $revision does not match GITHUB_SHA $GITHUB_SHA." >&2
-            exit 1
-          fi
-          if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
-            echo "Refusing to publish an image from a dirty checkout." >&2
-            exit 1
-          fi
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: packages/polymarket-bot/Dockerfile.production
-          push: true
-          build-args: |
-            RUST_VERSION=${{ env.RUST_TOOLCHAIN }}
-            POLYMARKET_GIT_REVISION=${{ steps.source-revision.outputs.revision }}
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:${{ github.sha }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:production
-          cache-from: |
-            type=gha,scope=polymarket-bot
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:buildcache
-          cache-to: |
-            type=gha,scope=polymarket-bot,mode=max
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_POLYMARKET_BOT_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
-
-  publish-db-migrate:
-    name: Build and push db-migrate image
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Calculate migration checksum
-        id: migration-checksum
-        run: |
-          checksum="$(
-            find packages/db-migrate/src/migrations -type f -print0 \
-              | sort -z \
-              | xargs -0 sha256sum \
-              | sha256sum \
-              | cut -d ' ' -f 1
-          )"
-          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
-          echo "tag=migrations-$checksum" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Check for existing migration image
-        id: db-migrate-image
-        run: |
-          if aws ecr describe-images \
-            --repository-name "$ECR_DB_MIGRATE_REPOSITORY" \
-            --image-ids imageTag="${{ steps.migration-checksum.outputs.tag }}" \
-            >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Migration image already exists for checksum ${{ steps.migration-checksum.outputs.checksum }}."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "No migration image found for checksum ${{ steps.migration-checksum.outputs.checksum }}."
-          fi
-
-      - name: Log in to Amazon ECR
-        if: steps.db-migrate-image.outputs.exists != 'true'
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Set up Docker Buildx
-        if: steps.db-migrate-image.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build and push image
-        if: steps.db-migrate-image.outputs.exists != 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: packages/db-migrate/Dockerfile
-          push: true
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ steps.migration-checksum.outputs.tag }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:${{ github.sha }}
-            ${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:production
-          cache-from: |
-            type=gha,scope=db-migrate
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:buildcache
-          cache-to: |
-            type=gha,scope=db-migrate,mode=max
-            type=registry,ref=${{ env.ECR_REGISTRY }}/${{ env.ECR_DB_MIGRATE_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          echo "Production deployment infrastructure is not configured."
+          echo "CI publishes immutable images; no deployment was attempted."
+          exit 1

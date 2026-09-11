@@ -9,7 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY packages/polymarket-bot/Cargo.toml packages/polymarket-bot/Cargo.toml
 COPY packages/market-data-ingester/Cargo.toml packages/market-data-ingester/Cargo.toml
 COPY packages/polymarket-bot/build.rs packages/polymarket-bot/build.rs

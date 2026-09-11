@@ -171,11 +171,11 @@ services:
     profiles: [data-ingestion]
     build:
       context: .
-      dockerfile: packages/market-data-ingester/Dockerfile
-      target: master
+      dockerfile: packages/market-data-ingester/Dockerfile.production
+      target: runtime
       args:
         INGESTER_GIT_REVISION: ${INGESTER_GIT_REVISION:-}
-    image: ${INGESTER_MASTER_IMAGE:-capitonic/ingester-master:development}
+    image: ${INGESTER_IMAGE:-capitonic/ingester:development}
     container_name: ingester-master
     hostname: ingester-master
     mem_limit: 512m
@@ -203,11 +203,11 @@ services:
     profiles: [data-ingestion]
     build:
       context: .
-      dockerfile: packages/market-data-ingester/Dockerfile
-      target: worker
+      dockerfile: packages/market-data-ingester/Dockerfile.production
+      target: runtime
       args:
         INGESTER_GIT_REVISION: ${INGESTER_GIT_REVISION:-}
-    image: ${INGESTER_WORKER_IMAGE:-capitonic/ingester-worker:development}
+    image: ${INGESTER_IMAGE:-capitonic/ingester:development}
     environment:
       <<: *ingester-environment
       INGESTER_MODE: "worker"
@@ -291,7 +291,7 @@ services:
       dockerfile: packages/polymarket-bot/Dockerfile
       args:
         POLYMARKET_GIT_REVISION: ${POLYMARKET_GIT_REVISION:-}
-    image: ${POLYMARKET_BOT_IMAGE:-polymarket/polymarket-bot:btc-paper}
+    image: ${POLYMARKET_BOT_IMAGE:-capitonic/polymarket-bot:development}
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m

@@ -118,7 +118,7 @@ services:
     restart: unless-stopped
 
   db-migrate:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/db-migrate:production
+    image: ${DB_MIGRATE_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/db-migrate:production}
     container_name: db-migrate
     hostname: db-migrate
     mem_limit: 256m
@@ -131,7 +131,7 @@ services:
       - path: ./.env.market-data-ingester
         required: true
     environment:
-      NODE_ENV: "development"
+      NODE_ENV: "production"
       POSTGRES_HOST: "timescaledb-0"
       POSTGRES_PORT: "5432"
       POSTGRES_USER: "postgres"
@@ -146,7 +146,7 @@ services:
     restart: "no"
 
   polymarket-bot:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/polymarket-bot:production
+    image: ${POLYMARKET_BOT_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/polymarket-bot:production}
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m
@@ -188,7 +188,7 @@ services:
     restart: unless-stopped
 
   ingester-master:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/ingester-master:production
+    image: ${INGESTER_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/ingester:production}
     container_name: ingester-master
     hostname: ingester-master
     init: true
@@ -229,7 +229,7 @@ services:
     restart: unless-stopped
 
   ingester-worker:
-    image: 192200846560.dkr.ecr.mx-central-1.amazonaws.com/capitonic/ingester-worker:production
+    image: ${INGESTER_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/ingester:production}
     init: true
     mem_limit: 4g
     cpus: "2.0"
