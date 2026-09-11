@@ -44,15 +44,15 @@ preserves both the custom-plan optimization and SQLx's protocol assumptions.
 ## Connection budget
 
 Session pooling does not multiplex active connected clients across fewer PostgreSQL backends.
-The per-alias ceilings divide the 24-server-connection application budget as follows:
+The per-alias ceilings divide the 30-server-connection application budget as follows:
 
 - legacy rollback route: 2
 - polymarket bot: 8
 - ingester master: 2
-- dynamically scaled ingester workers: 10
+- dynamically scaled ingester workers: 16 (eight replicas with two pools each)
 - Grafana: 2
 
-PostgreSQL accepts 32 total connections, reserving eight slots outside PgBouncer for
+PostgreSQL accepts 40 total connections, reserving ten slots outside PgBouncer for
 `db-migrate`, emergency administration, and exceptional direct connections. Each ingester
 container is configured with one strategy connection and one control connection. Additional
 worker clients wait behind the bounded worker pool instead of consuming unbounded PostgreSQL
