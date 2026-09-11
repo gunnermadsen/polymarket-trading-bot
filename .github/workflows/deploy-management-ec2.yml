@@ -31,6 +31,18 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v4
 
+      - name: Report OIDC trust claims
+        run: |
+          set -euo pipefail
+          set +x
+          token="$(curl -fsS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)"
+          payload="$(cut -d. -f2 <<<"$token" | tr '_-' '/+')"
+          case $((${#payload} % 4)) in 2) payload="${payload}==" ;; 3) payload="${payload}=" ;; esac
+          printf '%s' "$payload" | base64 -d | jq '{sub,aud,repository,ref,job_workflow_ref}'
+          unset token payload
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
