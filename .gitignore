@@ -6,6 +6,7 @@
 !.env.market-data-ingester.example
 !.env.prometheus.example
 target/
+/worktress/
 node_modules/
 dist/
 .DS_Store

@@ -40,7 +40,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
 - Use exactly one active integration branch for each golden-image build cycle. Name it `integration-<YYYY-MM-DD>`.
 - Create the integration branch once from the current accepted `development` tip at the beginning of the cycle. An annotated `integration-cycle/<YYYY-MM-DD>` tag may record the cycle boundary for ancestry inspection, but its absence does not block explicitly authorized branch creation or integration.
-- The active integration branch is always checked out in the main repository worktree. Never create or keep it in a disposable worktree under `target/worktrees`.
+- The active integration branch is always checked out in the main repository worktree. Never create or keep it in a disposable worktree under `worktress`.
 - The integration branch is the single collection point for the cycle. Do not create feature-specific, defect-specific, candidate-specific, or secondary integration branches.
 - Creating the integration branch is the only point where the cycle branches from `development`. After it exists, every new feature or defect intended for that cycle starts from the latest integration tip and merges back into that same integration branch.
 - A narrowly scoped integration-policy or coordination correction may be committed directly on the integration branch when the user explicitly requests it. Feature and defect implementation still use branches rooted in the active integration lineage.
@@ -132,7 +132,8 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 ## Worktree Location and Ownership
 
-- Store all persistent project worktrees under `target/worktrees/<feature-domain>`.
+- Store all persistent project worktrees under `worktress/<feature-domain>` in the project root.
+- Never place worktrees under `target/`; Cargo owns that directory and `cargo clean` may delete its contents.
 - Do not create persistent worktrees under `/tmp`, `/private/tmp`, or arbitrary external directories.
 - Each disposable worktree owns one overarching feature domain and one designated `feature/...` or `defect/...` branch. The active integration branch belongs only to the main worktree.
 - Related temporary change branches may be created and checked out inside that same worktree; they do not receive separate worktrees.
