@@ -5,7 +5,7 @@ x-logging: &default-logging
     max-file: "5"
 
 x-app-env-file: &app-env-file
-  path: ./.env
+  path: ./.env.runtime
   required: false
   format: raw
 

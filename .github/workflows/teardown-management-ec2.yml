@@ -2,6 +2,10 @@ name: Teardown Management EC2
 
 on:
   workflow_call:
+    inputs:
+      confirm_destroy:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       confirm_destroy:
@@ -23,7 +27,7 @@ env:
 
 jobs:
   teardown:
-    if: github.event_name != 'workflow_dispatch' || inputs.confirm_destroy == 'teardown-management-ec2'
+    if: inputs.confirm_destroy == 'teardown-management-ec2'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:

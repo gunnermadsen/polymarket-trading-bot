@@ -371,8 +371,8 @@ write_app_env() {
     | map(select(.key != "SSH_AUTHORIZED_KEYS"))
     | .[]
     | "\(.key)=\(.value | tostring)"
-  ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
-  chmod 0600 "$APP_DIRECTORY/.env"
+  ' "$SECRET_PATH" > "$APP_DIRECTORY/.env.runtime"
+  chmod 0600 "$APP_DIRECTORY/.env.runtime"
 }
 
 write_postgres_env() {
@@ -425,16 +425,18 @@ grafana_value() {
 }
 
 write_grafana_env() {
-  local grafana_admin_password
+  local grafana_admin_password admin_token
   grafana_admin_password="$(json_value GRAFANA_ADMIN_PASSWORD)"
-  if [ -z "$grafana_admin_password" ]; then
-    echo "Missing GRAFANA_ADMIN_PASSWORD in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+  admin_token="$(json_value POLYMARKET_HTTP_ADMIN_TOKEN)"
+  if [ -z "$grafana_admin_password" ] || [ -z "$admin_token" ]; then
+    echo "Missing GRAFANA_ADMIN_PASSWORD or POLYMARKET_HTTP_ADMIN_TOKEN in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
     exit 1
   fi
 
   {
     printf 'GRAFANA_ADMIN_USER=%s\n' "$(grafana_value GRAFANA_ADMIN_USER admin)"
     printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$grafana_admin_password"
+    printf 'POLYMARKET_HTTP_ADMIN_TOKEN=%s\n' "$admin_token"
     printf 'GRAFANA_POSTGRES_DATASOURCE_NAME=%s\n' "$(grafana_value GRAFANA_POSTGRES_DATASOURCE_NAME Postgres)"
     printf 'GRAFANA_POSTGRES_DATASOURCE_UID=%s\n' "$(grafana_value GRAFANA_POSTGRES_DATASOURCE_UID postgres)"
     printf 'GRAFANA_POSTGRES_HOST=%s\n' "$(grafana_value GRAFANA_POSTGRES_HOST timescaledb-0)"
@@ -482,7 +484,7 @@ write_deployment_env() {
     printf 'DB_MIGRATE_IMAGE=%s\n' "$DB_MIGRATE_IMAGE"
     printf 'INGESTER_IMAGE_DIGEST=%s\n' "$${INGESTER_IMAGE##*@}"
     printf 'INGESTER_GIT_REVISION=%s\n' "$INGESTER_GIT_REVISION"
-  } >> "$APP_DIRECTORY/.env"
+  } > "$APP_DIRECTORY/.env"
   chmod 0600 "$APP_DIRECTORY/.env"
 }
 
