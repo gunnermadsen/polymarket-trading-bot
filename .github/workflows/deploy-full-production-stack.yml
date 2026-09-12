@@ -3,11 +3,21 @@ name: Deploy Full Production Stack
 on:
   workflow_dispatch:
     inputs:
-      image_revision:
-        description: Git revision whose immutable CI images will be deployed
+      polymarket_bot_image_revision:
+        description: Git revision for the immutable polymarket-bot image
         required: true
         type: string
         default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      ingester_image_revision:
+        description: Git revision for the immutable ingester image
+        required: true
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      db_migrate_image_revision:
+        description: Git revision for the immutable db-migrate image
+        required: true
+        type: string
+        default: 45aac939c5237bb8490028b043e984a612d77c44
 
 permissions:
   contents: read
@@ -23,4 +33,6 @@ jobs:
     needs: management
     uses: ./.github/workflows/deploy-production-ec2.yml
     with:
-      image_revision: ${{ inputs.image_revision }}
+      polymarket_bot_image_revision: ${{ inputs.polymarket_bot_image_revision }}
+      ingester_image_revision: ${{ inputs.ingester_image_revision }}
+      db_migrate_image_revision: ${{ inputs.db_migrate_image_revision }}

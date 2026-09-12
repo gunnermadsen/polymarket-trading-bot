@@ -3,8 +3,16 @@ name: Deploy Production Images
 on:
   workflow_dispatch:
     inputs:
-      image_revision:
-        description: Git revision whose immutable CI images will be deployed
+      polymarket_bot_image_revision:
+        description: Git revision for the immutable polymarket-bot image
+        required: true
+        type: string
+      ingester_image_revision:
+        description: Git revision for the immutable ingester image
+        required: true
+        type: string
+      db_migrate_image_revision:
+        description: Git revision for the immutable db-migrate image
         required: true
         type: string
 
@@ -35,18 +43,22 @@ jobs:
       - name: Resolve immutable image references
         shell: bash
         env:
-          IMAGE_REVISION: ${{ inputs.image_revision }}
+          POLYMARKET_BOT_IMAGE_REVISION: ${{ inputs.polymarket_bot_image_revision }}
+          INGESTER_IMAGE_REVISION: ${{ inputs.ingester_image_revision }}
+          DB_MIGRATE_IMAGE_REVISION: ${{ inputs.db_migrate_image_revision }}
         run: |
           set -euo pipefail
           set +x
-          [[ "$IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for revision in "$POLYMARKET_BOT_IMAGE_REVISION" "$INGESTER_IMAGE_REVISION" "$DB_MIGRATE_IMAGE_REVISION"; do
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          done
           resolve_digest() {
-            aws ecr describe-images --repository-name "$1" --image-ids "imageTag=$IMAGE_REVISION" \
+            aws ecr describe-images --repository-name "$1" --image-ids "imageTag=$2" \
               --query 'imageDetails[0].imageDigest' --output text
           }
-          bot_digest="$(resolve_digest capitonic/polymarket-bot)"
-          ingester_digest="$(resolve_digest capitonic/ingester)"
-          migrate_digest="$(resolve_digest capitonic/db-migrate)"
+          bot_digest="$(resolve_digest capitonic/polymarket-bot "$POLYMARKET_BOT_IMAGE_REVISION")"
+          ingester_digest="$(resolve_digest capitonic/ingester "$INGESTER_IMAGE_REVISION")"
+          migrate_digest="$(resolve_digest capitonic/db-migrate "$DB_MIGRATE_IMAGE_REVISION")"
           for digest in "$bot_digest" "$ingester_digest" "$migrate_digest"; do
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           done
@@ -54,7 +66,7 @@ jobs:
             echo "BOT_IMAGE=$ECR_REGISTRY/capitonic/polymarket-bot@$bot_digest"
             echo "INGESTER_IMAGE=$ECR_REGISTRY/capitonic/ingester@$ingester_digest"
             echo "MIGRATE_IMAGE=$ECR_REGISTRY/capitonic/db-migrate@$migrate_digest"
-            echo "IMAGE_REVISION=$IMAGE_REVISION"
+            echo "INGESTER_IMAGE_REVISION=$INGESTER_IMAGE_REVISION"
           } >> "$GITHUB_ENV"
 
       - name: Deploy through SSM
@@ -69,7 +81,7 @@ jobs:
           [ "$(wc -w <<< "$instance_id")" -eq 1 ] || { echo "Expected exactly one running production stack instance." >&2; exit 1; }
 
           parameters="$(jq -n \
-            --arg bot "$BOT_IMAGE" --arg ingester "$INGESTER_IMAGE" --arg migrate "$MIGRATE_IMAGE" --arg revision "$IMAGE_REVISION" \
+            --arg bot "$BOT_IMAGE" --arg ingester "$INGESTER_IMAGE" --arg migrate "$MIGRATE_IMAGE" --arg revision "$INGESTER_IMAGE_REVISION" \
             '{commands:[
               "set -euo pipefail; cd /opt/polymarket-bot; sed -i -e '\''/^[A-Z_]*_IMAGE=/d'\'' -e '\''/^INGESTER_GIT_REVISION=/d'\'' -e '\''/^INGESTER_IMAGE_DIGEST=/d'\'' .env",
               "printf '\''POLYMARKET_BOT_IMAGE=%s\\nINGESTER_IMAGE=%s\\nDB_MIGRATE_IMAGE=%s\\nINGESTER_IMAGE_DIGEST=%s\\nINGESTER_GIT_REVISION=%s\\n'\'' " + ($bot|@sh) + " " + ($ingester|@sh) + " " + ($migrate|@sh) + " " + (($ingester|split(\"@\")[1])|@sh) + " " + ($revision|@sh) + " >> /opt/polymarket-bot/.env",
@@ -91,6 +103,8 @@ jobs:
       - name: Publish deployment summary
         run: |
           echo "### Immutable image deployment complete" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Source revision: $IMAGE_REVISION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Polymarket bot revision: $POLYMARKET_BOT_IMAGE_REVISION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ingester revision: $INGESTER_IMAGE_REVISION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Database migration revision: $DB_MIGRATE_IMAGE_REVISION" >> "$GITHUB_STEP_SUMMARY"
           echo "- Deployment transport: AWS Systems Manager" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image publication was not performed by CD" >> "$GITHUB_STEP_SUMMARY"

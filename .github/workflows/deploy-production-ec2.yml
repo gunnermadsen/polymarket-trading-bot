@@ -3,11 +3,21 @@ name: Deploy Production Stack EC2
 on:
   workflow_call:
     inputs:
-      image_revision:
-        description: Git revision whose immutable CI images will be deployed
+      polymarket_bot_image_revision:
+        description: Git revision for the immutable polymarket-bot image
         required: false
         type: string
         default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      ingester_image_revision:
+        description: Git revision for the immutable ingester image
+        required: false
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      db_migrate_image_revision:
+        description: Git revision for the immutable db-migrate image
+        required: false
+        type: string
+        default: 45aac939c5237bb8490028b043e984a612d77c44
   workflow_dispatch:
     inputs:
       terraform_action:
@@ -16,11 +26,21 @@ on:
         default: apply
         type: choice
         options: [plan, apply]
-      image_revision:
-        description: Git revision whose immutable CI images will be deployed
+      polymarket_bot_image_revision:
+        description: Git revision for the immutable polymarket-bot image
         required: true
         type: string
         default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      ingester_image_revision:
+        description: Git revision for the immutable ingester image
+        required: true
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+      db_migrate_image_revision:
+        description: Git revision for the immutable db-migrate image
+        required: true
+        type: string
+        default: 45aac939c5237bb8490028b043e984a612d77c44
 
 permissions:
   contents: read
@@ -79,19 +99,23 @@ jobs:
       - name: Resolve immutable CI image references
         shell: bash
         env:
-          IMAGE_REVISION: ${{ inputs.image_revision }}
+          POLYMARKET_BOT_IMAGE_REVISION: ${{ inputs.polymarket_bot_image_revision }}
+          INGESTER_IMAGE_REVISION: ${{ inputs.ingester_image_revision }}
+          DB_MIGRATE_IMAGE_REVISION: ${{ inputs.db_migrate_image_revision }}
         run: |
           set -euo pipefail
           set +x
-          [[ "$IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for revision in "$POLYMARKET_BOT_IMAGE_REVISION" "$INGESTER_IMAGE_REVISION" "$DB_MIGRATE_IMAGE_REVISION"; do
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          done
           resolve_digest() {
             aws ecr describe-images --repository-name "$1" \
-              --image-ids "imageTag=$IMAGE_REVISION" \
+              --image-ids "imageTag=$2" \
               --query 'imageDetails[0].imageDigest' --output text
           }
-          bot_digest="$(resolve_digest capitonic/polymarket-bot)"
-          ingester_digest="$(resolve_digest capitonic/ingester)"
-          migrate_digest="$(resolve_digest capitonic/db-migrate)"
+          bot_digest="$(resolve_digest capitonic/polymarket-bot "$POLYMARKET_BOT_IMAGE_REVISION")"
+          ingester_digest="$(resolve_digest capitonic/ingester "$INGESTER_IMAGE_REVISION")"
+          migrate_digest="$(resolve_digest capitonic/db-migrate "$DB_MIGRATE_IMAGE_REVISION")"
           for digest in "$bot_digest" "$ingester_digest" "$migrate_digest"; do
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           done
@@ -99,7 +123,7 @@ jobs:
             echo "TF_VAR_polymarket_bot_image=$ECR_REGISTRY/capitonic/polymarket-bot@$bot_digest"
             echo "TF_VAR_ingester_image=$ECR_REGISTRY/capitonic/ingester@$ingester_digest"
             echo "TF_VAR_db_migrate_image=$ECR_REGISTRY/capitonic/db-migrate@$migrate_digest"
-            echo "TF_VAR_ingester_git_revision=$IMAGE_REVISION"
+            echo "TF_VAR_ingester_git_revision=$INGESTER_IMAGE_REVISION"
           } >> "$GITHUB_ENV"
 
       - name: Load masked Cloudflare inputs
