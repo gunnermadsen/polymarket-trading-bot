@@ -55,7 +55,7 @@ env:
   TF_STATE_BUCKET: capitonic-polybot-tfstate-192200846560-euw1
   APP_SECRET_NAME: capitonic/polymarket-bot/production
   TF_VAR_repo_branch: ${{ github.ref_name }}
-  TF_VAR_ingester_worker_replicas: "6"
+  TF_VAR_ingester_worker_replicas: "8"
 
 jobs:
   terraform:
@@ -182,7 +182,7 @@ jobs:
             "ss -4 -ltnH sport = :22 | awk '\''{print $4}'\'' | grep -qx 127.0.0.1:22",
             "test -z \"$(ss -4 -ltnH sport = :3389)\"",
             "journalctl -u cloudflared --no-pager -n 300 | grep -q '\''Registered tunnel connection'\''",
-            "cd /opt/polymarket-bot && test $(docker compose -f docker-compose.production.yml ps --status running ingester-worker -q | wc -l) -eq 6",
+            "cd /opt/polymarket-bot && test $(docker compose -f docker-compose.production.yml ps --status running ingester-worker -q | wc -l) -eq 8",
             "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps",
             "curl -fsS http://127.0.0.1:8097/health",
             "curl -fsS http://127.0.0.1:3000/api/health | jq -e '\''.database == \"ok\"'\''",

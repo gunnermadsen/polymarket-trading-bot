@@ -87,7 +87,7 @@ jobs:
               "printf '\''POLYMARKET_BOT_IMAGE=%s\\nINGESTER_IMAGE=%s\\nDB_MIGRATE_IMAGE=%s\\nINGESTER_IMAGE_DIGEST=%s\\nINGESTER_GIT_REVISION=%s\\n'\'' " + ($bot|@sh) + " " + ($ingester|@sh) + " " + ($migrate|@sh) + " " + (($ingester|split(\"@\")[1])|@sh) + " " + ($revision|@sh) + " >> /opt/polymarket-bot/.env",
               "/usr/local/sbin/polymarket-ecr-login",
               "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml pull polymarket-bot ingester-master ingester-worker db-migrate",
-              "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=6 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot",
+              "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=8 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot",
               "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps",
               "curl -fsS http://127.0.0.1:8097/health"
             ]}')"
