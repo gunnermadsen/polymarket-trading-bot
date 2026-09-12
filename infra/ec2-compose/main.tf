@@ -157,7 +157,7 @@ resource "aws_instance" "compose_host" {
   iam_instance_profile        = aws_iam_instance_profile.compose_host.name
   user_data_replace_on_change = true
 
-  user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
+  user_data_base64 = base64gzip(templatefile("${path.module}/templates/user-data.sh.tftpl", {
     aws_region                  = var.aws_region
     app_directory               = var.app_directory
     app_secret_name             = var.app_secret_name
@@ -173,7 +173,7 @@ resource "aws_instance" "compose_host" {
     polymarket_bot_image        = var.polymarket_bot_image
     repo_branch                 = var.repo_branch
     repo_url                    = var.repo_url
-  })
+  }))
 
   metadata_options {
     http_endpoint = "enabled"
