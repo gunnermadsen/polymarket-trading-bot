@@ -52,6 +52,7 @@ const INTERVAL: &str = "1s";
 const DEFAULT_WEBSOCKET_URL: &str = "wss://stream.binance.com:9443/ws/btcusdt@kline_1s";
 const DEFAULT_REST_BASE_URL: &str = "https://data-api.binance.vision";
 const MAX_REST_BODY_BYTES: usize = 1_048_576;
+const REST_BOUNDARY_STABILIZATION_DELAY: Duration = Duration::from_secs(10);
 const PERSISTENCE_QUEUE_CAPACITY: usize = 1_024;
 const MAX_PROVIDER_CLOCK_SKEW: chrono::Duration = chrono::Duration::minutes(5);
 const ALLOWED_WEBSOCKET_URLS: [&str; 3] = [
@@ -1868,6 +1869,9 @@ impl BinanceSpotOneSecondOhlcvStrategy {
                     "Binance REST returned a kline beyond the requested closed range",
                 ));
             }
+            let page = self
+                .stabilize_rest_boundary_page(expected, end, limit, page, shutdown)
+                .await?;
             self.persist_candles(state, page).await?;
             if last >= end {
                 break;
@@ -1875,6 +1879,26 @@ impl BinanceSpotOneSecondOhlcvStrategy {
             expected = last + chrono::Duration::seconds(1);
         }
         Ok(())
+    }
+
+    async fn stabilize_rest_boundary_page(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        limit: usize,
+        page: Vec<OneSecondOhlcv>,
+        shutdown: &CancellationToken,
+    ) -> Result<Vec<OneSecondOhlcv>, StrategyError> {
+        let Some(wait) = rest_boundary_stabilization_wait(&page, Utc::now())? else {
+            return Ok(page);
+        };
+        tokio::select! {
+            _ = shutdown.cancelled() => return Err(shutdown_error()),
+            _ = tokio::time::sleep(wait) => {}
+        }
+        let confirmed = self.fetch_rest_page(start, end, limit, shutdown).await?;
+        validate_stable_rest_page(&page, &confirmed)?;
+        Ok(confirmed)
     }
 
     async fn fetch_rest_page(
@@ -2010,6 +2034,48 @@ fn validate_contiguous_klines(page: &[OneSecondOhlcv]) -> Result<(), StrategyErr
                 ),
             ));
         }
+    }
+    Ok(())
+}
+
+fn rest_boundary_stabilization_wait(
+    page: &[OneSecondOhlcv],
+    now: DateTime<Utc>,
+) -> Result<Option<Duration>, StrategyError> {
+    let Some(last) = page.last() else {
+        return Ok(None);
+    };
+    let stable_at = last.close_timestamp
+        + chrono::Duration::from_std(REST_BOUNDARY_STABILIZATION_DELAY).map_err(|_| {
+            integrity_error(
+                "binance_ohlcv_invalid_stabilization_delay",
+                "REST boundary stabilization delay is out of range",
+            )
+        })?;
+    if stable_at <= now {
+        return Ok(None);
+    }
+    Ok(Some((stable_at - now).to_std().map_err(|_| {
+        integrity_error(
+            "binance_ohlcv_invalid_stabilization_wait",
+            "REST boundary stabilization wait is negative or out of range",
+        )
+    })?))
+}
+
+fn validate_stable_rest_page(
+    initial: &[OneSecondOhlcv],
+    confirmed: &[OneSecondOhlcv],
+) -> Result<(), StrategyError> {
+    if initial.len() != confirmed.len()
+        || initial.iter().zip(confirmed).any(|(left, right)| {
+            left.open_timestamp != right.open_timestamp || !left.same_facts(right)
+        })
+    {
+        return Err(source_error(
+            "binance_ohlcv_rest_boundary_unstable",
+            "Binance REST returned changing one-second kline facts near the live boundary",
+        ));
     }
     Ok(())
 }
@@ -2460,6 +2526,58 @@ mod tests {
             closed_boundary_wait(requested, now).expect("closed boundary"),
             None
         );
+    }
+
+    #[test]
+    fn near_boundary_rest_page_waits_until_the_confirmation_boundary() {
+        let rows =
+            serde_json::from_str::<Vec<Vec<Value>>>(REST_FIXTURE).expect("valid REST fixture");
+        let received_at = Utc.timestamp_millis_opt(1_722_470_402_010).unwrap();
+        let page: Vec<_> = rows
+            .iter()
+            .map(|row| OneSecondOhlcv::from_rest(row, received_at).expect("valid REST row"))
+            .collect();
+        let now = page.last().unwrap().close_timestamp + chrono::Duration::seconds(4);
+
+        assert_eq!(
+            rest_boundary_stabilization_wait(&page, now).expect("valid wait"),
+            Some(Duration::from_secs(6))
+        );
+    }
+
+    #[test]
+    fn historical_rest_page_does_not_wait_for_confirmation() {
+        let rows =
+            serde_json::from_str::<Vec<Vec<Value>>>(REST_FIXTURE).expect("valid REST fixture");
+        let received_at = Utc.timestamp_millis_opt(1_722_470_402_010).unwrap();
+        let page: Vec<_> = rows
+            .iter()
+            .map(|row| OneSecondOhlcv::from_rest(row, received_at).expect("valid REST row"))
+            .collect();
+        let now = page.last().unwrap().close_timestamp + chrono::Duration::seconds(10);
+
+        assert_eq!(
+            rest_boundary_stabilization_wait(&page, now).expect("valid wait"),
+            None
+        );
+    }
+
+    #[test]
+    fn changing_boundary_payload_is_transient_and_not_accepted() {
+        let rows =
+            serde_json::from_str::<Vec<Vec<Value>>>(REST_FIXTURE).expect("valid REST fixture");
+        let received_at = Utc.timestamp_millis_opt(1_722_470_402_010).unwrap();
+        let initial: Vec<_> = rows
+            .iter()
+            .map(|row| OneSecondOhlcv::from_rest(row, received_at).expect("valid REST row"))
+            .collect();
+        let mut confirmed = initial.clone();
+        confirmed.last_mut().unwrap().close_price += Decimal::new(1, 8);
+
+        let error = validate_stable_rest_page(&initial, &confirmed)
+            .expect_err("changing near-boundary facts must retry");
+        assert_eq!(error.kind, StrategyErrorKind::TransientSource);
+        assert_eq!(error.code, "binance_ohlcv_rest_boundary_unstable");
     }
 
     #[test]
