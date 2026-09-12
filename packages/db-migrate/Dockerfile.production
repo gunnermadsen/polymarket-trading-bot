@@ -27,6 +27,7 @@ LABEL org.opencontainers.image.source="https://github.com/gunnermadsen/polymarke
 COPY --from=builder --chown=node:node /usr/src/app/package.json ./package.json
 COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
+COPY --from=builder --chown=node:node /usr/src/app/src/fresh-install/current-schema.sql ./dist/fresh-install/current-schema.sql
 
 USER node
 CMD ["npm", "run", "start:prod"]
