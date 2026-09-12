@@ -93,7 +93,8 @@ jobs:
             'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=8 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot' \
             'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps' \
             'curl -fsS http://127.0.0.1:8097/health')"
-          printf -v bash_command '/bin/bash -lc %q' "$deployment_script"
+          encoded_deployment_script="$(printf '%s' "$deployment_script" | base64 -w 0)"
+          bash_command="printf '%s' '$encoded_deployment_script' | base64 -d | /bin/bash"
           parameters="$(jq -n \
             --arg bash_command "$bash_command" \
             '{commands:[$bash_command]}')"
