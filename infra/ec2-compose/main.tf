@@ -81,6 +81,7 @@ resource "aws_iam_role_policy" "compose_host" {
         ]
         Resource = [
           "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/capitonic/polymarket-bot",
+          "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/capitonic/ingester",
           "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/capitonic/db-migrate"
         ]
       }
@@ -157,18 +158,21 @@ resource "aws_instance" "compose_host" {
   user_data_replace_on_change = true
 
   user_data = templatefile("${path.module}/templates/user-data.sh.tftpl", {
-    aws_region              = var.aws_region
-    app_directory           = var.app_directory
-    app_secret_name         = var.app_secret_name
-    compose_file            = var.compose_file
-    cloudflare_rdp_hostname = var.cloudflare_rdp_hostname
-    cloudflare_ssh_hostname = var.cloudflare_ssh_hostname
-    ecr_registry            = var.ecr_registry
-    enable_cloudflared      = var.enable_cloudflared
-    enable_desktop          = var.enable_desktop
-    rdp_username            = var.rdp_username
-    repo_branch             = var.repo_branch
-    repo_url                = var.repo_url
+    aws_region                  = var.aws_region
+    app_directory               = var.app_directory
+    app_secret_name             = var.app_secret_name
+    compose_file                = var.compose_file
+    cloudflare_monitor_hostname = var.cloudflare_monitor_hostname
+    cloudflare_ssh_hostname     = var.cloudflare_ssh_hostname
+    db_migrate_image            = var.db_migrate_image
+    ecr_registry                = var.ecr_registry
+    enable_cloudflared          = var.enable_cloudflared
+    ingester_git_revision       = var.ingester_git_revision
+    ingester_image              = var.ingester_image
+    ingester_worker_replicas    = var.ingester_worker_replicas
+    polymarket_bot_image        = var.polymarket_bot_image
+    repo_branch                 = var.repo_branch
+    repo_url                    = var.repo_url
   })
 
   metadata_options {

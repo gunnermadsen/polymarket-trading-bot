@@ -1,0 +1,10 @@
+{
+  admin off
+  auto_https disable_redirects
+}
+
+monitor.capitonic.com {
+  tls internal
+  encode zstd gzip
+  reverse_proxy grafana:3000
+}

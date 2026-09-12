@@ -1,38 +1,53 @@
-name: Deploy Production EC2
+name: Deploy Production Stack EC2
 
 on:
+  workflow_call:
+    inputs:
+      image_revision:
+        description: Git revision whose immutable CI images will be deployed
+        required: false
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
   workflow_dispatch:
     inputs:
       terraform_action:
-        description: "Terraform action to run"
+        description: Terraform action to run
         required: true
-        default: "apply"
+        default: apply
         type: choice
-        options:
-          - plan
-          - apply
+        options: [plan, apply]
+      image_revision:
+        description: Git revision whose immutable CI images will be deployed
+        required: true
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
 
 permissions:
   contents: read
   id-token: write
 
 env:
-  AWS_REGION: mx-central-1
+  AWS_REGION: eu-west-1
   AWS_ROLE_ARN: arn:aws:iam::192200846560:role/capitonic-polymarket-bot-github-actions-prod
+  ECR_REGISTRY: 192200846560.dkr.ecr.eu-west-1.amazonaws.com
   TF_IN_AUTOMATION: "true"
   TF_DIR: infra/ec2-compose
+  TF_STATE_BUCKET: capitonic-polybot-tfstate-192200846560-euw1
   APP_SECRET_NAME: capitonic/polymarket-bot/production
+  TF_VAR_repo_branch: ${{ github.ref_name }}
+  TF_VAR_ingester_worker_replicas: "6"
 
 jobs:
   terraform:
-    name: Terraform ${{ github.event.inputs.terraform_action }}
+    name: Provision and verify production stack
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     concurrency:
       group: production-ec2-compose
       cancel-in-progress: false
 
     steps:
-      - name: Checkout
+      - name: Checkout selected deployment revision
         uses: actions/checkout@v6
 
       - name: Set up Terraform
@@ -44,256 +59,142 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS access
-        run: aws sts get-caller-identity
+      - name: Verify deployment identity, region, and secret contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          test "$AWS_REGION" = "eu-west-1"
+          aws sts get-caller-identity
+          secret_json="$(aws secretsmanager get-secret-value --secret-id "$APP_SECRET_NAME" --query SecretString --output text)"
+          jq -e --argjson secret "$secret_json" '
+            ["POSTGRES_PASSWORD", "GITHUB_USERNAME", "GITHUB_PAT", "POLYMARKET_HTTP_ADMIN_TOKEN",
+             "CAPITONIC_TRADING_POSTGRES_PASSWORD", "CAPITONIC_INGESTER_MASTER_POSTGRES_PASSWORD",
+             "CAPITONIC_INGESTER_WORKER_POSTGRES_PASSWORD", "CAPITONIC_GRAFANA_POSTGRES_PASSWORD",
+             "GRAFANA_ADMIN_PASSWORD", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID",
+             "CLOUDFLARE_ZONE_ID", "CLOUDFLARE_EMAIL_ADDRESS", "CLOUDFLARED_PRODUCTION_TUNNEL_ID"]
+            | all(. as $key | ($secret[$key] // "") != "")
+          ' <<< '{}' >/dev/null
 
-      - name: Load Cloudflare Terraform inputs
+      - name: Resolve immutable CI image references
+        shell: bash
+        env:
+          IMAGE_REVISION: ${{ inputs.image_revision }}
+        run: |
+          set -euo pipefail
+          set +x
+          [[ "$IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          resolve_digest() {
+            aws ecr describe-images --repository-name "$1" \
+              --image-ids "imageTag=$IMAGE_REVISION" \
+              --query 'imageDetails[0].imageDigest' --output text
+          }
+          bot_digest="$(resolve_digest capitonic/polymarket-bot)"
+          ingester_digest="$(resolve_digest capitonic/ingester)"
+          migrate_digest="$(resolve_digest capitonic/db-migrate)"
+          for digest in "$bot_digest" "$ingester_digest" "$migrate_digest"; do
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+          {
+            echo "TF_VAR_polymarket_bot_image=$ECR_REGISTRY/capitonic/polymarket-bot@$bot_digest"
+            echo "TF_VAR_ingester_image=$ECR_REGISTRY/capitonic/ingester@$ingester_digest"
+            echo "TF_VAR_db_migrate_image=$ECR_REGISTRY/capitonic/db-migrate@$migrate_digest"
+            echo "TF_VAR_ingester_git_revision=$IMAGE_REVISION"
+          } >> "$GITHUB_ENV"
+
+      - name: Load masked Cloudflare inputs
         run: scripts/load-cloudflare-terraform-env.sh
 
-      - name: Check Terraform formatting
-        run: terraform -chdir="$TF_DIR" fmt -check -recursive
-
-      - name: Write backend config
+      - name: Initialize Ireland Terraform state
+        shell: bash
         run: |
-          cat > "$TF_DIR/backend.hcl" <<'EOF'
-          bucket       = "capitonic-polybot-tfstate-192200846560-mxc1"
+          set -euo pipefail
+          cat > "$TF_DIR/backend.hcl" <<EOF
+          bucket       = "$TF_STATE_BUCKET"
           key          = "production/ec2-compose/terraform.tfstate"
-          region       = "mx-central-1"
+          region       = "$AWS_REGION"
           encrypt      = true
           use_lockfile = true
           EOF
-
-      - name: Initialize Terraform
-        run: terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
+          terraform -chdir="$TF_DIR" init -backend-config=backend.hcl
 
       - name: Import existing Cloudflare DNS records
-        if: github.event.inputs.terraform_action == 'apply'
+        if: inputs.terraform_action != 'plan'
         run: scripts/import-cloudflare-dns-records.sh
 
-      - name: Validate Terraform
-        run: terraform -chdir="$TF_DIR" validate
+      - name: Validate production infrastructure
+        run: |
+          terraform -chdir="$TF_DIR" fmt -check -recursive
+          terraform -chdir="$TF_DIR" validate
+          terraform -chdir="$TF_DIR" plan -no-color -input=false -lock-timeout=60s -out=production.tfplan
 
-      - name: Terraform plan
-        run: terraform -chdir="$TF_DIR" plan -no-color -lock-timeout=60s -input=false
+      - name: Deploy production stack
+        if: inputs.terraform_action != 'plan'
+        run: terraform -chdir="$TF_DIR" apply -input=false -lock-timeout=60s production.tfplan
 
-      - name: Terraform apply
-        if: github.event.inputs.terraform_action == 'apply'
-        run: terraform -chdir="$TF_DIR" apply -auto-approve -input=false -lock-timeout=60s
-
-      - name: Terraform outputs
-        if: github.event.inputs.terraform_action == 'apply'
-        run: terraform -chdir="$TF_DIR" output
-
-      - name: Verify host bootstrap
-        if: github.event.inputs.terraform_action == 'apply'
+      - name: Verify host and complete Compose stack
+        if: inputs.terraform_action != 'plan'
+        shell: bash
         run: |
           set -euo pipefail
-
-          INSTANCE_ID="$(terraform -chdir="$TF_DIR" output -raw instance_id)"
-
-          for attempt in $(seq 1 60); do
-            STATUS="$(
-              aws ssm describe-instance-information \
-                --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
-                --query 'InstanceInformationList[0].PingStatus' \
-                --output text
-            )"
-            if [ "$STATUS" = "Online" ]; then
-              break
-            fi
+          set +x
+          instance_id="$(terraform -chdir="$TF_DIR" output -raw instance_id)"
+          status=""
+          for attempt in $(seq 1 120); do
+            status="$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$instance_id" \
+              --query 'InstanceInformationList[0].PingStatus' --output text)"
+            [ "$status" = "Online" ] && break
             sleep 10
           done
+          [ "$status" = "Online" ] || { echo "Production host did not become SSM Online." >&2; exit 1; }
 
-          if [ "${STATUS:-}" != "Online" ]; then
-            echo "Instance $INSTANCE_ID did not become SSM Online." >&2
-            exit 1
-          fi
-
-          PARAMS_JSON="$(mktemp)"
-          cat > "$PARAMS_JSON" <<'JSON'
-          {
-            "commands": [
-              "timeout 1800 cloud-init status --wait || cloud-init status --long",
-              "systemctl is-active docker",
-              "systemctl is-active xrdp",
-              "awk 'BEGIN{section=\"\"} /^\\[/{section=$0} section==\"[Globals]\" && /^port=/{global=$0} section!=\"[Globals]\" && /^port=tcp:\\/\\/\\.:3389$/{bad=1} END{exit !(global==\"port=tcp://.:3389\" && !bad)}' /etc/xrdp/xrdp.ini",
-              "ss -4 -ltnH 'sport = :3389' | awk '{print $4}' | grep -qx '127.0.0.1:3389'",
-              "test -z \"$(ss -6 -ltnH 'sport = :3389')\"",
-              "firefox --version",
-              "systemctl is-active cloudflared",
-              "for attempt in $(seq 1 60); do journalctl -u cloudflared -n 240 --no-pager | grep -q 'Registered tunnel connection' && exit 0; sleep 5; done; journalctl -u cloudflared -n 240 --no-pager; exit 1",
-              "cd /opt/polymarket-bot && sudo docker compose -f docker-compose.production.yml ps"
-            ]
-          }
-          JSON
-
-          COMMAND_ID="$(
-            aws ssm send-command \
-              --instance-ids "$INSTANCE_ID" \
-              --document-name AWS-RunShellScript \
-              --parameters "file://$PARAMS_JSON" \
-              --comment "Verify Polymarket EC2 bootstrap" \
-              --timeout-seconds 1800 \
-              --query 'Command.CommandId' \
-              --output text
-          )"
-
-          COMMAND_STATUS=""
-          for attempt in $(seq 1 180); do
-            COMMAND_STATUS="$(
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --query Status \
-                --output text
-            )"
-
-            case "$COMMAND_STATUS" in
-              Success|Cancelled|TimedOut|Failed|Cancelling)
-                break
-                ;;
-            esac
-
+          parameters="$(mktemp)"
+          jq -n '{commands: [
+            "timeout 2400 cloud-init status --wait",
+            "systemctl is-active docker",
+            "systemctl is-active cloudflared",
+            "systemctl is-active ssh",
+            "ss -4 -ltnH sport = :22 | awk '\''{print $4}'\'' | grep -qx 127.0.0.1:22",
+            "test -z \"$(ss -4 -ltnH sport = :3389)\"",
+            "journalctl -u cloudflared --no-pager -n 300 | grep -q '\''Registered tunnel connection'\''",
+            "cd /opt/polymarket-bot && test $(docker compose -f docker-compose.production.yml ps --status running ingester-worker -q | wc -l) -eq 6",
+            "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps",
+            "curl -fsS http://127.0.0.1:8097/health",
+            "curl -fsS http://127.0.0.1:3000/api/health | jq -e '\''.database == \"ok\"'\''",
+            "curl -fksS https://127.0.0.1:443/api/health -H '\''Host: monitor.capitonic.com'\'' | jq -e '\''.database == \"ok\"'\''",
+            "curl -fsS http://127.0.0.1:9090/api/v1/targets | jq -e '\''[.data.activeTargets[] | select(.labels.job == \"node-exporter\" or .labels.job == \"cadvisor\") | .health] | length == 2 and all(. == \"up\")'\''",
+            "docker exec polymarket-bot test -f /usr/local/share/polymarket-bot/models/btc-5m-extended-specialist-official-umr-20260902-confidence-070/model.json",
+            "docker exec polymarket-bot test -f /usr/local/share/polymarket-bot/models/btc-5m-risk-candidate-loss-extended-specialist-180-240-c85-20260911/risk-model.json"
+          ]}' > "$parameters"
+          command_id="$(aws ssm send-command --instance-ids "$instance_id" \
+            --document-name AWS-RunShellScript --parameters "file://$parameters" \
+            --comment "Verify complete Capitonic production stack" --timeout-seconds 2700 \
+            --query 'Command.CommandId' --output text)"
+          command_status="Pending"
+          for attempt in $(seq 1 270); do
+            command_status="$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$instance_id" --query Status --output text 2>/dev/null || true)"
+            case "$command_status" in Success|Cancelled|TimedOut|Failed|Cancelling) break ;; esac
             sleep 10
           done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" \
+            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' --output json
+          [ "$command_status" = "Success" ]
+          ingress_count="$(aws ec2 describe-security-groups \
+            --filters Name=group-name,Values=capitonic-polymarket-bot-sg \
+            --query 'length(SecurityGroups[0].IpPermissions)' --output text)"
+          [ "$ingress_count" = "0" ]
+          curl -fsSI https://monitor.capitonic.com | grep -Eq 'HTTP/[0-9.]+ (302|303)'
 
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
-            --output json
-
-          if [ "$COMMAND_STATUS" != "Success" ]; then
-            echo "Bootstrap verification failed with status $COMMAND_STATUS." >&2
-            exit 1
-          fi
-
-      - name: Deploy and verify bot service
-        if: github.event.inputs.terraform_action == 'apply'
+      - name: Publish deployment summary
+        if: inputs.terraform_action != 'plan'
         run: |
-          set -euo pipefail
-
-          INSTANCE_ID="$(terraform -chdir="$TF_DIR" output -raw instance_id)"
-
-          REMOTE_SCRIPT="$(mktemp)"
-          cat > "$REMOTE_SCRIPT" <<'SCRIPT'
-          #!/bin/bash
-          set -euo pipefail
-
-          APP_DIRECTORY="/opt/polymarket-bot"
-          APP_SECRET_NAME="capitonic/polymarket-bot/production"
-          AWS_REGION="mx-central-1"
-          ADMIN_BASE_URL="http://127.0.0.1:8097"
-          COMPOSE_FILE="docker-compose.production.yml"
-          SECRET_PATH="/root/polymarket/secret.json"
-
-          aws secretsmanager get-secret-value \
-            --region "$AWS_REGION" \
-            --secret-id "$APP_SECRET_NAME" \
-            --query SecretString \
-            --output text > "$SECRET_PATH"
-          chmod 0600 "$SECRET_PATH"
-
-          if [ ! -f "$SECRET_PATH" ]; then
-            echo "Missing host secret file at $SECRET_PATH." >&2
-            exit 1
-          fi
-
-          ADMIN_TOKEN="$(jq -r '.POLYMARKET_HTTP_ADMIN_TOKEN // empty' "$SECRET_PATH")"
-          if [ -z "$ADMIN_TOKEN" ]; then
-            echo "Missing POLYMARKET_HTTP_ADMIN_TOKEN in $SECRET_PATH." >&2
-            exit 1
-          fi
-
-          cd "$APP_DIRECTORY"
-          jq -r '
-            to_entries
-            | map(select(.key | startswith("GITHUB_") | not))
-            | map(select(.key | startswith("GHCR_") | not))
-            | map(select(.key | startswith("CLOUDFLARE_") | not))
-            | map(select(.key | startswith("CLOUDFLARED_") | not))
-            | map(select(.key | startswith("COLOUDFLARED_") | not))
-            | map(select(.key | startswith("CAPITONIC_") | not))
-            | map(select(.key != "POSTGRES_PASSWORD"))
-            | map(select(.key != "RDP_PASSWORD"))
-            | map(select(.key != "SSH_AUTHORIZED_KEYS"))
-            | .[]
-            | "\(.key)=\(.value | tostring)"
-          ' "$SECRET_PATH" > "$APP_DIRECTORY/.env"
-          chmod 0600 "$APP_DIRECTORY/.env"
-          TRADING_POSTGRES_PASSWORD="$(jq -r '.CAPITONIC_TRADING_POSTGRES_PASSWORD // empty' "$SECRET_PATH")"
-          if [ -z "$TRADING_POSTGRES_PASSWORD" ]; then
-            echo "Missing CAPITONIC_TRADING_POSTGRES_PASSWORD in $SECRET_PATH." >&2
-            exit 1
-          fi
-          printf 'POSTGRES_PASSWORD=%s\n' "$TRADING_POSTGRES_PASSWORD" > "$APP_DIRECTORY/.env.postgres.polymarket-bot"
-          chmod 0600 "$APP_DIRECTORY/.env.postgres.polymarket-bot"
-          docker compose -f "$COMPOSE_FILE" up -d --no-build polymarket-bot
-
-          for attempt in $(seq 1 60); do
-            if curl -fsS \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
-              break
-            fi
-            sleep 5
-          done
-
-          if ! curl -fsS \
-            -H "Authorization: Bearer $ADMIN_TOKEN" \
-            "$ADMIN_BASE_URL/health" | jq -e '.status == "ok"' >/dev/null; then
-            echo "Bot health API did not become available." >&2
-            exit 1
-          fi
-          SCRIPT
-
-          SSM_COMMAND="$(mktemp)"
-          {
-            printf "bash -s <<'REMOTE_SCRIPT'\n"
-            cat "$REMOTE_SCRIPT"
-            printf "\nREMOTE_SCRIPT\n"
-          } > "$SSM_COMMAND"
-
-          PARAMS_JSON="$(mktemp)"
-          jq -n --rawfile script "$SSM_COMMAND" '{commands: [$script]}' > "$PARAMS_JSON"
-
-          COMMAND_ID="$(
-            aws ssm send-command \
-              --instance-ids "$INSTANCE_ID" \
-              --document-name AWS-RunShellScript \
-              --parameters "file://$PARAMS_JSON" \
-              --comment "Deploy and verify Polymarket bot service" \
-              --timeout-seconds 1800 \
-              --query 'Command.CommandId' \
-              --output text
-          )"
-
-          COMMAND_STATUS=""
-          for attempt in $(seq 1 180); do
-            COMMAND_STATUS="$(
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id "$INSTANCE_ID" \
-                --query Status \
-                --output text
-            )"
-
-            case "$COMMAND_STATUS" in
-              Success|Cancelled|TimedOut|Failed|Cancelling)
-                break
-                ;;
-            esac
-
-            sleep 10
-          done
-
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
-            --output json
-
-          if [ "$COMMAND_STATUS" != "Success" ]; then
-            echo "Bot deployment verification failed with status $COMMAND_STATUS." >&2
-            exit 1
-          fi
+          echo "### Production stack ready" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Region: eu-west-1 (Ireland)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Instance: $(terraform -chdir="$TF_DIR" output -raw instance_id)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Instance type: c6a.2xlarge" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Unified ingester workers: 6" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SSH: ssh.capitonic.com through Cloudflare Access" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Grafana: https://monitor.capitonic.com through Cloudflare Access and Caddy TLS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Direct inbound ports: none" >> "$GITHUB_STEP_SUMMARY"

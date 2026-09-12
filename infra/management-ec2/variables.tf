@@ -10,9 +10,9 @@ variable "aws_region" {
 }
 
 variable "instance_type" {
-  description = "Burstable management host size suitable for an idle XFCE/Chrome desktop."
+  description = "Compute-optimized management host sized for XFCE, Chrome, and MetaMask setup."
   type        = string
-  default     = "t3.medium"
+  default     = "c6a.xlarge"
 }
 
 variable "root_volume_size_gib" {

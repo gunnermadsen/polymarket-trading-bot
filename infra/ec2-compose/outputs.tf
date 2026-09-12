@@ -33,7 +33,7 @@ output "cloudflare_ssh_hostname" {
   value       = var.cloudflare_ssh_hostname
 }
 
-output "cloudflare_rdp_hostname" {
-  description = "Cloudflare hostname for RDP tunnel access."
-  value       = var.cloudflare_rdp_hostname
+output "cloudflare_monitor_hostname" {
+  description = "Cloudflare hostname for protected Grafana access."
+  value       = var.cloudflare_monitor_hostname
 }

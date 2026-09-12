@@ -1,0 +1,26 @@
+name: Deploy Full Production Stack
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_revision:
+        description: Git revision whose immutable CI images will be deployed
+        required: true
+        type: string
+        default: 65fc0c357cda1a15e181cbd3d84bb491bd0ec5fd
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  management:
+    name: Provision management host
+    uses: ./.github/workflows/deploy-management-ec2.yml
+
+  production-stack:
+    name: Provision trading stack
+    needs: management
+    uses: ./.github/workflows/deploy-production-ec2.yml
+    with:
+      image_revision: ${{ inputs.image_revision }}

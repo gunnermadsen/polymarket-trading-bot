@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-AWS_REGION="${AWS_REGION:-mx-central-1}"
+AWS_REGION="${AWS_REGION:-eu-west-1}"
 APP_SECRET_NAME="${APP_SECRET_NAME:-capitonic/polymarket-bot/production}"
 CLOUDFLARE_ZONE_NAME="${CLOUDFLARE_ZONE_NAME:-capitonic.com}"
-CLOUDFLARE_SSH_HOSTNAME="${CLOUDFLARE_SSH_HOSTNAME:-ssh.ops.capitonic.com}"
-CLOUDFLARE_RDP_HOSTNAME="${CLOUDFLARE_RDP_HOSTNAME:-rdp.ops.capitonic.com}"
+CLOUDFLARE_SSH_HOSTNAME="${CLOUDFLARE_SSH_HOSTNAME:-ssh.capitonic.com}"
+CLOUDFLARE_MONITOR_HOSTNAME="${CLOUDFLARE_MONITOR_HOSTNAME:-monitor.capitonic.com}"
 
 if [ -z "${GITHUB_ENV:-}" ]; then
   echo "GITHUB_ENV is required so secrets are not written to stdout." >&2
@@ -48,6 +48,13 @@ if [ -z "$cloudflare_zone_id" ]; then
         '
   )"
 fi
+
+cloudflare_account_id="${CLOUDFLARE_ACCOUNT_ID:-$(json_value CLOUDFLARE_ACCOUNT_ID)}"
+cloudflare_access_email="${CLOUDFLARE_EMAIL_ADDRESS:-$(json_value CLOUDFLARE_EMAIL_ADDRESS)}"
+if [ -z "$cloudflare_account_id" ] || [ -z "$cloudflare_access_email" ]; then
+  echo "Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_EMAIL_ADDRESS in AWS Secrets Manager." >&2
+  exit 1
+fi
 if [ -z "$cloudflare_zone_id" ]; then
   echo "Unable to resolve Cloudflare zone ID for $CLOUDFLARE_ZONE_NAME." >&2
   exit 1
@@ -77,15 +84,20 @@ if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
     echo "::add-mask::$cloudflare_api_token"
     echo "::add-mask::$cloudflare_zone_id"
     echo "::add-mask::$cloudflare_tunnel_id"
+    echo "::add-mask::$cloudflare_account_id"
+    echo "::add-mask::$cloudflare_access_email"
   } >&2
 fi
 
 {
   echo "CLOUDFLARE_API_TOKEN=$cloudflare_api_token"
+  echo "TF_VAR_aws_region=$AWS_REGION"
+  echo "TF_VAR_cloudflare_account_id=$cloudflare_account_id"
+  echo "TF_VAR_cloudflare_access_email=$cloudflare_access_email"
   echo "TF_VAR_cloudflare_zone_id=$cloudflare_zone_id"
   echo "TF_VAR_cloudflare_tunnel_id=$cloudflare_tunnel_id"
   echo "TF_VAR_cloudflare_ssh_hostname=$CLOUDFLARE_SSH_HOSTNAME"
-  echo "TF_VAR_cloudflare_rdp_hostname=$CLOUDFLARE_RDP_HOSTNAME"
+  echo "TF_VAR_cloudflare_monitor_hostname=$CLOUDFLARE_MONITOR_HOSTNAME"
 } >> "$GITHUB_ENV"
 
-echo "Loaded Cloudflare Terraform inputs for $CLOUDFLARE_SSH_HOSTNAME and $CLOUDFLARE_RDP_HOSTNAME."
+echo "Loaded Cloudflare Terraform inputs for $CLOUDFLARE_SSH_HOSTNAME and $CLOUDFLARE_MONITOR_HOSTNAME."

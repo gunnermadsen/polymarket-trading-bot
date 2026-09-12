@@ -39,16 +39,13 @@ x-prometheus-env-file: &prometheus-env-file
   required: true
   format: raw
 
-x-watchtower-labels: &watchtower-labels
-  com.centurylinklabs.watchtower.enable: "true"
-
 services:
   timescaledb-0:
     image: timescale/timescaledb:2.14.2-pg14
     container_name: timescaledb-0
     hostname: timescaledb-0
     mem_limit: 2g
-    cpus: "0.65"
+    cpus: "2.0"
     logging: *default-logging
     env_file:
       - *postgres-env-file
@@ -56,7 +53,7 @@ services:
       POSTGRES_USER: "postgres"
       POSTGRES_DB: "polymarket"
       TS_TUNE_MEMORY: "2GB"
-      TS_TUNE_NUM_CPUS: "1"
+      TS_TUNE_NUM_CPUS: "2"
       # Capacity budget: 30 session-pooled application backends plus 10 slots for
       # db-migrate, administration, and exceptional direct connections.
       TS_TUNE_MAX_CONNS: "40"
@@ -105,7 +102,6 @@ services:
     mem_limit: 128m
     cpus: "0.10"
     pids_limit: 64
-    labels: *watchtower-labels
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/capitonic-pgbouncer-entrypoint.sh
@@ -141,8 +137,7 @@ services:
     container_name: db-migrate
     hostname: db-migrate
     mem_limit: 256m
-    cpus: "0.25"
-    labels: *watchtower-labels
+    cpus: "0.5"
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -170,8 +165,7 @@ services:
     container_name: polymarket-bot
     hostname: polymarket-bot
     mem_limit: 512m
-    cpus: "2.0"
-    labels: *watchtower-labels
+    cpus: "1.0"
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -197,6 +191,7 @@ services:
       POLYMARKET_HEALTH_INTERVAL_SECS: "30"
       POLYMARKET_HTTP_ENABLED: "true"
       POLYMARKET_HTTP_BIND: "0.0.0.0:8097"
+      POLYMARKET_BTC_MODEL_DIR: "/usr/local/share/polymarket-bot/models"
     ports:
       - "127.0.0.1:8097:8097"
     depends_on:
@@ -215,7 +210,6 @@ services:
     mem_limit: 512m
     cpus: "1.0"
     pids_limit: 128
-    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -253,10 +247,9 @@ services:
   ingester-worker:
     image: ${INGESTER_IMAGE:-192200846560.dkr.ecr.eu-west-1.amazonaws.com/capitonic/ingester:production}
     init: true
-    mem_limit: 4g
-    cpus: "2.0"
+    mem_limit: 1g
+    cpus: "0.75"
     pids_limit: 256
-    labels: *watchtower-labels
     logging: *default-logging
     env_file:
       - *app-env-file
@@ -279,6 +272,8 @@ services:
       INGESTER_MASTER_URL: "http://ingester-master:8098"
       INGESTER_DEPLOYMENT_ID: "${INGESTER_DEPLOYMENT_ID:-production}"
       INGESTER_WORKER_MAX_BACKFILLS: "1"
+      INGESTER_WORKER_CAPACITY_UNITS: "4"
+      INGESTER_WORKER_REALTIME_SLOT_LIMIT: "1"
       INGESTER_IMAGE_DIGEST: "${INGESTER_IMAGE_DIGEST:?INGESTER_IMAGE_DIGEST is required}"
       INGESTER_GIT_REVISION: "${INGESTER_GIT_REVISION:?INGESTER_GIT_REVISION is required}"
       BINANCE_ARCHIVE_BASE_URL: "https://data.binance.vision"
@@ -335,7 +330,6 @@ services:
     mem_limit: 384m
     cpus: "0.20"
     pids_limit: 128
-    labels: *watchtower-labels
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/prometheus-provisioning-entrypoint.sh
@@ -373,7 +367,6 @@ services:
     mem_limit: 384m
     cpus: "0.20"
     pids_limit: 128
-    labels: *watchtower-labels
     logging: *default-logging
     command:
       - -config.file=/etc/loki/loki.yml
@@ -394,7 +387,6 @@ services:
     mem_limit: 128m
     cpus: "0.10"
     pids_limit: 128
-    labels: *watchtower-labels
     logging: *default-logging
     command:
       - run
@@ -420,7 +412,6 @@ services:
     hostname: grafana
     mem_limit: 256m
     cpus: "0.20"
-    labels: *watchtower-labels
     logging: *default-logging
     entrypoint:
       - /usr/local/bin/grafana-provisioning-entrypoint.sh
@@ -461,25 +452,63 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  watchtower:
-    image: containrrr/watchtower:1.7.1
-    container_name: watchtower
-    hostname: watchtower
-    mem_limit: 128m
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: node-exporter
+    hostname: node-exporter
+    init: true
+    mem_limit: 96m
     cpus: "0.10"
-    environment:
-      DOCKER_API_VERSION: "1.44"
+    pids_limit: 64
     logging: *default-logging
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker/config.json:/config.json:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
     command:
-      - "--label-enable"
-      - "--include-stopped"
-      - "--revive-stopped"
-      - "--cleanup"
-      - "--interval"
-      - "300"
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    read_only: true
+    restart: unless-stopped
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.5
+    container_name: cadvisor
+    hostname: cadvisor
+    mem_limit: 256m
+    cpus: "0.20"
+    pids_limit: 128
+    logging: *default-logging
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    container_name: caddy
+    hostname: caddy
+    mem_limit: 128m
+    cpus: "0.10"
+    pids_limit: 64
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:443:443"
+    volumes:
+      - ./common/configs/caddy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      grafana:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
@@ -488,3 +517,5 @@ volumes:
   prometheus-data:
   loki-data:
   alloy-data:
+  caddy-data:
+  caddy-config:

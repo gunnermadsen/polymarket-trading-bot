@@ -1,7 +1,12 @@
 variable "aws_region" {
   description = "AWS region where the EC2 Docker Compose host is created."
   type        = string
-  default     = "mx-central-1"
+  default     = "eu-west-1"
+
+  validation {
+    condition     = var.aws_region == "eu-west-1"
+    error_message = "The production stack must be deployed in eu-west-1 (Ireland)."
+  }
 }
 
 variable "name" {
@@ -17,9 +22,9 @@ variable "environment" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type. c7i.xlarge is 4 vCPU and 8 GiB RAM."
+  description = "EC2 instance type. c6a.2xlarge provides 8 vCPU and 16 GiB RAM for the production worker pool."
   type        = string
-  default     = "c7i.xlarge"
+  default     = "c6a.2xlarge"
 }
 
 variable "ami_id" {
@@ -54,13 +59,13 @@ variable "root_volume_size_gib" {
 variable "repo_url" {
   description = "GitHub HTTPS repository URL cloned by the EC2 bootstrap."
   type        = string
-  default     = "https://github.com/gunnermadsen/polymarket-trading-bot.git"
+  default     = "https://github.com/gunnermadsen/capitonic.git"
 }
 
 variable "repo_branch" {
   description = "Git branch cloned by the EC2 bootstrap."
   type        = string
-  default     = "production"
+  default     = "development"
 }
 
 variable "app_directory" {
@@ -84,11 +89,54 @@ variable "app_secret_name" {
 variable "ecr_registry" {
   description = "ECR registry host used by Docker Compose image references."
   type        = string
-  default     = "192200846560.dkr.ecr.mx-central-1.amazonaws.com"
+  default     = "192200846560.dkr.ecr.eu-west-1.amazonaws.com"
+}
+
+variable "polymarket_bot_image" {
+  description = "Immutable polymarket-bot ECR image reference."
+  type        = string
+}
+
+variable "ingester_image" {
+  description = "Immutable ingester ECR image reference shared by master and workers."
+  type        = string
+}
+
+variable "db_migrate_image" {
+  description = "Immutable db-migrate ECR image reference."
+  type        = string
+}
+
+variable "ingester_git_revision" {
+  description = "Git revision embedded in the selected ingester image."
+  type        = string
+}
+
+variable "ingester_worker_replicas" {
+  description = "Number of unified ingester workers provisioned for realtime source coverage."
+  type        = number
+  default     = 6
+
+  validation {
+    condition     = var.ingester_worker_replicas >= 5
+    error_message = "At least five ingester workers are required by the selected production paper process."
+  }
 }
 
 variable "cloudflare_zone_id" {
   description = "Cloudflare zone ID for capitonic.com."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_account_id" {
+  description = "Cloudflare account containing the production tunnel and Access applications."
+  type        = string
+  sensitive   = true
+}
+
+variable "cloudflare_access_email" {
+  description = "Operator email allowed through Cloudflare Access."
   type        = string
   sensitive   = true
 }
@@ -102,25 +150,13 @@ variable "cloudflare_tunnel_id" {
 variable "cloudflare_ssh_hostname" {
   description = "Cloudflare Access SSH hostname routed to the EC2 cloudflared daemon."
   type        = string
-  default     = "ssh.ops.capitonic.com"
+  default     = "ssh.capitonic.com"
 }
 
-variable "cloudflare_rdp_hostname" {
-  description = "Cloudflare Access RDP hostname routed to the EC2 cloudflared daemon."
+variable "cloudflare_monitor_hostname" {
+  description = "Cloudflare Access hostname routed through Caddy to Grafana."
   type        = string
-  default     = "rdp.ops.capitonic.com"
-}
-
-variable "enable_desktop" {
-  description = "Install XFCE, XRDP, and a lightweight browser on the host."
-  type        = bool
-  default     = true
-}
-
-variable "rdp_username" {
-  description = "Local Linux username for XRDP logins. The password is read from RDP_PASSWORD in AWS Secrets Manager."
-  type        = string
-  default     = "polybot"
+  default     = "monitor.capitonic.com"
 }
 
 variable "enable_cloudflared" {

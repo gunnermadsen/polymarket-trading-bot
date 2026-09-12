@@ -73,9 +73,12 @@ jobs:
 
       - name: Capture disposable resource identities
         run: |
-          echo "INSTANCE_ID=$(terraform -chdir="$TF_DIR" output -raw instance_id)" >> "$GITHUB_ENV"
-          echo "TUNNEL_ID=$(terraform -chdir="$TF_DIR" output -raw tunnel_id)" >> "$GITHUB_ENV"
-          echo "RDP_HOSTNAME=$(terraform -chdir="$TF_DIR" output -raw rdp_hostname)" >> "$GITHUB_ENV"
+          set -euo pipefail
+          set +x
+          echo "INSTANCE_ID=$(terraform -chdir="$TF_DIR" output -raw instance_id 2>/dev/null || true)" >> "$GITHUB_ENV"
+          echo "TUNNEL_ID=$(terraform -chdir="$TF_DIR" output -raw tunnel_id 2>/dev/null || true)" >> "$GITHUB_ENV"
+          rdp_hostname="$(terraform -chdir="$TF_DIR" output -raw rdp_hostname 2>/dev/null || true)"
+          echo "RDP_HOSTNAME=${rdp_hostname:-rdp.capitonic.com}" >> "$GITHUB_ENV"
 
       - name: Destroy only management resources
         run: terraform -chdir="$TF_DIR" destroy -auto-approve -input=false -lock-timeout=60s

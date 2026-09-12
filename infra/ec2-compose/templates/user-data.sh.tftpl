@@ -1,5 +1,6 @@
 #!/bin/bash
-set -euxo pipefail
+set -euo pipefail
+set +x
 
 exec > >(tee -a /var/log/polymarket-bootstrap.log | logger -t polymarket-bootstrap -s 2>/dev/console) 2>&1
 
@@ -9,14 +10,18 @@ AWS_REGION="${aws_region}"
 APP_DIRECTORY="${app_directory}"
 APP_SECRET_NAME="${app_secret_name}"
 COMPOSE_FILE="${compose_file}"
-CLOUDFLARED_RDP_HOSTNAME="${cloudflare_rdp_hostname}"
+CLOUDFLARED_MONITOR_HOSTNAME="${cloudflare_monitor_hostname}"
 CLOUDFLARED_SSH_HOSTNAME="${cloudflare_ssh_hostname}"
+DB_MIGRATE_IMAGE="${db_migrate_image}"
 ECR_REGISTRY="${ecr_registry}"
 ENABLE_CLOUDFLARED="${enable_cloudflared}"
-ENABLE_DESKTOP="${enable_desktop}"
-RDP_USERNAME="${rdp_username}"
+INGESTER_GIT_REVISION="${ingester_git_revision}"
+INGESTER_IMAGE="${ingester_image}"
+INGESTER_WORKER_REPLICAS="${ingester_worker_replicas}"
+POLYMARKET_BOT_IMAGE="${polymarket_bot_image}"
 REPO_BRANCH="${repo_branch}"
 REPO_URL="${repo_url}"
+STACK_USERNAME="polybot"
 
 apt_get_install() {
   apt-get install -y --no-install-recommends "$@"
@@ -162,41 +167,30 @@ EOF
   /usr/local/sbin/polymarket-ecr-login
 }
 
-install_desktop() {
-  if [ "$ENABLE_DESKTOP" != "true" ]; then
-    return
-  fi
-
-  local rdp_password
-  rdp_password="$(json_value RDP_PASSWORD)"
-  if [ -z "$rdp_password" ]; then
-    echo "Missing RDP_PASSWORD in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+install_stack_operator() {
+  local stack_password
+  stack_password="$(json_value RDP_PASSWORD)"
+  if [ -z "$stack_password" ]; then
+    echo "Missing RDP_PASSWORD for the protected stack SSH account in $APP_SECRET_NAME" >&2
     exit 1
   fi
 
-  apt_get_install software-properties-common
-  add-apt-repository -y universe || true
-  apt-get update
-  apt_get_install dbus-x11 xdg-utils xfce4 xfce4-goodies xrdp xorgxrdp xserver-xorg-core xserver-xorg-input-all xserver-xorg-video-dummy xinit firefox
-
-  if ! apt_get_install falkon; then
-    echo "Falkon install failed; Firefox is already installed as the primary browser."
+  apt_get_install openssh-server
+  if ! id "$STACK_USERNAME" >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash "$STACK_USERNAME"
   fi
+  printf '%s:%s\n' "$STACK_USERNAME" "$stack_password" | chpasswd
+  usermod -aG docker "$STACK_USERNAME"
+  install_ssh_authorized_keys
 
-  if ! id "$RDP_USERNAME" >/dev/null 2>&1; then
-    useradd --create-home --shell /bin/bash "$RDP_USERNAME"
-  fi
-
-  printf '%s:%s\n' "$RDP_USERNAME" "$rdp_password" | chpasswd
-  usermod -aG ssl-cert "$RDP_USERNAME"
-  printf 'startxfce4\n' >"/home/$RDP_USERNAME/.xsession"
-  chown "$RDP_USERNAME:$RDP_USERNAME" "/home/$RDP_USERNAME/.xsession"
-  chmod 0600 "/home/$RDP_USERNAME/.xsession"
-
-  sed -i '/^\[Globals\]/,/^\[/{s/^port=.*/port=tcp:\/\/.:3389/}' /etc/xrdp/xrdp.ini
-  usermod -aG ssl-cert xrdp
-  systemctl enable xrdp xrdp-sesman
-  systemctl restart xrdp-sesman xrdp
+  cat >/etc/ssh/sshd_config.d/90-capitonic-tunnel.conf <<EOF
+ListenAddress 127.0.0.1
+PasswordAuthentication yes
+PermitRootLogin no
+AllowUsers $STACK_USERNAME
+EOF
+  systemctl enable ssh.service
+  systemctl restart ssh.service
 }
 
 install_authorized_keys_for_user() {
@@ -232,7 +226,7 @@ install_ssh_authorized_keys() {
   fi
 
   install_authorized_keys_for_user ubuntu "$authorized_keys"
-  install_authorized_keys_for_user "$RDP_USERNAME" "$authorized_keys"
+  install_authorized_keys_for_user "$STACK_USERNAME" "$authorized_keys"
 }
 
 install_cloudflared() {
@@ -240,10 +234,13 @@ install_cloudflared() {
     return
   fi
 
-  local tunnel_id expected_tunnel_id credentials_b64 credentials_file rdp_hostname ssh_hostname deb_url
+  local tunnel_id expected_tunnel_id credentials_b64 credentials_file monitor_hostname ssh_hostname deb_url
   expected_tunnel_id="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_ID)"
   credentials_b64="$(json_value CLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64)"
-  rdp_hostname="$CLOUDFLARED_RDP_HOSTNAME"
+  if [ -z "$credentials_b64" ]; then
+    credentials_b64="$(json_value COLOUDFLARED_PRODUCTION_TUNNEL_CREDENTIALS_B64)"
+  fi
+  monitor_hostname="$CLOUDFLARED_MONITOR_HOSTNAME"
   ssh_hostname="$CLOUDFLARED_SSH_HOSTNAME"
 
   if [ -z "$credentials_b64" ]; then
@@ -293,33 +290,25 @@ credentials-file: $credentials_file
 ingress:
 EOF
 
-  if [ -n "$rdp_hostname" ]; then
+  if [ -n "$monitor_hostname" ]; then
     cat >>/etc/cloudflared/config.yml <<EOF
-  - hostname: $rdp_hostname
-    service: rdp://localhost:3389
-EOF
-  else
-    cat >>/etc/cloudflared/config.yml <<EOF
-  - service: rdp://localhost:3389
+  - hostname: $monitor_hostname
+    service: https://localhost:443
+    originRequest:
+      noTLSVerify: true
 EOF
   fi
 
   if [ -n "$ssh_hostname" ]; then
-    apt_get_install openssh-server
-    systemctl enable --now ssh.service || systemctl enable --now sshd.service
-    install_ssh_authorized_keys
-
     cat >>/etc/cloudflared/config.yml <<EOF
   - hostname: $ssh_hostname
     service: ssh://localhost:22
 EOF
   fi
 
-  if [ -n "$rdp_hostname" ]; then
-    cat >>/etc/cloudflared/config.yml <<EOF
+  cat >>/etc/cloudflared/config.yml <<EOF
   - service: http_status:404
 EOF
-  fi
 
   chmod 0600 /etc/cloudflared/config.yml
 
@@ -457,12 +446,40 @@ write_grafana_env() {
   chmod 0600 "$APP_DIRECTORY/.env.grafana"
 }
 
+write_prometheus_env() {
+  local basic_auth_user basic_auth_password basic_auth_password_hash
+  basic_auth_user="$(json_value PROMETHEUS_BASIC_AUTH_USER)"
+  basic_auth_password="$(json_value PROMETHEUS_BASIC_AUTH_PASSWORD)"
+  basic_auth_password_hash="$(json_value PROMETHEUS_BASIC_AUTH_PASSWORD_HASH)"
+  if [ -z "$basic_auth_user" ] || [ -z "$basic_auth_password" ] || [ -z "$basic_auth_password_hash" ]; then
+    echo "Missing one or more PROMETHEUS_BASIC_AUTH_* values in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+    exit 1
+  fi
+  {
+    printf 'PROMETHEUS_BASIC_AUTH_USER=%s\n' "$basic_auth_user"
+    printf 'PROMETHEUS_BASIC_AUTH_PASSWORD=%s\n' "$basic_auth_password"
+    printf 'PROMETHEUS_BASIC_AUTH_PASSWORD_HASH=%s\n' "$basic_auth_password_hash"
+  } > "$APP_DIRECTORY/.env.prometheus.production"
+  chmod 0600 "$APP_DIRECTORY/.env.prometheus.production"
+}
+
+write_deployment_env() {
+  {
+    printf 'POLYMARKET_BOT_IMAGE=%s\n' "$POLYMARKET_BOT_IMAGE"
+    printf 'INGESTER_IMAGE=%s\n' "$INGESTER_IMAGE"
+    printf 'DB_MIGRATE_IMAGE=%s\n' "$DB_MIGRATE_IMAGE"
+    printf 'INGESTER_IMAGE_DIGEST=%s\n' "$${INGESTER_IMAGE##*@}"
+    printf 'INGESTER_GIT_REVISION=%s\n' "$INGESTER_GIT_REVISION"
+  } >> "$APP_DIRECTORY/.env"
+  chmod 0600 "$APP_DIRECTORY/.env"
+}
+
 start_compose_app() {
   /usr/local/sbin/polymarket-ecr-login
 
   cd "$APP_DIRECTORY"
   docker compose -f "$COMPOSE_FILE" pull
-  docker compose -f "$COMPOSE_FILE" up -d --no-build
+  docker compose -f "$COMPOSE_FILE" up -d --no-build --scale ingester-worker="$INGESTER_WORKER_REPLICAS"
   docker compose -f "$COMPOSE_FILE" ps
 }
 
@@ -480,10 +497,12 @@ aws secretsmanager get-secret-value \
   --output text > "$SECRET_PATH"
 chmod 0600 "$SECRET_PATH"
 
-install_desktop
+install_stack_operator
 install_cloudflared
 clone_or_update_repo
 write_app_env
 write_postgres_env
 write_grafana_env
+write_prometheus_env
+write_deployment_env
 start_compose_app

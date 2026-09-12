@@ -1,0 +1,142 @@
+{
+  "name": "BTC 5m risk candidate loss + extended specialist 180-240 paper",
+  "process_type": "btc_5m",
+  "process_scope": "realtime_paper",
+  "process_key": "btc-5m-risk-extended-specialist-180-240-c85-20260911",
+  "enabled": false,
+  "status": "created",
+  "config": {
+    "execution": {
+      "mode": "paper",
+      "execute_signals": true,
+      "live_capital": false,
+      "taker_fee_rate": null
+    },
+    "raw": {
+      "btc_realtime_paper": {
+        "schema_version": "btc_realtime_paper_process_v3",
+        "playbook_version": "v1.2",
+        "sources": [
+          "polymarket_btc_five_minute_market_contracts",
+          "polymarket_btc_five_minute_orderbooks",
+          "polymarket_btc_five_minute_resolutions",
+          "binance_spot_btcusdt_one_second_ohlcv",
+          {
+            "key": "polygon_chainlink_btcusd_oracle",
+            "required": false,
+            "maximum_age_ms": 600000,
+            "contract_version": 1,
+            "require_sequence_integrity": false
+          }
+        ],
+        "strategy": {
+          "decision_strategy": {
+            "type": "btc_directional_model",
+            "model_key": "btc-5m-extended-specialist-official-umr-20260902-confidence-070",
+            "artifact_sha256": "457156bdcb08f6f2016781ac50292c32b7a2058bea77ba47542216a8afc3704a",
+            "feature_schema_sha256": "38b56e7a5e9819ef91f954224fbc90002cda3c20801fd66cfec63ec0830c0523"
+          },
+          "unified_model": {
+            "version": "capitonic-unified-model-runtime-v1",
+            "sources": [
+              {
+                "slot": "btc_seconds",
+                "product": "binance_spot_btcusdt_one_second_ohlcv",
+                "semantics": "binance_closed_seconds_prewindow_open_v1"
+              },
+              {
+                "slot": "execution_book",
+                "product": "polymarket_btc_five_minute_orderbooks",
+                "semantics": "causal_vwap_five_shares_v1"
+              },
+              {
+                "slot": "oracle",
+                "product": "polygon_chainlink_btcusd_oracle",
+                "semantics": "causal_oracle_rounds_v1"
+              }
+            ],
+            "policy": {
+              "minimum_confidence": 0.7,
+              "minimum_edge": 0.125,
+              "maximum_share_cost": 0.75,
+              "minimum_admission_probability": null,
+              "minimum_predicted_stress_edge": null,
+              "maximum_predicted_loss": null,
+              "maximum_temporal_std": null,
+              "minimum_temporal_agreement": null,
+              "execution_reserve_per_share": 0.005
+            }
+          },
+          "target_size": "5",
+          "min_seconds_after_open": 60,
+          "min_seconds_before_close": 211,
+          "max_reference_age_ms": 2000,
+          "max_directional_feature_age_ms": 5000,
+          "max_chainlink_open_delay_ms": 5000,
+          "max_book_age_ms": 2000,
+          "max_source_skew_ms": 1000,
+          "max_fee_age_ms": 3600000,
+          "min_entry_price": "0.01",
+          "max_entry_price": "0.99",
+          "max_depth_participation": "0.25",
+          "volatility_floor_per_sqrt_second": "0.00005",
+          "probability_floor": "0.01",
+          "basis_lead_weight": "0.25",
+          "momentum_1s_weight": "0.05",
+          "momentum_5s_weight": "0.10",
+          "momentum_30s_weight": "0.10",
+          "max_lead_sigma_fraction": "0.25",
+          "base_probability_uncertainty": "0.015",
+          "basis_uncertainty_weight": "1",
+          "feed_age_uncertainty_per_second": "0.002",
+          "max_probability_uncertainty": "0.10",
+          "spread_reserve_fraction": "0.10",
+          "slippage_reserve_bps": "25",
+          "latency_reserve_per_share": "0.005",
+          "min_net_edge_per_share": "0.015",
+          "min_net_edge_usd": "0.02",
+          "max_fee_rate": "1"
+        },
+        "risk_strategies": [
+          {
+            "version": "capitonic-risk-strategy-v1",
+            "model_key": "btc-5m-risk-candidate-loss-extended-specialist-180-240-c85-20260911",
+            "artifact_sha256": "bbf5ca679cb1ba125352857dfef6309336b9031b8292f7b055765e75d87a8398"
+          }
+        ],
+        "runtime": {
+          "strategy_interval_ms": 1000,
+          "official_resolution_audit_grace_secs": 120,
+          "official_resolution_watch_retention_secs": 3600
+        },
+        "paper": {
+          "arrival_latency_ms": 150,
+          "visible_depth_haircut": "0.80",
+          "starting_collateral_usd": "1000",
+          "directional_model_entry_policy": "execute_directional_prediction",
+          "stress_previews": [
+            {
+              "scenario_key": "latency_300ms_depth_65pct",
+              "arrival_latency_ms": 300,
+              "visible_depth_haircut": "0.65"
+            },
+            {
+              "scenario_key": "latency_600ms_depth_50pct",
+              "arrival_latency_ms": 600,
+              "visible_depth_haircut": "0.50"
+            }
+          ]
+        },
+        "next_experiment_key": "btc-5m-risk-extended-specialist-180-240-c85-20260911-run",
+        "preregistration_sha256": "5da1d6f819eae517817c8a647626d3d59315914f3d480ea6d9dc6657f15397af"
+      }
+    }
+  },
+  "metadata": {
+    "purpose": "UMR risk strategy paper evaluation",
+    "risk_model_key": "btc-5m-risk-candidate-loss-extended-specialist-180-240-c85-20260911",
+    "source_process_id": "4669169b-75b5-41e0-a08f-790d049a84da",
+    "source_process_key": "btc-5m-extended-specialist-official-umr-20260902",
+    "risk_artifact_sha256": "bbf5ca679cb1ba125352857dfef6309336b9031b8292f7b055765e75d87a8398"
+  }
+}
