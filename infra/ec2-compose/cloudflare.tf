@@ -51,13 +51,11 @@ resource "cloudflare_zero_trust_access_application" "monitor" {
   session_duration = "8h"
 
   policies = [{
-    name       = "Allow production operator"
-    decision   = "allow"
+    name       = "Bypass Cloudflare Access for Grafana login"
+    decision   = "bypass"
     precedence = 1
     include = [{
-      email = {
-        email = var.cloudflare_access_email
-      }
+      everyone = {}
     }]
   }]
 }
