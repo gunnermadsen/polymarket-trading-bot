@@ -80,11 +80,13 @@ jobs:
             --query 'Reservations[].Instances[].InstanceId' --output text)"
           [ "$(wc -w <<< "$instance_id")" -eq 1 ] || { echo "Expected exactly one running production stack instance." >&2; exit 1; }
 
+          update_env_command="$(printf \
+            "set -euo pipefail; cd /opt/polymarket-bot; sed -i -e '/^[A-Z_]*_IMAGE=/d' -e '/^INGESTER_GIT_REVISION=/d' -e '/^INGESTER_IMAGE_DIGEST=/d' .env; printf 'POLYMARKET_BOT_IMAGE=%%s\\nINGESTER_IMAGE=%%s\\nDB_MIGRATE_IMAGE=%%s\\nINGESTER_IMAGE_DIGEST=%%s\\nINGESTER_GIT_REVISION=%%s\\n' %q %q %q %q %q >> .env" \
+            "$BOT_IMAGE" "$INGESTER_IMAGE" "$MIGRATE_IMAGE" "${INGESTER_IMAGE#*@}" "$INGESTER_IMAGE_REVISION")"
           parameters="$(jq -n \
-            --arg bot "$BOT_IMAGE" --arg ingester "$INGESTER_IMAGE" --arg migrate "$MIGRATE_IMAGE" --arg revision "$INGESTER_IMAGE_REVISION" \
+            --arg update_env "$update_env_command" \
             '{commands:[
-              "set -euo pipefail; cd /opt/polymarket-bot; sed -i -e '\''/^[A-Z_]*_IMAGE=/d'\'' -e '\''/^INGESTER_GIT_REVISION=/d'\'' -e '\''/^INGESTER_IMAGE_DIGEST=/d'\'' .env",
-              "printf '\''POLYMARKET_BOT_IMAGE=%s\\nINGESTER_IMAGE=%s\\nDB_MIGRATE_IMAGE=%s\\nINGESTER_IMAGE_DIGEST=%s\\nINGESTER_GIT_REVISION=%s\\n'\'' " + ($bot|@sh) + " " + ($ingester|@sh) + " " + ($migrate|@sh) + " " + (($ingester|split(\"@\")[1])|@sh) + " " + ($revision|@sh) + " >> /opt/polymarket-bot/.env",
+              $update_env,
               "/usr/local/sbin/polymarket-ecr-login",
               "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml pull polymarket-bot ingester-master ingester-worker db-migrate",
               "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=8 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot",
