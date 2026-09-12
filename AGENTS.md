@@ -36,7 +36,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 ## Integration Cycle and Trading Release Roles
 
 - `development` is the settlement branch for accepted trading-capable releases. Do not implement features, fixes, experiments, or integration corrections directly on `development`.
-- A `development` tip is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence.
+- A `development` tip containing project-code changes is golden only when an annotated `golden/<image_name>/sha256-<docker-sha256-hash>` tag identifies the exact accepted image. Branch position or an `image/...` build tag alone is not golden evidence. A configuration-only promotion permitted below does not mint or move a golden image tag.
 - Feature verification proves readiness for integration; it does not make a feature branch or its image golden.
 - Use exactly one active integration branch for each golden-image build cycle. Name it `integration-<YYYY-MM-DD>`.
 - Create the integration branch once from the current accepted `development` tip at the beginning of the cycle. An annotated `integration-cycle/<YYYY-MM-DD>` tag may record the cycle boundary for ancestry inspection, but its absence does not block explicitly authorized branch creation or integration.
@@ -57,6 +57,8 @@ Think of Capitonic as a vision to generate income through systems with automatio
 
 ## Golden Image Admission and Promotion
 
+- Configuration-only changes outside image-producing project codebases may be fast-forwarded from the integration branch to `development` without building or minting golden images when the user explicitly authorizes that exact promotion. Qualifying changes include CI/CD workflows, provisioned instrumentation, and platform configuration that do not change application source, image contents, database migrations, or trading behavior.
+- Before a configuration-only promotion, inspect and report the complete commit range and diff, confirm that every changed path qualifies for the exception, and disclose the checks performed. If any changed path affects project code, image contents, database migrations, or trading behavior, use the normal golden-image admission and promotion rules for the entire promotion.
 - The user may explicitly authorize minting a golden image from an exact integration commit and immutable image at any time. That instruction is sufficient promotion authorization and must not be delayed or refused because of an undefined waiting period, elapsed-time requirement, or missing operational evidence.
 - always deploy the golden images to containers after minting.
 - Operational validation may be performed and recorded when requested, but it is not a mandatory time-based gate unless the user explicitly defines one.
@@ -108,7 +110,7 @@ Think of Capitonic as a vision to generate income through systems with automatio
 - Never infer merge permission from recency, branch-name similarity, worktree existence, dirty state, or whether Git reports the branch as unmerged.
 - Do not merge an old, pre-cycle, cross-cycle, abandoned, or otherwise unrelated branch implicitly. Explicit user authorization naming the exact branch or commit is sufficient authorization for that merge; disclose its lineage and status before proceeding.
 - After integration collects new work, create subsequent feature and defect branches from the new integration tip so they begin with the complete collected code.
-- Advance `development` only through the golden admission and fast-forward promotion rules above.
+- Advance `development` only through the golden admission and fast-forward promotion rules above or through the explicitly authorized configuration-only exception.
 - Never discard, rewrite, or bypass an existing feature lineage merely to satisfy the “latest development” rule.
 
 ## When to Create a Worktree
