@@ -66,7 +66,9 @@ jobs:
             echo "BOT_IMAGE=$ECR_REGISTRY/capitonic/polymarket-bot@$bot_digest"
             echo "INGESTER_IMAGE=$ECR_REGISTRY/capitonic/ingester@$ingester_digest"
             echo "MIGRATE_IMAGE=$ECR_REGISTRY/capitonic/db-migrate@$migrate_digest"
+            echo "POLYMARKET_BOT_IMAGE_REVISION=$POLYMARKET_BOT_IMAGE_REVISION"
             echo "INGESTER_IMAGE_REVISION=$INGESTER_IMAGE_REVISION"
+            echo "DB_MIGRATE_IMAGE_REVISION=$DB_MIGRATE_IMAGE_REVISION"
           } >> "$GITHUB_ENV"
 
       - name: Deploy through SSM
@@ -81,22 +83,24 @@ jobs:
           [ "$(wc -w <<< "$instance_id")" -eq 1 ] || { echo "Expected exactly one running production stack instance." >&2; exit 1; }
 
           update_env_command="$(printf \
-            "set -euo pipefail; cd /opt/polymarket-bot; sed -i -e '/^[A-Z_]*_IMAGE=/d' -e '/^INGESTER_GIT_REVISION=/d' -e '/^INGESTER_IMAGE_DIGEST=/d' .env; printf 'POLYMARKET_BOT_IMAGE=%%s\\nINGESTER_IMAGE=%%s\\nDB_MIGRATE_IMAGE=%%s\\nINGESTER_IMAGE_DIGEST=%%s\\nINGESTER_GIT_REVISION=%%s\\n' %q %q %q %q %q >> .env" \
+            "cd /opt/polymarket-bot; sed -i -e '/^[A-Z_]*_IMAGE=/d' -e '/^INGESTER_GIT_REVISION=/d' -e '/^INGESTER_IMAGE_DIGEST=/d' .env; printf 'POLYMARKET_BOT_IMAGE=%%s\\nINGESTER_IMAGE=%%s\\nDB_MIGRATE_IMAGE=%%s\\nINGESTER_IMAGE_DIGEST=%%s\\nINGESTER_GIT_REVISION=%%s\\n' %q %q %q %q %q >> .env" \
             "$BOT_IMAGE" "$INGESTER_IMAGE" "$MIGRATE_IMAGE" "${INGESTER_IMAGE#*@}" "$INGESTER_IMAGE_REVISION")"
+          deployment_script="$(printf \
+            'set -euo pipefail; %s; %s; %s; %s; %s; %s' \
+            "$update_env_command" \
+            '/usr/local/sbin/polymarket-ecr-login' \
+            'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml pull polymarket-bot ingester-master ingester-worker db-migrate' \
+            'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=8 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot' \
+            'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps' \
+            'curl -fsS http://127.0.0.1:8097/health')"
+          printf -v bash_command '/bin/bash -lc %q' "$deployment_script"
           parameters="$(jq -n \
-            --arg update_env "$update_env_command" \
-            '{commands:[
-              $update_env,
-              "/usr/local/sbin/polymarket-ecr-login",
-              "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml pull polymarket-bot ingester-master ingester-worker db-migrate",
-              "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml up -d --no-build --scale ingester-worker=8 db-migrate pgbouncer ingester-master ingester-worker polymarket-bot",
-              "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps",
-              "curl -fsS http://127.0.0.1:8097/health"
-            ]}')"
+            --arg bash_command "$bash_command" \
+            '{commands:[$bash_command]}')"
           command_id="$(aws ssm send-command --instance-ids "$instance_id" --document-name AWS-RunShellScript \
             --parameters "$parameters" --comment "Deploy immutable Capitonic production images" \
             --timeout-seconds 1500 --query 'Command.CommandId' --output text)"
-          aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id"
+          aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id" || true
           result="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$instance_id" \
             --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' --output json)"
           jq . <<< "$result"
