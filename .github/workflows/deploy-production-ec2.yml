@@ -186,7 +186,7 @@ jobs:
             "cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml ps",
             "curl -fsS http://127.0.0.1:8097/health",
             "curl -fsS http://127.0.0.1:3000/api/health | jq -e '\''.database == \"ok\"'\''",
-            "curl -fksS https://127.0.0.1:443/api/health -H '\''Host: monitor.capitonic.com'\'' | jq -e '\''.database == \"ok\"'\''",
+            "curl -fksS --resolve monitor.capitonic.com:443:127.0.0.1 https://monitor.capitonic.com/api/health | jq -e '\''.database == \"ok\"'\''",
             "curl -fsS http://127.0.0.1:9090/api/v1/targets | jq -e '\''[.data.activeTargets[] | select(.labels.job == \"node-exporter\" or .labels.job == \"cadvisor\") | .health] | length == 2 and all(. == \"up\")'\''",
             "docker exec polymarket-bot test -f /usr/local/share/polymarket-bot/models/btc-5m-extended-specialist-official-umr-20260902-confidence-070/model.json",
             "docker exec polymarket-bot test -f /usr/local/share/polymarket-bot/models/btc-5m-risk-candidate-loss-extended-specialist-180-240-c85-20260911/risk-model.json"

@@ -296,6 +296,7 @@ EOF
     service: https://localhost:443
     originRequest:
       noTLSVerify: true
+      originServerName: $monitor_hostname
 EOF
   fi
 
