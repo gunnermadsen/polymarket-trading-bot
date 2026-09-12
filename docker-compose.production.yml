@@ -7,32 +7,41 @@ x-logging: &default-logging
 x-app-env-file: &app-env-file
   path: ./.env
   required: false
+  format: raw
 
 x-postgres-env-file: &postgres-env-file
   path: ./.env.postgres
   required: false
+  format: raw
 x-postgres-roles-env-file: &postgres-roles-env-file
   path: ./.env.postgres.roles
   required: true
+  format: raw
 x-postgres-pgbouncer-env-file: &postgres-pgbouncer-env-file
   path: ./.env.postgres.pgbouncer
   required: true
+  format: raw
 x-postgres-bot-env-file: &postgres-bot-env-file
   path: ./.env.postgres.polymarket-bot
   required: true
+  format: raw
 x-postgres-master-env-file: &postgres-master-env-file
   path: ./.env.postgres.ingester-master
   required: true
+  format: raw
 x-postgres-worker-env-file: &postgres-worker-env-file
   path: ./.env.postgres.ingester-worker
   required: true
+  format: raw
 x-postgres-grafana-env-file: &postgres-grafana-env-file
   path: ./.env.postgres.grafana
   required: true
+  format: raw
 
 x-grafana-env-file: &grafana-env-file
   path: ./.env.grafana
   required: false
+  format: raw
 
 x-prometheus-env-file: &prometheus-env-file
   path: ./.env.prometheus.production
@@ -145,6 +154,7 @@ services:
       - *postgres-roles-env-file
       - path: ./.env.market-data-ingester
         required: true
+        format: raw
     environment:
       NODE_ENV: "production"
       POSTGRES_HOST: "timescaledb-0"
@@ -215,6 +225,7 @@ services:
       - *app-env-file
       - path: ./.env.market-data-ingester
         required: true
+        format: raw
       - *postgres-master-env-file
     environment:
       RUST_LOG: "info"

@@ -463,6 +463,18 @@ write_prometheus_env() {
   chmod 0600 "$APP_DIRECTORY/.env.prometheus.production"
 }
 
+write_ingester_env() {
+  local ingester_admin_token
+  ingester_admin_token="$(json_value MARKET_DATA_INGESTER_ADMIN_TOKEN)"
+  if [ -z "$ingester_admin_token" ]; then
+    echo "Missing MARKET_DATA_INGESTER_ADMIN_TOKEN in AWS Secrets Manager secret $APP_SECRET_NAME" >&2
+    exit 1
+  fi
+  printf 'MARKET_DATA_INGESTER_ADMIN_TOKEN=%s\n' "$ingester_admin_token" \
+    > "$APP_DIRECTORY/.env.market-data-ingester"
+  chmod 0600 "$APP_DIRECTORY/.env.market-data-ingester"
+}
+
 write_deployment_env() {
   {
     printf 'POLYMARKET_BOT_IMAGE=%s\n' "$POLYMARKET_BOT_IMAGE"
@@ -504,5 +516,6 @@ write_app_env
 write_postgres_env
 write_grafana_env
 write_prometheus_env
+write_ingester_env
 write_deployment_env
 start_compose_app
