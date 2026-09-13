@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - infra/processes/btc-5m-risk-extended-specialist-180-240-c85-20260911.json
+          - infra/processes/btc-5m-specialist-distilled-fair-value-native-admission-20260823.json
 
 permissions:
   contents: read
@@ -45,7 +46,8 @@ jobs:
             .enabled == false and .status == "created" and
             .process_type == "btc_5m" and .process_scope == "realtime_paper" and
             .config.execution.mode == "paper" and .config.execution.live_capital == false and
-            (.config.raw.btc_realtime_paper.risk_strategies | length) == 1
+            (.config.raw.btc_realtime_paper.strategy.decision_strategy.model_key | length) > 0 and
+            ((.config.raw.btc_realtime_paper.risk_strategies // []) | length) <= 1
           ' "$PROCESS_DEFINITION" >/dev/null
 
       - name: Deploy, start, and verify live inference
@@ -72,6 +74,8 @@ jobs:
           token="$(jq -r '.POLYMARKET_HTTP_ADMIN_TOKEN // empty' "$secret")"
           [ -n "$token" ]
           process_key="$(jq -r '.process_key' "$definition")"
+          trade_model_key="$(jq -r '.config.raw.btc_realtime_paper.strategy.decision_strategy.model_key' "$definition")"
+          risk_model_key="$(jq -r '.config.raw.btc_realtime_paper.risk_strategies[0].model_key // empty' "$definition")"
           request="$(jq 'del(.process_key)' "$definition")"
 
           existing="$(curl -fsS -H "Authorization: Bearer $token" 'http://127.0.0.1:8097/admin/trading-processes?limit=50')"
@@ -90,12 +94,18 @@ jobs:
               "http://127.0.0.1:8097/admin/trading-processes/$process_id")"
             metrics="$(curl -fsS http://127.0.0.1:8097/prometheus/metrics)"
             running="$(jq -r '.process.status == "running" and .process.enabled == true' <<< "$process")"
-            trade_model="$(grep -c "polymarket_umr_model_info{.*process_id=\"$process_id\".*model_key=\"btc-5m-extended-specialist-official-umr-20260902-confidence-070\"" <<< "$metrics" || true)"
-            risk_model="$(grep -c "polymarket_umr_risk_model_info{.*process_id=\"$process_id\".*model_key=\"btc-5m-risk-candidate-loss-extended-specialist-180-240-c85-20260911\"" <<< "$metrics" || true)"
+            trade_model="$(grep -c "polymarket_umr_model_info{.*process_id=\"$process_id\".*model_key=\"$trade_model_key\"" <<< "$metrics" || true)"
+            risk_model=1
+            risk_model_configured=false
+            if [ -n "$risk_model_key" ]; then
+              risk_model_configured=true
+              risk_model="$(grep -c "polymarket_umr_risk_model_info{.*process_id=\"$process_id\".*model_key=\"$risk_model_key\"" <<< "$metrics" || true)"
+            fi
             inference="$(awk -v id="$process_id" '$0 ~ "polymarket_umr_last_success_timestamp_seconds" && $0 ~ "process_id=\\\"" id "\\\"" && $NF > 0 {found=1} END {print found+0}' <<< "$metrics")"
             if [ "$running" = "true" ] && [ "$trade_model" -gt 0 ] && [ "$risk_model" -gt 0 ] && [ "$inference" -eq 1 ]; then
               jq -n --arg process_id "$process_id" --arg process_key "$process_key" \
-                '{process_id:$process_id,process_key:$process_key,status:"running",trade_model_loaded:true,risk_model_loaded:true,live_inference_observed:true}'
+                --argjson risk_model_configured "$risk_model_configured" \
+                '{process_id:$process_id,process_key:$process_key,status:"running",trade_model_loaded:true,risk_model_configured:$risk_model_configured,risk_model_verified:true,live_inference_observed:true}'
               exit 0
             fi
             sleep 5
@@ -126,7 +136,7 @@ jobs:
       - name: Publish process summary
         run: |
           echo "### Production paper process active" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Process: btc-5m-risk-extended-specialist-180-240-c85-20260911" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Process definition: ${{ inputs.process_definition }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Execution: paper only; live capital disabled" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Trade model and risk model identities verified" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trade model and any configured optional risk model identities verified" >> "$GITHUB_STEP_SUMMARY"
           echo "- Live inference evidence observed" >> "$GITHUB_STEP_SUMMARY"

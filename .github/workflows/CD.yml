@@ -81,12 +81,17 @@ jobs:
               Name=instance-state-name,Values=running \
             --query 'Reservations[].Instances[].InstanceId' --output text)"
           [ "$(wc -w <<< "$instance_id")" -eq 1 ] || { echo "Expected exactly one running production stack instance." >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
 
+          checkout_command="$(printf \
+            'cd /opt/polymarket-bot; git fetch --no-tags origin %q; git checkout --detach %q' \
+            "$GITHUB_SHA" "$GITHUB_SHA")"
           update_env_command="$(printf \
             "cd /opt/polymarket-bot; sed -i -e '/^[A-Z_]*_IMAGE=/d' -e '/^INGESTER_GIT_REVISION=/d' -e '/^INGESTER_IMAGE_DIGEST=/d' .env; printf 'POLYMARKET_BOT_IMAGE=%%s\\nINGESTER_IMAGE=%%s\\nDB_MIGRATE_IMAGE=%%s\\nINGESTER_IMAGE_DIGEST=%%s\\nINGESTER_GIT_REVISION=%%s\\n' %q %q %q %q %q >> .env" \
             "$BOT_IMAGE" "$INGESTER_IMAGE" "$MIGRATE_IMAGE" "${INGESTER_IMAGE#*@}" "$INGESTER_IMAGE_REVISION")"
           deployment_script="$(printf \
-            'set -euo pipefail; %s; %s; %s; %s; %s; %s' \
+            'set -euo pipefail; %s; %s; %s; %s; %s; %s; %s' \
+            "$checkout_command" \
             "$update_env_command" \
             '/usr/local/sbin/polymarket-ecr-login' \
             'cd /opt/polymarket-bot && docker compose -f docker-compose.production.yml pull polymarket-bot ingester-master ingester-worker db-migrate' \
