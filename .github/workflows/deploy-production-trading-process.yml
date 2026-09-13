@@ -78,10 +78,6 @@ jobs:
           risk_model_key="$(jq -r '.config.raw.btc_realtime_paper.risk_strategies[0].model_key // empty' "$definition")"
           request="$(jq 'del(.process_key)' "$definition")"
 
-          existing="$(curl -fsS -H "Authorization: Bearer $token" 'http://127.0.0.1:8097/admin/trading-processes?limit=50')"
-          [ "$(jq '[.processes[] | select(.enabled == true or .status == "running" or .status == "starting")] | length' <<< "$existing")" -eq 0 ] \
-            || { echo "Another production trading process is already active." >&2; exit 1; }
-
           response="$(curl -fsS -X PUT -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
             --data "$request" "http://127.0.0.1:8097/admin/trading-processes/by-key/$process_key")"
           process_id="$(jq -r '.process.process_id' <<< "$response")"
