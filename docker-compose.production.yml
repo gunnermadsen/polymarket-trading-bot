@@ -180,6 +180,7 @@ services:
     env_file:
       - *app-env-file
       - *postgres-bot-env-file
+      - *grafana-env-file
     environment:
       RUST_LOG: "info"
       TOKIO_WORKER_THREADS: "2"
@@ -201,6 +202,9 @@ services:
       POLYMARKET_HEALTH_INTERVAL_SECS: "30"
       POLYMARKET_HTTP_ENABLED: "true"
       POLYMARKET_HTTP_BIND: "0.0.0.0:8097"
+      POLYMARKET_GRAFANA_LIVE_ENABLED: "true"
+      POLYMARKET_GRAFANA_LIVE_PUSH_URL: "http://grafana:3000/api/live/push/polymarket"
+      POLYMARKET_GRAFANA_LIVE_PUBLISH_INTERVAL_MS: "1000"
       POLYMARKET_BTC_MODEL_DIR: "/usr/local/share/polymarket-bot/models"
     ports:
       - "127.0.0.1:8097:8097"
